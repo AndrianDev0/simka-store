@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, isNull, and } from "drizzle-orm";
 import { getDb } from "@/db";
 import { categories, productCategories } from "@/db/schema";
 
@@ -23,7 +23,7 @@ export async function getPublicCategories(): Promise<PublicCategory[]> {
       name: categories.name,
       description: categories.description,
     }).from(categories)
-      .where(eq(categories.isPublished, true))
+      .where(and(eq(categories.isPublished, true), isNull(categories.archivedAt)))
       .orderBy(asc(categories.sortOrder), asc(categories.name));
 
     if (!rows.length) return [];
