@@ -1,4 +1,4 @@
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { orders } from "@/db/schema";
@@ -56,7 +56,7 @@ export async function POST(request: Request) {
 
     const command = text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
     if (command === "/start" || command === "/help") {
-      await sendMessage(token, chat.id, "SIMKA Admin\n\n/status — состояние магазина\n/orders — последние заказы\n/help — список команд");
+      await sendMessage(token, chat.id, "SIMKA Admin\n\n/status — состояние магазина\n/orders — последние заказы\n/paid <номер> — подтвердить оплату\n/help — список команд");
     } else if (command === "/status") {
       const db = getDb();
       const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
@@ -67,6 +67,22 @@ export async function POST(request: Request) {
       const recent = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).orderBy(desc(orders.createdAt)).limit(5);
       const lines = recent.length ? recent.map((order) => `${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "Заказов пока нет.";
       await sendMessage(token, chat.id, `Последние заказы:\n\n${lines}`);
+    } else if (command === "/paid") {
+      const number = text.trim().split(/\s+/)[1]?.toUpperCase();
+      if (!number) {
+        await sendMessage(token, chat.id, "Укажите номер: /paid SIM-YYYYMMDD-XXXXXXXX");
+      } else {
+        const db = getDb();
+        const [order] = await db.select({ id: orders.id, status: orders.status, orderNumber: orders.orderNumber }).from(orders).where(eq(orders.orderNumber, number)).limit(1);
+        if (!order) {
+          await sendMessage(token, chat.id, "Заказ не найден.");
+        } else if (!["WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) {
+          await sendMessage(token, chat.id, `Нельзя подтвердить заказ в статусе ${order.status}.`);
+        } else {
+          await db.update(orders).set({ status: "PAID" }).where(eq(orders.id, order.id));
+          await sendMessage(token, chat.id, `Оплата подтверждена. Заказ ${order.orderNumber} → PAID.`);
+        }
+      }
     } else {
       await sendMessage(token, chat.id, "Неизвестная команда. Используйте /help.");
     }

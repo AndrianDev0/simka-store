@@ -20,6 +20,43 @@ function orderNumber() {
   return `SIM-${date}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
+async function notifyManagers(order: {
+  orderNumber: string;
+  customerName: string;
+  customerEmail: string;
+  customerContact: string;
+  paymentMethod: "crypto" | "manager";
+  totalAmount: number;
+  items: Array<{ productName: string; quantity: number }>;
+}) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const adminIds = (process.env.TELEGRAM_ADMIN_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  if (!token || !adminIds.length) return;
+  const paymentLabel = order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта (ожидает провайдера)";
+  const lines = order.items.map((item) => `• ${item.productName} × ${item.quantity}`).join("\n");
+  const text = [
+    "Новый заказ SIMKA",
+    `№ ${order.orderNumber}`,
+    `Клиент: ${order.customerName}`,
+    `Email: ${order.customerEmail}`,
+    order.customerContact ? `Контакт: ${order.customerContact}` : "",
+    `Оплата: ${paymentLabel}`,
+    `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} RUB`,
+    "",
+    lines,
+    "",
+    `Для подтверждения оплаты: /paid ${order.orderNumber}`,
+  ].filter(Boolean).join("\n");
+  await Promise.all(adminIds.map(async (chatId) => {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+    if (!response.ok) throw new Error("TELEGRAM_NOTIFY_FAILED");
+  }));
+}
+
 export async function POST(request: Request) {
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 20_000) return Response.json({ error: "Слишком большой запрос" }, { status: 413 });
@@ -51,6 +88,15 @@ export async function POST(request: Request) {
       db.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, totalAmount }),
       db.insert(orderItems).values(resolved.map(({ product, quantity, lineTotal }) => ({ id: crypto.randomUUID(), orderId: id, productId: product.id, sku: product.sku, productName: `${product.country} · ${product.data}`, simType: product.type, unitPrice: product.price, quantity, lineTotal }))),
     ]);
+    void notifyManagers({
+      orderNumber: number,
+      customerName: parsed.data.customerName,
+      customerEmail: parsed.data.customerEmail.toLowerCase(),
+      customerContact: parsed.data.customerContact,
+      paymentMethod: parsed.data.paymentMethod,
+      totalAmount,
+      items: resolved.map(({ product, quantity }) => ({ productName: `${product.country} · ${product.data}`, quantity })),
+    }).catch((error) => console.error("order_manager_notification_failed", { name: error instanceof Error ? error.name : "UnknownError" }));
     return Response.json({ order: { orderNumber: number, status, totalAmount, currency: "RUB" } }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof SyntaxError) return Response.json({ error: "Некорректный формат запроса" }, { status: 400 });

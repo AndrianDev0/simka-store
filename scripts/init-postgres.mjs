@@ -27,7 +27,7 @@ try {
       delivery_address TEXT,
       customer_comment TEXT NOT NULL DEFAULT '',
       payment_method TEXT NOT NULL CHECK (payment_method IN ('crypto', 'manager')),
-      status TEXT NOT NULL CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT')),
+      status TEXT NOT NULL CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT', 'PAYMENT_PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED')),
       total_amount INTEGER NOT NULL,
       currency TEXT NOT NULL DEFAULT 'RUB',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -37,6 +37,10 @@ try {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number);
     CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
+
+    -- Older deploys used a three-state check. Replace it with the extensible workflow.
+    ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
+    ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT', 'PAYMENT_PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED'));
 
     CREATE TABLE IF NOT EXISTS order_items (
       id TEXT PRIMARY KEY,

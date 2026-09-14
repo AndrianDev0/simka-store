@@ -11,7 +11,8 @@ export const orders = pgTable("orders", {
   deliveryAddress: text("delivery_address"),
   customerComment: text("customer_comment").notNull().default(""),
   paymentMethod: text("payment_method", { enum: ["crypto", "manager"] }).notNull(),
-  status: text("status", { enum: ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT"] }).notNull(),
+  // Kept as text so new workflow states can be added without a destructive migration.
+  status: text("status").notNull(),
   totalAmount: integer("total_amount").notNull(),
   currency: text("currency").notNull().default("RUB"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
