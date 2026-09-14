@@ -1,0 +1,6 @@
+import { ArrowRight } from "lucide-react";
+import { products, type Product } from "@/lib/catalog";
+
+export function CatalogGrid({ items = products }: { items?: Product[] }) {
+  return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{items.map((product) => <article key={product.id} className="overflow-hidden rounded-2xl border border-[#dce5ee] bg-white"><div className={`h-24 bg-gradient-to-br ${product.tone} p-4 text-white`}><div className="flex items-start justify-between"><span className="rounded-lg bg-white/15 px-2 py-1 text-[11px] font-black uppercase">{product.type}</span><span className="text-3xl">{product.flag}</span></div></div><div className="p-5"><p className="text-xs font-semibold text-[#7a899a]">{product.region} · {product.operator}</p><h2 className="mt-1 text-xl font-black text-[#10213a]">{product.country}</h2><p className="mt-2 text-sm text-[#637389]">{product.data} · {product.days} дней</p><div className="mt-5 flex items-center justify-between"><strong className="text-xl font-black text-[#10213a]">{new Intl.NumberFormat("ru-RU").format(product.price)} ₽</strong><a href={`/product/${product.slug}`} className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-[#1168e8] px-3 text-sm font-bold text-white hover:bg-[#0d56c3]">Подробнее <ArrowRight className="size-4"/></a></div></div></article>)}</div>;
+}

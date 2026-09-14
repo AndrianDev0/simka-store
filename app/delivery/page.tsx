@@ -1,0 +1,3 @@
+import { InfoPage } from "@/app/components/info-page";
+export const metadata = { title: "Доставка — SIMKA" };
+export default function DeliveryPage() { return <InfoPage eyebrow="Доставка" title="eSIM сразу, физическая SIM — с доставкой" description="Способ получения зависит от выбранного товара." cards={[{ title: "eSIM", body: <p>QR-код и инструкция отправляются на email после подтверждения оплаты. Проверьте папку «Спам» и совместимость устройства.</p> }, { title: "Физическая SIM", body: <p>На checkout укажите город и адрес. Срок и стоимость доставки согласуются менеджером и фиксируются в заказе вместе со статусом отправки.</p> }]} />; }

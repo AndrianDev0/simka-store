@@ -1,0 +1,3 @@
+import { InfoPage } from "@/app/components/info-page";
+export const metadata = { title: "Возврат и отмена — SIMKA" };
+export default function ReturnsPage() { return <InfoPage eyebrow="Документы" title="Возврат и отмена заказа" description="Условия зависят от статуса и типа товара." cards={[{ title: "До подтверждения оплаты", body: <p>Свяжитесь с менеджером и укажите номер заказа. Мы проверим возможность отмены и вернёмся с ответом.</p> }, { title: "После активации", body: <p>Для eSIM после выдачи QR-кода, а для физической SIM после отправки возврат рассматривается индивидуально с учётом условий оператора и доставки.</p> }]} />; }

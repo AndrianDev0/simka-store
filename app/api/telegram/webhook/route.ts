@@ -78,23 +78,6 @@ const editableCategoryFields = new Set([
   "canonical_url", "og_title", "og_description", "og_image", "sort_order",
 ]);
 
-function categoryHelp() {
-  return [
-    "Управление категориями:",
-    "/categories — список категорий",
-    "/category_create slug | Название | Описание",
-    "/category_set slug field value",
-    "  field: name, description, image_url, seo_title, seo_description, h1, seo_text, canonical_url, og_title, og_description, og_image, sort_order",
-    "/category_publish slug on|off",
-    "/category_index slug index|noindex",
-    "/category_archive slug — архивировать",
-    "/category_restore slug — вернуть из архива",
-    "/category_delete slug — удалить, если нет товаров",
-    "/category_assign slug productId — назначить товар",
-    "/category_unassign slug productId — снять товар",
-  ].join("\n");
-}
-
 function categoryKeyboard(list: Array<{ id: string; name: string }>): InlineKeyboard {
   const rows = list.map((category) => [{ text: `📁 ${category.name}`, callback_data: `category:view:${category.id}` }]);
   rows.push([{ text: "➕ Создать категорию", callback_data: "category:create_help" }]);
