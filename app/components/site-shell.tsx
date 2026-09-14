@@ -7,7 +7,7 @@ export function SiteShell({ children, eyebrow, title, description }: { children:
     <header className="sticky top-0 z-40 border-b border-border/80 bg-white/90 backdrop-blur-xl">
       <div className="mx-auto flex h-[72px] max-w-[1240px] items-center gap-8 px-4 sm:px-6">
         <Link href="/" className="flex shrink-0 items-center gap-2.5" aria-label="SIMKA — на главную"><span className="grid size-10 place-items-center rounded-[13px] bg-[#1168e8] text-white shadow-[0_7px_18px_rgba(17,104,232,.25)]"><Wifi className="size-5"/></span><span className="text-[21px] font-black tracking-[-0.04em] text-[#10213a]">SIMKA</span></Link>
-        <nav className="hidden items-center gap-6 text-[14px] font-semibold text-[#42526a] lg:flex"><a href="/catalog" className="hover:text-[#1168e8]">Каталог</a><a href="/categories" className="hover:text-[#1168e8]">Категории</a><a href="/countries" className="hover:text-[#1168e8]">Страны</a><a href="/faq" className="hover:text-[#1168e8]">FAQ</a></nav>
+        <nav className="hidden items-center gap-6 text-[14px] font-semibold text-[#42526a] lg:flex"><a href="/catalog" className="hover:text-[#1168e8]">Каталог</a><a href="/categories" className="hover:text-[#1168e8]">Категории</a><a href="/countries" className="hover:text-[#1168e8]">Страны</a><a href="/search" className="hover:text-[#1168e8]">Поиск</a><a href="/faq" className="hover:text-[#1168e8]">FAQ</a></nav>
         <Link href="/?checkout=1" className="ml-auto inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#10213a] px-4 text-sm font-bold text-white hover:bg-[#1168e8]">Открыть магазин <ArrowRight className="size-4"/></Link>
       </div>
     </header>
