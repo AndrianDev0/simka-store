@@ -7,6 +7,16 @@ export type PublicCategory = {
   slug: string;
   name: string;
   description: string;
+  imageUrl: string | null;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  h1: string | null;
+  seoText: string | null;
+  canonicalUrl: string | null;
+  ogTitle: string | null;
+  ogDescription: string | null;
+  ogImage: string | null;
+  noindex: boolean;
   productIds: number[];
 };
 
@@ -22,6 +32,16 @@ export async function getPublicCategories(): Promise<PublicCategory[]> {
       slug: categories.slug,
       name: categories.name,
       description: categories.description,
+      imageUrl: categories.imageUrl,
+      seoTitle: categories.seoTitle,
+      seoDescription: categories.seoDescription,
+      h1: categories.h1,
+      seoText: categories.seoText,
+      canonicalUrl: categories.canonicalUrl,
+      ogTitle: categories.ogTitle,
+      ogDescription: categories.ogDescription,
+      ogImage: categories.ogImage,
+      noindex: categories.noindex,
     }).from(categories)
       .where(and(eq(categories.isPublished, true), isNull(categories.archivedAt)))
       .orderBy(asc(categories.sortOrder), asc(categories.name));

@@ -67,6 +67,9 @@ export async function POST(request: Request) {
   try {
     const parsed = payloadSchema.safeParse(await request.json());
     if (!parsed.success) return Response.json({ error: "Проверьте заполненные поля", fields: parsed.error.flatten().fieldErrors }, { status: 400 });
+    if (parsed.data.paymentMethod === "crypto" && !process.env.CRYPTO_PAYMENT_PROVIDER) {
+      return Response.json({ error: "Криптовалютная оплата пока не подключена. Выберите оплату через менеджера." }, { status: 503 });
+    }
 
     const db = getDb();
     const [existing] = await db.select({ orderNumber: orders.orderNumber, status: orders.status }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
@@ -84,10 +87,10 @@ export async function POST(request: Request) {
     const number = orderNumber();
     const totalAmount = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
     const status = parsed.data.paymentMethod === "manager" ? "WAITING_FOR_MANAGER" : "WAITING_PAYMENT";
-    await db.batch([
-      db.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, totalAmount }),
-      db.insert(orderItems).values(resolved.map(({ product, quantity, lineTotal }) => ({ id: crypto.randomUUID(), orderId: id, productId: product.id, sku: product.sku, productName: `${product.country} · ${product.data}`, simType: product.type, unitPrice: product.price, quantity, lineTotal }))),
-    ]);
+    await db.transaction(async (tx) => {
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, totalAmount });
+      await tx.insert(orderItems).values(resolved.map(({ product, quantity, lineTotal }) => ({ id: crypto.randomUUID(), orderId: id, productId: product.id, sku: product.sku, productName: `${product.country} · ${product.data}`, simType: product.type, unitPrice: product.price, quantity, lineTotal })));
+    });
     void notifyManagers({
       orderNumber: number,
       customerName: parsed.data.customerName,

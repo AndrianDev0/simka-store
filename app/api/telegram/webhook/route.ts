@@ -10,6 +10,7 @@ const updateSchema = z.object({
     text: z.string().max(4096).optional(),
     chat: z.object({ id: z.number().int() }),
     from: z.object({ id: z.number().int() }).optional(),
+    reply_to_message: z.object({ text: z.string().max(4096).optional() }).optional(),
   }).optional(),
   callback_query: z.object({
     id: z.string(),
@@ -33,8 +34,9 @@ function safeEqual(left: string, right: string) {
 }
 
 type InlineKeyboard = { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+type ReplyMarkup = InlineKeyboard | { force_reply: true; selective: true; input_field_placeholder?: string };
 
-async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: InlineKeyboard) {
+async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: ReplyMarkup) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -54,7 +56,7 @@ async function answerCallback(token: string, callbackId: string) {
 function mainKeyboard(): InlineKeyboard {
   return { inline_keyboard: [
     [{ text: "📂 Категории", callback_data: "categories:list" }, { text: "🛒 Заказы", callback_data: "orders:list" }],
-    [{ text: "📊 Статус магазина", callback_data: "status" }, { text: "➕ Создать категорию", callback_data: "category:create_help" }],
+    [{ text: "📊 Статус магазина", callback_data: "status" }, { text: "➕ Создать категорию", callback_data: "category:create" }],
   ] };
 }
 
@@ -67,20 +69,20 @@ async function audit(db: ReturnType<typeof getDb>, adminId: number, action: stri
     id: crypto.randomUUID(),
     adminTelegramId: String(adminId),
     action,
-    entityType: "category",
+    entityType: action.split(".")[0] || "admin",
     entityId,
     metadata: JSON.stringify(metadata),
   });
 }
 
 const editableCategoryFields = new Set([
-  "name", "description", "image_url", "seo_title", "seo_description", "h1", "seo_text",
+  "name", "slug", "description", "image_url", "seo_title", "seo_description", "h1", "seo_text",
   "canonical_url", "og_title", "og_description", "og_image", "sort_order",
 ]);
 
 function categoryKeyboard(list: Array<{ id: string; name: string }>): InlineKeyboard {
   const rows = list.map((category) => [{ text: `📁 ${category.name}`, callback_data: `category:view:${category.id}` }]);
-  rows.push([{ text: "➕ Создать категорию", callback_data: "category:create_help" }]);
+  rows.push([{ text: "➕ Создать категорию", callback_data: "category:create" }]);
   rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
   return { inline_keyboard: rows };
 }
@@ -94,11 +96,23 @@ function categoryActionKeyboard(category: { id: string; isPublished: boolean; no
     [{ text: category.isPublished ? "⏸ Снять с публикации" : "▶️ Опубликовать", callback_data: `category:publish:${category.id}` }],
     [{ text: category.noindex ? "🔓 Разрешить индексацию" : "🔒 Закрыть индексацию", callback_data: `category:index:${category.id}` }],
     [{ text: category.archivedAt ? "♻️ Восстановить" : "📦 Архивировать", callback_data: `category:${category.archivedAt ? "restore" : "archive"}:${category.id}` }],
-    [{ text: "✏️ Изменить текст / SEO", callback_data: `category:edit_help:${category.id}` }],
+    [{ text: "✏️ Изменить текст / SEO", callback_data: `category:edit:${category.id}` }],
     productButtons.slice(0, 2), productButtons.slice(2, 4), productButtons.slice(4, 6),
-    [{ text: "🗑 Удалить категорию", callback_data: `category:delete:${category.id}` }],
+    [{ text: "🗑 Удалить категорию", callback_data: `category:delete_prompt:${category.id}` }],
     [{ text: "◀️ К списку", callback_data: "categories:list" }],
   ] };
+}
+
+function categoryEditKeyboard(categoryId: string): InlineKeyboard {
+  const fields = [
+    ["Название", "name"], ["Slug", "slug"], ["Описание", "description"], ["Изображение", "image_url"],
+    ["SEO title", "seo_title"], ["SEO description", "seo_description"], ["H1", "h1"], ["SEO-текст", "seo_text"],
+    ["Canonical", "canonical_url"], ["OG title", "og_title"], ["OG description", "og_description"], ["OG image", "og_image"],
+    ["Порядок", "sort_order"],
+  ];
+  const rows = fields.map(([label, field]) => [{ text: `✏️ ${label}`, callback_data: `category:field:${categoryId}:${field}` }]);
+  rows.push([{ text: "◀️ К категории", callback_data: `category:view:${categoryId}` }]);
+  return { inline_keyboard: rows };
 }
 
 async function sendCategoryDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, categoryId: string) {
@@ -138,25 +152,33 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, list.length ? "Выберите категорию:" : "Категорий пока нет. Создайте первую:", categoryKeyboard(list));
     return;
   }
-  if (scope === "category" && action === "create_help") {
-    await sendMessage(token, chatId, "Чтобы создать категорию, отправьте одной строкой:\n/category_create slug | Название | Описание\n\nПосле создания остальные действия доступны кнопками.", backKeyboard());
+  if (scope === "category" && action === "create") {
+    await sendMessage(token, chatId, "[CREATE_CATEGORY]\nВведите данные новой категории:\nslug | Название | Описание", { force_reply: true, selective: true, input_field_placeholder: "slug | Название | Описание" });
     return;
   }
-  if (scope === "category" && action === "edit_help" && first) {
-    await sendMessage(token, chatId, "Изменение текстовых полей:\n/category_set slug field value\n\nКнопки управляют публикацией, архивом, SEO-индексацией и товарами.", { inline_keyboard: [[{ text: "◀️ К категории", callback_data: `category:view:${first}` }]] });
+  if (scope === "category" && action === "edit" && first) {
+    await sendMessage(token, chatId, "Выберите поле, которое хотите изменить:", categoryEditKeyboard(first));
+    return;
+  }
+  if (scope === "category" && action === "field" && first && second && editableCategoryFields.has(second)) {
+    await sendMessage(token, chatId, `[EDIT_CATEGORY:${first}:${second}]\nВведите новое значение поля ${second}:`, { force_reply: true, selective: true, input_field_placeholder: "Новое значение" });
+    return;
+  }
+  if (scope === "category" && action === "delete_prompt" && first) {
+    await sendMessage(token, chatId, "Точно удалить категорию? Это действие нельзя отменить.", { inline_keyboard: [[{ text: "Да, удалить", callback_data: `category:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `category:view:${first}` }]] });
     return;
   }
   if (scope === "category" && action === "view" && first) {
     await sendCategoryDetails(db, token, chatId, first);
     return;
   }
-  if (scope === "category" && ["publish", "index", "archive", "restore", "delete", "assign", "unassign"].includes(action) && first) {
+  if (scope === "category" && ["publish", "index", "archive", "restore", "delete_confirm", "assign", "unassign"].includes(action) && first) {
     const [category] = await db.select({ id: categories.id, slug: categories.slug, name: categories.name, isPublished: categories.isPublished, noindex: categories.noindex, archivedAt: categories.archivedAt }).from(categories).where(eq(categories.id, first)).limit(1);
     if (!category) { await sendMessage(token, chatId, "Категория не найдена.", backKeyboard()); return; }
     if (action === "publish") await db.update(categories).set({ isPublished: !category.isPublished, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
     if (action === "index") await db.update(categories).set({ noindex: !category.noindex, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
     if (action === "archive" || action === "restore") await db.update(categories).set({ archivedAt: action === "archive" ? new Date().toISOString() : null, isPublished: action === "archive" ? false : category.isPublished, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
-    if (action === "delete") {
+    if (action === "delete_confirm") {
       const [linked] = await db.select({ productId: productCategories.productId }).from(productCategories).where(eq(productCategories.categoryId, first)).limit(1);
       if (linked) { await sendMessage(token, chatId, "Удаление запрещено: к категории привязаны товары.", { inline_keyboard: [[{ text: "◀️ К категории", callback_data: `category:view:${first}` }]] }); return; }
       await db.delete(categories).where(eq(categories.id, first));
@@ -205,7 +227,22 @@ export async function POST(request: Request) {
       return Response.json({ ok: true });
     }
 
-    const { text = "" } = message!;
+    let { text = "" } = message!;
+    const replyContext = message?.reply_to_message?.text ?? "";
+    if (replyContext.startsWith("[CREATE_CATEGORY]")) {
+      text = `/category_create ${text}`;
+    } else {
+      const editReply = replyContext.match(/^\[EDIT_CATEGORY:([^:]+):([^\]]+)\]/);
+      if (editReply && editableCategoryFields.has(editReply[2])) {
+        const db = getDb();
+        const [category] = await db.select({ slug: categories.slug }).from(categories).where(eq(categories.id, editReply[1])).limit(1);
+        if (!category) {
+          await sendMessage(token, chatId, "Категория больше не существует.", backKeyboard());
+          return Response.json({ ok: true });
+        }
+        text = `/category_set ${category.slug} ${editReply[2]} ${text}`;
+      }
+    }
 
     const command = text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
     if (command === "/start" || command === "/help") {
@@ -226,13 +263,16 @@ export async function POST(request: Request) {
         await sendMessage(token, chatId, "Укажите номер: /paid SIM-YYYYMMDD-XXXXXXXX");
       } else {
         const db = getDb();
-        const [order] = await db.select({ id: orders.id, status: orders.status, orderNumber: orders.orderNumber }).from(orders).where(eq(orders.orderNumber, number)).limit(1);
+        const [order] = await db.select({ id: orders.id, status: orders.status, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod }).from(orders).where(eq(orders.orderNumber, number)).limit(1);
         if (!order) {
           await sendMessage(token, chatId, "Заказ не найден.");
-        } else if (!["WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) {
+        } else if (order.paymentMethod !== "manager") {
+          await sendMessage(token, chatId, "Криптовалютную оплату может подтвердить только защищённый webhook платёжного провайдера.");
+        } else if (order.status !== "WAITING_FOR_MANAGER") {
           await sendMessage(token, chatId, `Нельзя подтвердить заказ в статусе ${order.status}.`);
         } else {
           await db.update(orders).set({ status: "PAID" }).where(eq(orders.id, order.id));
+          await audit(db, from.id, "order.payment_confirmed", order.id, { orderNumber: order.orderNumber, method: "manager" });
           await sendMessage(token, chatId, `Оплата подтверждена. Заказ ${order.orderNumber} → PAID.`);
         }
       }
@@ -263,9 +303,12 @@ export async function POST(request: Request) {
         const [category] = await db.select({ id: categories.id, slug: categories.slug }).from(categories).where(eq(categories.slug, slug)).limit(1);
         if (!category) await sendMessage(token, chatId, "Категория не найдена.");
         else {
-          const value = field === "sort_order" ? Number(rawValue) : rawValue.trim();
-          if (field === "sort_order" && (!Number.isInteger(value) || value < 0 || value > 100000)) {
+          const value: string | number = field === "sort_order" ? Number(rawValue) : rawValue.trim();
+          const numericValue = typeof value === "number" ? value : Number.NaN;
+          if (field === "sort_order" && (!Number.isInteger(numericValue) || numericValue < 0 || numericValue > 100000)) {
             await sendMessage(token, chatId, "sort_order должен быть целым числом от 0 до 100000.");
+          } else if (field === "slug" && (typeof value !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || value.length > 120)) {
+            await sendMessage(token, chatId, "Slug должен содержать только латинские буквы, цифры и дефисы.");
           } else {
             const update: Record<string, unknown> = { updatedAt: new Date().toISOString(), [field.replaceAll("_", "")] : value };
             const columnMap: Record<string, string> = { image_url: "imageUrl", seo_title: "seoTitle", seo_description: "seoDescription", seo_text: "seoText", canonical_url: "canonicalUrl", og_title: "ogTitle", og_description: "ogDescription", og_image: "ogImage", sort_order: "sortOrder" };
