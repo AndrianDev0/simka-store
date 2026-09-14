@@ -1,13 +1,22 @@
-import { env } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/d1";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
 import * as schema from "./schema";
 
+let pool: Pool | null = null;
+
 export function getDb() {
-  if (!env.DB) {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
     throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database."
+      "DATABASE_URL is unavailable. Configure the Render Postgres connection string before using the database."
     );
   }
 
-  return drizzle(env.DB, { schema });
+  pool ??= new Pool({
+    connectionString: databaseUrl,
+    max: 5,
+    ssl: { rejectUnauthorized: false },
+  });
+
+  return drizzle(pool, { schema });
 }

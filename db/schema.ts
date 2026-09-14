@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
 
-export const orders = sqliteTable("orders", {
+export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),
   orderNumber: text("order_number").notNull(),
@@ -22,7 +22,7 @@ export const orders = sqliteTable("orders", {
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
 ]);
 
-export const orderItems = sqliteTable("order_items", {
+export const orderItems = pgTable("order_items", {
   id: text("id").primaryKey(),
   orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
   productId: integer("product_id").notNull(),

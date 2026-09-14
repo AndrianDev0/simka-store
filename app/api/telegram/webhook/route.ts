@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { desc } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -36,7 +35,7 @@ async function sendMessage(token: string, chatId: number, text: string) {
 }
 
 export async function POST(request: Request) {
-  const botEnv = env as unknown as BotEnvironment;
+  const botEnv = process.env as BotEnvironment;
   const secret = botEnv.TELEGRAM_WEBHOOK_SECRET;
   const token = botEnv.TELEGRAM_BOT_TOKEN;
   if (!secret || !token) return new Response(null, { status: 503 });
