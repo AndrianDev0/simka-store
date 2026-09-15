@@ -1,49 +1,72 @@
+/* eslint-disable @next/next/no-img-element -- category images are administrator-managed remote URLs. */
+import { ChevronRight } from "lucide-react";
+import type { Metadata } from "next";
+import { notFound, permanentRedirect } from "next/navigation";
 import { CatalogGrid } from "@/app/components/catalog-grid";
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
-import { products } from "@/lib/catalog";
+import type { Product } from "@/lib/catalog";
 import { getPublicCategories } from "@/lib/categories";
-import type { Metadata } from "next";
-import { notFound } from "next/navigation";
+import { getCatalogCountries, getCatalogProducts } from "@/lib/catalog-repository";
+import { breadcrumbJsonLd, itemListJsonLd, jsonLd, pageMetadata } from "@/lib/seo";
+import { getSlugRedirect } from "@/lib/slug-redirects";
 
-const definitions: Record<string, { name: string; description: string; filter: (type: typeof products[number]) => boolean }> = { esim: { name: "eSIM", description: "Цифровые тарифы с доставкой на email.", filter: (product) => product.type === "eSIM" }, sim: { name: "Физические SIM", description: "Пластиковые SIM-карты с доставкой.", filter: (product) => product.type === "SIM" }, europe: { name: "Европа", description: "Тарифы для поездок по Европе.", filter: (product) => product.region === "Европа" }, asia: { name: "Азия", description: "Связь для направлений Азии.", filter: (product) => product.region === "Азия" }, america: { name: "Америка", description: "Тарифы для стран Америки.", filter: (product) => product.region === "Америка" } };
+const definitions: Record<string, { name: string; description: string; filter: (product: Product) => boolean }> = {
+  esim: { name: "eSIM", description: "Цифровые тарифы для поездок с доставкой кода активации на email после оплаты.", filter: (product) => product.type === "eSIM" },
+  sim: { name: "Физические SIM", description: "Пластиковые SIM-карты для поездок с доставкой по согласованию.", filter: (product) => product.type === "SIM" },
+  europe: { name: "Европа", description: "SIM и eSIM для поездок по странам Европы.", filter: (product) => product.region === "Европа" },
+  asia: { name: "Азия", description: "SIM и eSIM для поездок по странам Азии.", filter: (product) => product.region === "Азия" },
+  america: { name: "Америка", description: "SIM и eSIM для поездок по странам Америки.", filter: (product) => product.region === "Америка" },
+};
 
 export function generateStaticParams() { return Object.keys(definitions).map((slug) => ({ slug })); }
-
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
+  const [products, published] = await Promise.all([getCatalogProducts(), getPublicCategories()]);
   const predefined = definitions[slug];
-  if (predefined) return { title: `${predefined.name} — SIMKA`, description: predefined.description };
-  const category = (await getPublicCategories()).find((item) => item.slug === slug);
-  if (!category) return {};
-  const title = category.seoTitle || category.name;
-  const description = category.seoDescription || category.description;
-  return {
-    title,
-    description,
-    robots: category.noindex ? { index: false, follow: false } : { index: true, follow: true },
-    alternates: category.canonicalUrl ? { canonical: category.canonicalUrl } : undefined,
-    openGraph: {
-      title: category.ogTitle || title,
-      description: category.ogDescription || description,
-      images: category.ogImage ? [category.ogImage] : category.imageUrl ? [category.imageUrl] : undefined,
-    },
-  };
+  const managed = predefined ? undefined : published.find((item) => item.slug === slug);
+  if (!predefined && !managed) return pageMetadata({ title: "Категория не найдена", description: "Такой категории нет в каталоге SIMKA.", path: `/category/${encodeURIComponent(slug)}`, noindex: true });
+  const items = predefined ? products.filter(predefined.filter) : products.filter((product) => managed ? product.categoryIds.includes(managed.id) : false);
+  const name = predefined?.name || managed?.name || "Категория";
+  const title = managed?.seoTitle || (slug === "esim"
+    ? "eSIM для путешествий: тарифы по странам"
+    : slug === "sim"
+      ? "Физические SIM-карты для путешествий"
+      : `${name}: SIM и eSIM для поездок`);
+  const description = managed?.seoDescription || managed?.description || predefined?.description || `Тарифы ${name} в каталоге SIMKA.`;
+  return pageMetadata({ title, description, path: `/category/${encodeURIComponent(slug)}`, canonical: managed?.canonicalUrl, image: managed?.ogImage || managed?.imageUrl, imageAlt: `Категория ${name}`, socialTitle: managed?.ogTitle, socialDescription: managed?.ogDescription, noindex: Boolean(managed?.noindex) || items.length === 0 });
 }
 
 export default async function CategoryPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const category = definitions[slug];
-  const published = await getPublicCategories();
-  const managed = published.find((item) => item.slug === slug);
-  if (!category && !managed) notFound();
-  const items = category
-    ? products.filter(category.filter)
-    : managed
-      ? products.filter((product) => managed.productIds.includes(product.id))
-      : [];
-  const title = category?.name ?? managed?.h1 ?? managed?.name ?? "Категория";
-  const description = category?.description ?? managed?.description ?? "Опубликованная категория тарифов SIMKA.";
-  return <SiteShell eyebrow="Категория" title={title} description={description}><ContentSection><CatalogGrid items={items}/>{!items.length&&<p className="text-sm text-[#637389]">В этой категории пока нет тарифов.</p>}{managed?.seoText&&<section className="mt-10 max-w-3xl border-t border-[#dbe5ef] pt-8"><h2 className="text-2xl font-black text-[#10213a]">О категории</h2><p className="mt-4 whitespace-pre-line text-sm leading-7 text-[#52657a]">{managed.seoText}</p></section>}</ContentSection></SiteShell>;
+  const [products, published, countries] = await Promise.all([getCatalogProducts(), getPublicCategories(), getCatalogCountries()]);
+  const predefined = definitions[slug];
+  const managed = predefined ? undefined : published.find((item) => item.slug === slug);
+  if (!predefined && !managed) {
+    const redirect = await getSlugRedirect("category", slug);
+    if (redirect) permanentRedirect(`/category/${encodeURIComponent(redirect)}`);
+    notFound();
+  }
+  const items = predefined ? products.filter(predefined.filter) : products.filter((product) => managed ? product.categoryIds.includes(managed.id) : false);
+  const parent = managed?.parentId ? published.find((item) => item.id === managed.parentId) : undefined;
+  const children = managed ? published.filter((item) => item.parentId === managed.id) : [];
+  const title = managed?.h1 || predefined?.name || managed?.name || "Категория";
+  const name = predefined?.name || managed?.name || title;
+  const description = managed?.description || predefined?.description || "Опубликованная категория тарифов SIMKA.";
+  const countryIds = new Set(items.map((product) => product.countryId));
+  const relatedCountries = countries.filter((country) => countryIds.has(country.id));
+  const canonicalPath = `/category/${encodeURIComponent(slug)}`;
+  const breadcrumbItems = [{ name: "Главная", path: "/" }, { name: "Категории", path: "/categories" }, ...(parent ? [{ name: parent.name, path: `/category/${encodeURIComponent(parent.slug)}` }] : []), { name, path: canonicalPath }];
+  const breadcrumbs = breadcrumbJsonLd(breadcrumbItems);
+  const listSchema = itemListJsonLd(items.map((product) => ({ name: product.name, path: `/product/${encodeURIComponent(product.slug)}` })));
+
+  return <SiteShell eyebrow={managed?.parentId ? "Подкатегория" : "Категория"} title={title} description={description}><ContentSection>
+    <nav aria-label="Хлебные крошки" className="mb-7 overflow-x-auto text-sm text-[#637389]"><ol className="flex min-w-max items-center gap-1.5">{breadcrumbItems.map((item, index) => <li key={item.path} className="flex items-center gap-1.5">{index > 0 && <ChevronRight aria-hidden="true" className="size-4" />}{index === breadcrumbItems.length - 1 ? <span aria-current="page" className="font-semibold text-[#263c57]">{item.name}</span> : <a href={item.path} className="hover:text-[#1168e8]">{item.name}</a>}</li>)}</ol></nav>
+    {managed?.imageUrl && <img src={managed.imageUrl} alt={`Категория ${managed.name}`} className="mb-8 aspect-[16/6] w-full rounded-2xl border border-[#dbe5ef] object-cover" />}
+    {children.length > 0 && <section className="mb-9"><h2 className="text-xl font-black text-[#10213a]">Подкатегории</h2><div className="mt-4 flex flex-wrap gap-3">{children.map((child) => <a key={child.id} href={`/category/${encodeURIComponent(child.slug)}`} className="inline-flex min-h-11 items-center rounded-xl border border-[#cddbea] bg-[#f7fbff] px-4 font-bold text-[#28577f] hover:bg-[#edf5ff]">{child.name}</a>)}</div></section>}
+    {items.length ? <CatalogGrid items={items} /> : <p className="rounded-2xl border border-dashed border-[#b8c9da] p-8 text-sm text-[#637389]">В этой категории пока нет опубликованных тарифов.</p>}
+    {relatedCountries.length > 0 && <section className="mt-10 border-t border-[#dbe5ef] pt-8"><h2 className="text-xl font-black text-[#10213a]">Страны в этой категории</h2><div className="mt-4 flex flex-wrap gap-3">{relatedCountries.map((country) => <a key={country.id} href={`/country/${encodeURIComponent(country.slug)}`} className="inline-flex min-h-11 items-center rounded-xl border border-[#cddbea] px-4 font-bold text-[#28577f] hover:bg-[#edf5ff]">{country.flag} {country.name}</a>)}</div></section>}
+    {managed?.seoText && <section className="mt-10 max-w-3xl border-t border-[#dbe5ef] pt-8"><h2 className="text-2xl font-black text-[#10213a]">О категории</h2><p className="mt-4 whitespace-pre-line text-sm leading-7 text-[#52657a]">{managed.seoText}</p></section>}
+  </ContentSection><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(breadcrumbs) }} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(listSchema) }} /></SiteShell>;
 }

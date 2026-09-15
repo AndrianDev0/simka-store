@@ -1,3 +1,4 @@
 import { InfoPage } from "@/app/components/info-page";
-export const metadata = { title: "Политика конфиденциальности — SIMKA" };
+import { pageMetadata } from "@/lib/seo";
+export const metadata = pageMetadata({ title: "Политика конфиденциальности", description: "Как SIMKA обрабатывает и защищает данные, необходимые для оформления заказа, доставки и поддержки клиента.", path: "/privacy" });
 export default function PrivacyPage() { return <InfoPage eyebrow="Документы" title="Политика конфиденциальности" description="Как SIMKA обрабатывает данные, необходимые для заказа и поддержки." cards={[{ title: "Какие данные нужны", body: <p>Имя, email, контакт для связи, адрес доставки физической SIM и комментарий — только для оформления, исполнения и поддержки заказа.</p> }, { title: "Хранение и доступ", body: <p>Данные хранятся в защищённой базе сервиса и доступны только сотрудникам, которым они нужны для обработки заказа. Мы не публикуем их в каталоге.</p> }]} />; }

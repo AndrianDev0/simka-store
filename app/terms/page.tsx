@@ -1,3 +1,4 @@
 import { InfoPage } from "@/app/components/info-page";
-export const metadata = { title: "Условия использования — SIMKA" };
+import { pageMetadata } from "@/lib/seo";
+export const metadata = pageMetadata({ title: "Условия использования", description: "Правила использования сайта SIMKA, выбора тарифа, создания заказа, проверки цены и доступности SIM или eSIM.", path: "/terms" });
 export default function TermsPage() { return <InfoPage eyebrow="Документы" title="Условия использования" description="Основные правила пользования каталогом и оформлением заказа." cards={[{ title: "Каталог", body: <p>Цены и доступность проверяются в момент создания заказа. Характеристики тарифа зависят от оператора и направления.</p> }, { title: "Заказ", body: <p>Заказ считается созданным после успешного ответа сервера с уникальным номером. Способ оплаты и дальнейшие статусы отображаются в подтверждении.</p> }]} />; }

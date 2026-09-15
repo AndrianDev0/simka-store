@@ -1,8 +1,10 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, like, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, categories, orderItems, orders, productCategories } from "@/db/schema";
-import { getProductById } from "@/lib/catalog";
+import { adminAuditLog, catalogProducts, categories, orderItems, orders, productCategories, productVariants } from "@/db/schema";
+import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
+import { recordSlugRedirect } from "@/lib/slug-redirects";
+import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
 
 const updateSchema = z.object({
   update_id: z.number().int(),
@@ -42,6 +44,7 @@ async function sendMessage(token: string, chatId: number, text: string, replyMar
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error("TELEGRAM_SEND_FAILED");
 }
@@ -51,13 +54,15 @@ async function answerCallback(token: string, callbackId: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ callback_query_id: callbackId }),
+    signal: AbortSignal.timeout(10_000),
   });
 }
 
 function mainKeyboard(): InlineKeyboard {
   return { inline_keyboard: [
-    [{ text: "📂 Категории", callback_data: "categories:list" }, { text: "🛒 Заказы", callback_data: "orders:list" }],
-    [{ text: "📊 Статус магазина", callback_data: "status" }, { text: "➕ Создать категорию", callback_data: "category:create" }],
+    [{ text: "📦 Товары", callback_data: "products:list" }, { text: "📂 Категории", callback_data: "categories:list" }],
+    [{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }],
+    [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "📊 Статус магазина", callback_data: "status" }],
   ] };
 }
 
@@ -120,25 +125,56 @@ const editableCategoryFields = new Set([
   "name", "slug", "description", "image_url", "seo_title", "seo_description", "h1", "seo_text",
   "canonical_url", "og_title", "og_description", "og_image", "sort_order",
 ]);
+const reservedCategorySlugs = new Set(["esim", "sim", "europe", "asia", "america"]);
+const nullableCategoryFields = new Set(["image_url", "seo_title", "seo_description", "h1", "seo_text", "canonical_url", "og_title", "og_description", "og_image"]);
+
+function validAdminUrl(value: string, allowRelative = false) {
+  if (allowRelative && value.startsWith("/")) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+const categoryFieldByCode = {
+  n: "name",
+  s: "slug",
+  d: "description",
+  im: "image_url",
+  st: "seo_title",
+  sd: "seo_description",
+  h: "h1",
+  sx: "seo_text",
+  cu: "canonical_url",
+  ot: "og_title",
+  od: "og_description",
+  oi: "og_image",
+  so: "sort_order",
+} as const;
 
 function categoryKeyboard(list: Array<{ id: string; name: string }>): InlineKeyboard {
-  const rows = list.map((category) => [{ text: `📁 ${category.name}`, callback_data: `category:view:${category.id}` }]);
+  const rows = list.slice(0, 80).map((category) => [{ text: `📁 ${category.name.slice(0, 54)}`, callback_data: `category:view:${category.id}` }]);
   rows.push([{ text: "➕ Создать категорию", callback_data: "category:create" }]);
   rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
   return { inline_keyboard: rows };
 }
 
-function categoryActionKeyboard(category: { id: string; isPublished: boolean; noindex: boolean; archivedAt: string | null }, productIds: Set<number>): InlineKeyboard {
-  const productButtons = [1, 2, 3, 4, 5, 6].map((productId) => ({
-    text: `${productIds.has(productId) ? "✅ Снять" : "➕ Назначить"} товар ${productId}`,
-    callback_data: `category:${productIds.has(productId) ? "unassign" : "assign"}:${category.id}:${productId}`,
+function categoryActionKeyboard(category: { id: string; isPublished: boolean; noindex: boolean; archivedAt: string | null }, productIds: Set<number>, products: Array<{ id: number; name: string }>): InlineKeyboard {
+  const productButtons = products.slice(0, 80).map((product) => ({
+    text: `${productIds.has(product.id) ? "✅ Снять" : "➕ Назначить"} ${product.id} · ${product.name.slice(0, 28)}`,
+    callback_data: `ca:${category.id.slice(0, 12)}:${product.id}`,
   }));
+  const productRows: Array<Array<InlineButton>> = [];
+  for (let index = 0; index < productButtons.length; index += 2) productRows.push(productButtons.slice(index, index + 2));
   return { inline_keyboard: [
     [{ text: category.isPublished ? "⏸ Снять с публикации" : "▶️ Опубликовать", callback_data: `category:publish:${category.id}` }],
     [{ text: category.noindex ? "🔓 Разрешить индексацию" : "🔒 Закрыть индексацию", callback_data: `category:index:${category.id}` }],
     [{ text: category.archivedAt ? "♻️ Восстановить" : "📦 Архивировать", callback_data: `category:${category.archivedAt ? "restore" : "archive"}:${category.id}` }],
+    [{ text: "🗂 Выбрать родительскую категорию", callback_data: `category:parents:${category.id}` }],
     [{ text: "✏️ Изменить текст / SEO", callback_data: `category:edit:${category.id}` }],
-    productButtons.slice(0, 2), productButtons.slice(2, 4), productButtons.slice(4, 6),
+    ...productRows,
     [{ text: "🗑 Удалить категорию", callback_data: `category:delete_prompt:${category.id}` }],
     [{ text: "◀️ К списку", callback_data: "categories:list" }],
   ] };
@@ -146,27 +182,49 @@ function categoryActionKeyboard(category: { id: string; isPublished: boolean; no
 
 function categoryEditKeyboard(categoryId: string): InlineKeyboard {
   const fields = [
-    ["Название", "name"], ["Slug", "slug"], ["Описание", "description"], ["Изображение", "image_url"],
-    ["SEO title", "seo_title"], ["SEO description", "seo_description"], ["H1", "h1"], ["SEO-текст", "seo_text"],
-    ["Canonical", "canonical_url"], ["OG title", "og_title"], ["OG description", "og_description"], ["OG image", "og_image"],
-    ["Порядок", "sort_order"],
+    ["Название", "n"], ["Slug", "s"], ["Описание", "d"], ["Изображение", "im"],
+    ["SEO title", "st"], ["SEO description", "sd"], ["H1", "h"], ["SEO-текст", "sx"],
+    ["Canonical", "cu"], ["OG title", "ot"], ["OG description", "od"], ["OG image", "oi"],
+    ["Порядок", "so"],
   ];
-  const rows = fields.map(([label, field]) => [{ text: `✏️ ${label}`, callback_data: `category:field:${categoryId}:${field}` }]);
+  const rows = fields.map(([label, fieldCode]) => [{ text: `✏️ ${label}`, callback_data: `category:field:${categoryId}:${fieldCode}` }]);
   rows.push([{ text: "◀️ К категории", callback_data: `category:view:${categoryId}` }]);
   return { inline_keyboard: rows };
 }
 
 async function sendCategoryDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, categoryId: string) {
-  const [category] = await db.select({ id: categories.id, name: categories.name, slug: categories.slug, description: categories.description, isPublished: categories.isPublished, noindex: categories.noindex, archivedAt: categories.archivedAt, sortOrder: categories.sortOrder }).from(categories).where(eq(categories.id, categoryId)).limit(1);
+  const [category] = await db.select({ id: categories.id, parentId: categories.parentId, name: categories.name, slug: categories.slug, description: categories.description, isPublished: categories.isPublished, noindex: categories.noindex, archivedAt: categories.archivedAt, sortOrder: categories.sortOrder }).from(categories).where(eq(categories.id, categoryId)).limit(1);
   if (!category) {
     await sendMessage(token, chatId, "Категория не найдена.", backKeyboard());
     return;
   }
   const links = await db.select({ productId: productCategories.productId }).from(productCategories).where(eq(productCategories.categoryId, categoryId));
+  const products = await db.select({ id: catalogProducts.id, name: catalogProducts.name }).from(catalogProducts).where(isNull(catalogProducts.archivedAt)).orderBy(asc(catalogProducts.sortOrder), asc(catalogProducts.id));
+  const [parent] = category.parentId ? await db.select({ name: categories.name }).from(categories).where(eq(categories.id, category.parentId)).limit(1) : [];
   const productIds = new Set(links.map((link) => link.productId));
   const status = category.archivedAt ? "ARCHIVED" : category.isPublished ? "PUBLISHED" : "DRAFT";
-  const text = `📁 ${category.name}\nSlug: ${category.slug}\nСтатус: ${status}\nИндексация: ${category.noindex ? "NOINDEX" : "INDEX"}\nПорядок: ${category.sortOrder}\nТовары: ${productIds.size ? [...productIds].join(", ") : "нет"}\n\n${category.description || "Описание не задано."}`;
-  await sendMessage(token, chatId, text, categoryActionKeyboard(category, productIds));
+  const description = category.description ? `${category.description.slice(0, 2999)}${category.description.length > 3000 ? "…" : ""}` : "Описание не задано.";
+  const text = `📁 ${category.name.slice(0, 160)}\nSlug: ${category.slug}\nРодитель: ${parent?.name || "нет"}\nСтатус: ${status}\nИндексация: ${category.noindex ? "NOINDEX" : "INDEX"}\nПорядок: ${category.sortOrder}\nТовары: ${productIds.size ? [...productIds].join(", ") : "нет"}\n\n${description}`;
+  await sendMessage(token, chatId, text, categoryActionKeyboard(category, productIds, products));
+}
+
+async function resolveCategoryByPrefix(db: ReturnType<typeof getDb>, prefix: string) {
+  if (!/^[0-9a-f-]{8,36}$/i.test(prefix)) return null;
+  const matches = await db.select({ id: categories.id, name: categories.name, parentId: categories.parentId }).from(categories).where(like(categories.id, `${prefix}%`)).limit(2);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function createsCategoryCycle(db: ReturnType<typeof getDb>, childId: string, proposedParentId: string) {
+  const hierarchy = await db.select({ id: categories.id, parentId: categories.parentId }).from(categories);
+  const parentById = new Map(hierarchy.map((item) => [item.id, item.parentId]));
+  let cursor: string | null = proposedParentId;
+  const visited = new Set<string>();
+  while (cursor) {
+    if (cursor === childId || visited.has(cursor)) return true;
+    visited.add(cursor);
+    cursor = parentById.get(cursor) ?? null;
+  }
+  return false;
 }
 
 async function handleCallback(token: string, chatId: number, adminId: number, data: string) {
@@ -176,6 +234,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, "SIMKA Admin\nВыберите раздел:", mainKeyboard());
     return;
   }
+  if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
   if (data === "status") {
     const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
@@ -204,16 +263,57 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "order" && action === "cancel_confirm" && first) {
-    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, customerName: orders.customerName, customerEmail: orders.customerEmail, inventoryReserved: orders.inventoryReserved }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
     if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
     const cancellableStatuses = ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"];
     if (!cancellableStatuses.includes(order.status)) {
       await sendMessage(token, chatId, `Заказ в статусе ${order.status} отменить нельзя.`, { inline_keyboard: [[{ text: "◀️ К заказу", callback_data: `order:view:${order.orderNumber}` }]] });
       return;
     }
-    await db.update(orders).set({ status: "CANCELLED" }).where(and(eq(orders.id, order.id), eq(orders.status, order.status)));
+    const cancelledItems = await db.select({ productId: orderItems.productId, variantId: orderItems.variantId, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, order.id));
+    await db.transaction(async (tx) => {
+      const changed = await tx.update(orders).set({ status: "CANCELLED", inventoryReserved: false }).where(and(eq(orders.id, order.id), eq(orders.status, order.status))).returning({ id: orders.id });
+      if (!changed[0]) throw new Error("ORDER_STATUS_CHANGED");
+      const productQuantities = new Map<number, number>();
+      const variantQuantities = new Map<number, number>();
+      for (const item of order.inventoryReserved ? cancelledItems : []) {
+        productQuantities.set(item.productId, (productQuantities.get(item.productId) ?? 0) + item.quantity);
+        if (item.variantId) variantQuantities.set(item.variantId, (variantQuantities.get(item.variantId) ?? 0) + item.quantity);
+      }
+      for (const [productId, quantity] of productQuantities) {
+        await tx.update(catalogProducts).set({
+          stockQuantity: sql`${catalogProducts.stockQuantity} + ${quantity}`,
+          available: sql`CASE WHEN ${catalogProducts.stockQuantity} = 0 THEN TRUE ELSE ${catalogProducts.available} END`,
+          availabilityStatus: sql`CASE WHEN ${catalogProducts.stockQuantity} = 0 THEN 'IN_STOCK' ELSE ${catalogProducts.availabilityStatus} END`,
+          updatedAt: new Date().toISOString(),
+        }).where(and(eq(catalogProducts.id, productId), sql`${catalogProducts.stockQuantity} IS NOT NULL`));
+      }
+      for (const [variantId, quantity] of variantQuantities) {
+        await tx.update(productVariants).set({
+          stockQuantity: sql`${productVariants.stockQuantity} + ${quantity}`,
+          available: sql`CASE WHEN ${productVariants.stockQuantity} = 0 THEN TRUE ELSE ${productVariants.available} END`,
+          availabilityStatus: sql`CASE WHEN ${productVariants.stockQuantity} = 0 THEN 'IN_STOCK' ELSE ${productVariants.availabilityStatus} END`,
+          updatedAt: new Date().toISOString(),
+        }).where(and(eq(productVariants.id, variantId), sql`${productVariants.stockQuantity} IS NOT NULL`));
+      }
+    });
     await audit(db, adminId, "order.cancel", order.id, { orderNumber: order.orderNumber, from: order.status, to: "CANCELLED" });
-    await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
+    let cancellationEmailDelivered = false;
+    try {
+      const safeName = escapeHtml(order.customerName);
+      const safeNumber = escapeHtml(order.orderNumber);
+      const delivery = await sendTransactionalEmail({
+        to: order.customerEmail,
+        subject: `Заказ ${order.orderNumber} отменён — SIMKA`,
+        text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} отменён. Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа — возврат обрабатывается отдельно.`,
+        html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ отменён</h1><p>Здравствуйте, ${safeName}!</p><p>Заказ <strong>${safeNumber}</strong> отменён.</p><p>Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа — возврат обрабатывается отдельно.</p></div>`,
+      });
+      cancellationEmailDelivered = delivery.delivered;
+    } catch (error) {
+      console.error("order_cancellation_email_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+    }
+    await audit(db, adminId, "order.cancellation_email", order.id, { delivered: cancellationEmailDelivered });
+    await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.\n${cancellationEmailDelivered ? "Клиенту отправлено письмо об отмене." : "Автоматическое письмо клиенту не доставлено — сообщите об отмене вручную."}`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
     return;
   }
   if (scope === "order" && ["paid_confirm", "process", "ship", "deliver", "complete"].includes(action) && first) {
@@ -253,8 +353,49 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, "Выберите поле, которое хотите изменить:", categoryEditKeyboard(first));
     return;
   }
-  if (scope === "category" && action === "field" && first && second && editableCategoryFields.has(second)) {
-    await sendMessage(token, chatId, `[EDIT_CATEGORY:${first}:${second}]\nВведите новое значение поля ${second}:`, { force_reply: true, selective: true, input_field_placeholder: "Новое значение" });
+  if (scope === "category" && action === "parents" && first) {
+    const [current, candidates] = await Promise.all([
+      db.select({ id: categories.id }).from(categories).where(eq(categories.id, first)).limit(1),
+      db.select({ id: categories.id, name: categories.name }).from(categories).where(isNull(categories.archivedAt)).orderBy(asc(categories.sortOrder), asc(categories.name)).limit(80),
+    ]);
+    if (!current[0]) { await sendMessage(token, chatId, "Категория не найдена.", backKeyboard()); return; }
+    const rows: Array<Array<InlineButton>> = [[{ text: "Без родительской категории", callback_data: `cp:${first.slice(0, 12)}:root` }]];
+    for (const candidate of candidates.filter((item) => item.id !== first)) {
+      rows.push([{ text: `📁 ${candidate.name.slice(0, 40)}`, callback_data: `cp:${first.slice(0, 12)}:${candidate.id.slice(0, 12)}` }]);
+    }
+    rows.push([{ text: "◀️ К категории", callback_data: `category:view:${first}` }]);
+    await sendMessage(token, chatId, "Выберите родительскую категорию:", { inline_keyboard: rows });
+    return;
+  }
+  if (scope === "cp" && action && first) {
+    const child = await resolveCategoryByPrefix(db, action);
+    const parent = first === "root" ? null : await resolveCategoryByPrefix(db, first);
+    if (!child || (first !== "root" && !parent)) { await sendMessage(token, chatId, "Категория не найдена или короткий идентификатор неоднозначен.", backKeyboard()); return; }
+    if (parent && await createsCategoryCycle(db, child.id, parent.id)) {
+      await sendMessage(token, chatId, "Такую связь создать нельзя: получится циклическая вложенность.", { inline_keyboard: [[{ text: "◀️ К категории", callback_data: `category:view:${child.id}` }]] });
+      return;
+    }
+    await db.update(categories).set({ parentId: parent?.id ?? null, updatedAt: new Date().toISOString() }).where(eq(categories.id, child.id));
+    await audit(db, adminId, "category.set_parent", child.id, { parentId: parent?.id ?? null });
+    await sendCategoryDetails(db, token, chatId, child.id);
+    return;
+  }
+  if (scope === "ca" && action && first) {
+    const category = await resolveCategoryByPrefix(db, action);
+    const productId = Number(first);
+    const [product] = Number.isInteger(productId) ? await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1) : [];
+    if (!category || !product) { await sendMessage(token, chatId, "Категория или товар не найдены.", backKeyboard()); return; }
+    const [linked] = await db.select({ productId: productCategories.productId }).from(productCategories).where(and(eq(productCategories.categoryId, category.id), eq(productCategories.productId, productId))).limit(1);
+    if (linked) await db.delete(productCategories).where(and(eq(productCategories.categoryId, category.id), eq(productCategories.productId, productId)));
+    else await db.insert(productCategories).values({ categoryId: category.id, productId });
+    await audit(db, adminId, linked ? "category.unassign" : "category.assign", category.id, { productId });
+    await sendCategoryDetails(db, token, chatId, category.id);
+    return;
+  }
+  if (scope === "category" && action === "field" && first && second) {
+    const field = categoryFieldByCode[second as keyof typeof categoryFieldByCode];
+    if (!field) return;
+    await sendMessage(token, chatId, `[EDIT_CATEGORY:${first}:${field}]\nВведите новое значение поля ${field}:`, { force_reply: true, selective: true, input_field_placeholder: "Новое значение" });
     return;
   }
   if (scope === "category" && action === "delete_prompt" && first) {
@@ -274,6 +415,8 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     if (action === "delete_confirm") {
       const [linked] = await db.select({ productId: productCategories.productId }).from(productCategories).where(eq(productCategories.categoryId, first)).limit(1);
       if (linked) { await sendMessage(token, chatId, "Удаление запрещено: к категории привязаны товары.", { inline_keyboard: [[{ text: "◀️ К категории", callback_data: `category:view:${first}` }]] }); return; }
+      const [child] = await db.select({ id: categories.id }).from(categories).where(eq(categories.parentId, first)).limit(1);
+      if (child) { await sendMessage(token, chatId, "Удаление запрещено: у категории есть подкатегории.", { inline_keyboard: [[{ text: "◀️ К категории", callback_data: `category:view:${first}` }]] }); return; }
       await db.delete(categories).where(eq(categories.id, first));
       await audit(db, adminId, "category.delete", first, { slug: category.slug });
       await sendMessage(token, chatId, `Категория ${category.name} удалена.`, { inline_keyboard: [[{ text: "◀️ К списку", callback_data: "categories:list" }]] });
@@ -281,7 +424,8 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     }
     if ((action === "assign" || action === "unassign") && second) {
       const productId = Number(second);
-      if (!getProductById(productId)) { await sendMessage(token, chatId, "Неизвестный товар."); return; }
+      const [product] = Number.isInteger(productId) ? await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1) : [];
+      if (!product) { await sendMessage(token, chatId, "Неизвестный товар."); return; }
       if (action === "assign") await db.insert(productCategories).values({ categoryId: first, productId }).onConflictDoNothing();
       else await db.delete(productCategories).where(and(eq(productCategories.categoryId, first), eq(productCategories.productId, productId)));
     }
@@ -322,6 +466,7 @@ export async function POST(request: Request) {
 
     let { text = "" } = message!;
     const replyContext = message?.reply_to_message?.text ?? "";
+    if (await handleCatalogAdminMessage({ token, chatId, adminId: from.id }, text, replyContext)) return Response.json({ ok: true });
     if (replyContext.startsWith("[CREATE_CATEGORY]")) {
       text = `/category_create ${text}`;
     } else {
@@ -379,15 +524,21 @@ export async function POST(request: Request) {
       const [slug, name, description = ""] = parts;
       if (!slug || !name || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 120 || name.length > 160) {
         await sendMessage(token, chatId, "Формат: /category_create slug | Название | Описание\nSlug: латиница, цифры и дефисы.");
+      } else if (reservedCategorySlugs.has(slug)) {
+        await sendMessage(token, chatId, `Slug ${slug} зарезервирован системной категорией. Выберите другой slug.`);
       } else {
         const db = getDb();
-        const id = crypto.randomUUID();
-        await db.insert(categories).values({ id, slug, name, description, noindex: true, isPublished: false, sortOrder: 0 });
-        await audit(db, from.id, "category.create", id, { slug, name });
-        await sendMessage(token, chatId, `Категория создана: ${name} (${slug}). По умолчанию скрыта и закрыта от индексации.`, { inline_keyboard: [[{ text: "📂 Открыть список", callback_data: "categories:list" }]] });
+        const [existing] = await db.select({ id: categories.id }).from(categories).where(eq(categories.slug, slug)).limit(1);
+        if (existing) await sendMessage(token, chatId, `Категория со slug ${slug} уже существует.`);
+        else {
+          const id = crypto.randomUUID();
+          await db.insert(categories).values({ id, slug, name, description, noindex: true, isPublished: false, sortOrder: 0 });
+          await audit(db, from.id, "category.create", id, { slug, name });
+          await sendMessage(token, chatId, `Категория создана: ${name} (${slug}). По умолчанию скрыта и закрыта от индексации.`, { inline_keyboard: [[{ text: "📂 Открыть список", callback_data: "categories:list" }]] });
+        }
       }
     } else if (command === "/category_set") {
-      const match = text.trim().match(/^\/category_set\s+(\S+)\s+(\S+)\s+([\\s\\S]+)$/i);
+      const match = text.trim().match(/^\/category_set\s+(\S+)\s+(\S+)\s+([\s\S]+)$/i);
       if (!match || !editableCategoryFields.has(match[2])) {
         await sendMessage(token, chatId, "Формат: /category_set slug field value\nДопустимые field перечислены в /help.");
       } else {
@@ -396,21 +547,41 @@ export async function POST(request: Request) {
         const [category] = await db.select({ id: categories.id, slug: categories.slug }).from(categories).where(eq(categories.slug, slug)).limit(1);
         if (!category) await sendMessage(token, chatId, "Категория не найдена.");
         else {
-          const value: string | number = field === "sort_order" ? Number(rawValue) : rawValue.trim();
+          const trimmedValue = rawValue.trim();
+          const value: string | number | null = field === "sort_order" ? Number(rawValue) : nullableCategoryFields.has(field) && trimmedValue === "-" ? null : trimmedValue;
           const numericValue = typeof value === "number" ? value : Number.NaN;
           if (field === "sort_order" && (!Number.isInteger(numericValue) || numericValue < 0 || numericValue > 100000)) {
             await sendMessage(token, chatId, "sort_order должен быть целым числом от 0 до 100000.");
           } else if (field === "slug" && (typeof value !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || value.length > 120)) {
             await sendMessage(token, chatId, "Slug должен содержать только латинские буквы, цифры и дефисы.");
+          } else if (field === "slug" && typeof value === "string" && reservedCategorySlugs.has(value)) {
+            await sendMessage(token, chatId, `Slug ${value} зарезервирован системной категорией.`);
+          } else if (field === "name" && (typeof value !== "string" || !value || value.length > 160)) {
+            await sendMessage(token, chatId, "Название должно содержать от 1 до 160 символов.");
+          } else if (["seo_title", "h1", "og_title"].includes(field) && typeof value === "string" && value.length > 300) {
+            await sendMessage(token, chatId, "Значение слишком длинное: максимум 300 символов.");
+          } else if (["seo_description", "og_description"].includes(field) && typeof value === "string" && value.length > 1000) {
+            await sendMessage(token, chatId, "Описание слишком длинное: максимум 1000 символов.");
+          } else if (["description", "seo_text"].includes(field) && typeof value === "string" && value.length > 4000) {
+            await sendMessage(token, chatId, "Текст слишком длинный: максимум 4000 символов.");
+          } else if (["image_url", "og_image"].includes(field) && typeof value === "string" && !validAdminUrl(value)) {
+            await sendMessage(token, chatId, "Укажите полный URL изображения с http:// или https:// либо отправьте - для очистки.");
+          } else if (field === "canonical_url" && typeof value === "string" && !validAdminUrl(value, true)) {
+            await sendMessage(token, chatId, "Canonical должен быть полным http(s)-URL или относительным путём, начинающимся с /.");
           } else {
-            const update: Record<string, unknown> = { updatedAt: new Date().toISOString(), [field.replaceAll("_", "")] : value };
-            const columnMap: Record<string, string> = { image_url: "imageUrl", seo_title: "seoTitle", seo_description: "seoDescription", seo_text: "seoText", canonical_url: "canonicalUrl", og_title: "ogTitle", og_description: "ogDescription", og_image: "ogImage", sort_order: "sortOrder" };
-            const key = columnMap[field] ?? field;
-            delete update[field.replaceAll("_", "")];
-            update[key] = value;
-            await db.update(categories).set(update as typeof categories.$inferInsert).where(eq(categories.id, category.id));
-            await audit(db, from.id, "category.update", category.id, { field, value });
-            await sendMessage(token, chatId, `Категория ${slug}: поле ${field} обновлено.`);
+            const [conflict] = field === "slug" && typeof value === "string" ? await db.select({ id: categories.id }).from(categories).where(eq(categories.slug, value)).limit(1) : [];
+            if (conflict && conflict.id !== category.id) await sendMessage(token, chatId, `Категория со slug ${value} уже существует.`);
+            else {
+              const update: Record<string, unknown> = { updatedAt: new Date().toISOString(), [field.replaceAll("_", "")] : value };
+              const columnMap: Record<string, string> = { image_url: "imageUrl", seo_title: "seoTitle", seo_description: "seoDescription", seo_text: "seoText", canonical_url: "canonicalUrl", og_title: "ogTitle", og_description: "ogDescription", og_image: "ogImage", sort_order: "sortOrder" };
+              const key = columnMap[field] ?? field;
+              delete update[field.replaceAll("_", "")];
+              update[key] = value;
+              await db.update(categories).set(update as typeof categories.$inferInsert).where(eq(categories.id, category.id));
+              if (field === "slug" && typeof value === "string") await recordSlugRedirect("category", category.id, category.slug, value);
+              await audit(db, from.id, "category.update", category.id, { field, value });
+              await sendMessage(token, chatId, `Категория ${slug}: поле ${field} обновлено.`);
+            }
           }
         }
       }
@@ -458,9 +629,13 @@ export async function POST(request: Request) {
           const [linked] = await db.select({ productId: productCategories.productId }).from(productCategories).where(eq(productCategories.categoryId, category.id)).limit(1);
           if (linked) await sendMessage(token, chatId, "Нельзя удалить категорию: к ней привязаны товары. Сначала используйте /category_unassign.");
           else {
-            await db.delete(categories).where(eq(categories.id, category.id));
-            await audit(db, from.id, "category.delete", category.id, { slug });
-            await sendMessage(token, chatId, `Категория ${slug} удалена.`);
+            const [child] = await db.select({ id: categories.id }).from(categories).where(eq(categories.parentId, category.id)).limit(1);
+            if (child) await sendMessage(token, chatId, "Нельзя удалить категорию: у неё есть подкатегории.");
+            else {
+              await db.delete(categories).where(eq(categories.id, category.id));
+              await audit(db, from.id, "category.delete", category.id, { slug });
+              await sendMessage(token, chatId, `Категория ${slug} удалена.`);
+            }
           }
         }
       }
@@ -468,12 +643,14 @@ export async function POST(request: Request) {
       const args = text.trim().split(/\s+/);
       const slug = args[1];
       const productId = Number(args[2]);
-      if (!slug || !Number.isInteger(productId) || !getProductById(productId)) {
-        await sendMessage(token, chatId, `Формат: ${command} slug productId (productId 1–6)`);
+      if (!slug || !Number.isInteger(productId)) {
+        await sendMessage(token, chatId, `Формат: ${command} slug productId`);
       } else {
         const db = getDb();
+        const [product] = await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1);
         const [category] = await db.select({ id: categories.id }).from(categories).where(eq(categories.slug, slug)).limit(1);
-        if (!category) await sendMessage(token, chatId, "Категория не найдена.");
+        if (!product) await sendMessage(token, chatId, "Товар не найден.");
+        else if (!category) await sendMessage(token, chatId, "Категория не найдена.");
         else if (command === "/category_assign") {
           await db.insert(productCategories).values({ categoryId: category.id, productId }).onConflictDoNothing();
           await audit(db, from.id, "category.assign_product", category.id, { productId });

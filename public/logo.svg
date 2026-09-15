@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">SIMKA</title>
+  <rect width="512" height="512" rx="136" fill="#1168e8"/>
+  <path d="M112 284c81-81 207-81 288 0M160 344c54-54 138-54 192 0M216 408c22-22 58-22 80 0" fill="none" stroke="#fff" stroke-width="42" stroke-linecap="round"/>
+  <circle cx="256" cy="450" r="22" fill="#b7f34a"/>
+</svg>

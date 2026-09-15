@@ -4,7 +4,7 @@ import { ArrowRight, Wifi } from "lucide-react";
 export function SiteShell({ children, eyebrow, title, description }: { children: React.ReactNode; eyebrow: string; title: string; description?: string }) {
   return <main className="min-h-screen bg-background text-foreground">
     <a href="#main-content" className="sr-only z-50 rounded-lg bg-white px-4 py-3 font-bold text-[#1168e8] focus:not-sr-only focus:fixed focus:left-4 focus:top-4">Перейти к содержанию</a>
-    <div className="border-b border-[#dce7f4] bg-[#edf7ff] px-4 py-2 text-center text-[13px] font-medium text-[#164475]">Мгновенная доставка eSIM на email · Поддержка 7 дней в неделю</div>
+    <div className="border-b border-[#dce7f4] bg-[#edf7ff] px-4 py-2 text-center text-[13px] font-medium text-[#164475]">eSIM на email после оплаты · Помощь с выбором тарифа</div>
     <header className="sticky top-0 z-40 border-b border-border/80 bg-white/90 backdrop-blur-xl">
       <div className="mx-auto flex h-[72px] max-w-[1240px] items-center gap-8 px-4 sm:px-6">
         <a href="/" className="flex shrink-0 items-center gap-2.5" aria-label="SIMKA — на главную"><span className="grid size-10 place-items-center rounded-[13px] bg-[#1168e8] text-white shadow-[0_7px_18px_rgba(17,104,232,.25)]"><Wifi className="size-5"/></span><span className="text-[21px] font-black tracking-[-0.04em] text-[#10213a]">SIMKA</span></a>

@@ -1,5 +1,20 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, pgTable, text, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  serial,
+  text,
+  uniqueIndex,
+  type AnyPgColumn,
+} from "drizzle-orm/pg-core";
+
+type JsonScalar = string | number | boolean | null;
+type JsonObject = Record<string, JsonScalar>;
+type CountryFaqItem = { question: string; answer: string };
 
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
@@ -15,6 +30,7 @@ export const orders = pgTable("orders", {
   status: text("status").notNull(),
   totalAmount: integer("total_amount").notNull(),
   currency: text("currency").notNull().default("RUB"),
+  inventoryReserved: boolean("inventory_reserved").notNull().default(false),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("idx_orders_request_id").on(table.requestId),
@@ -27,6 +43,8 @@ export const orderItems = pgTable("order_items", {
   id: text("id").primaryKey(),
   orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
   productId: integer("product_id").notNull(),
+  // Historical order lines are immutable snapshots; a variant may not exist anymore.
+  variantId: integer("variant_id"),
   sku: text("sku").notNull(),
   productName: text("product_name").notNull(),
   simType: text("sim_type", { enum: ["eSIM", "SIM"] }).notNull(),
@@ -35,8 +53,53 @@ export const orderItems = pgTable("order_items", {
   lineTotal: integer("line_total").notNull(),
 }, (table) => [index("idx_order_items_order_id").on(table.orderId)]);
 
+export const countries = pgTable("countries", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  isoCode: text("iso_code"),
+  flag: text("flag").notNull().default(""),
+  region: text("region").notNull().default(""),
+  description: text("description").notNull().default(""),
+  imageUrl: text("image_url"),
+  seoTitle: text("seo_title"),
+  seoDescription: text("seo_description"),
+  h1: text("h1"),
+  seoText: text("seo_text"),
+  canonicalUrl: text("canonical_url"),
+  faq: jsonb("faq").$type<CountryFaqItem[]>().notNull().default(sql`'[]'::jsonb`),
+  publicationStatus: text("publication_status", { enum: ["DRAFT", "PUBLISHED", "ARCHIVED"] }).notNull().default("DRAFT"),
+  noindex: boolean("noindex").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  archivedAt: text("archived_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_countries_slug").on(table.slug),
+  uniqueIndex("idx_countries_iso_code").on(table.isoCode),
+  index("idx_countries_publication_order").on(table.publicationStatus, table.archivedAt, table.sortOrder),
+]);
+
+export const operators = pgTable("operators", {
+  id: serial("id").primaryKey(),
+  countryId: integer("country_id").notNull().references(() => countries.id, { onDelete: "restrict" }),
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  description: text("description").notNull().default(""),
+  logoUrl: text("logo_url"),
+  publicationStatus: text("publication_status", { enum: ["DRAFT", "PUBLISHED", "ARCHIVED"] }).notNull().default("DRAFT"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  archivedAt: text("archived_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_operators_country_slug").on(table.countryId, table.slug),
+  index("idx_operators_country_publication").on(table.countryId, table.publicationStatus, table.sortOrder),
+]);
+
 export const categories = pgTable("categories", {
   id: text("id").primaryKey(),
+  parentId: text("parent_id").references((): AnyPgColumn => categories.id, { onDelete: "restrict" }),
   name: text("name").notNull(),
   slug: text("slug").notNull(),
   description: text("description").notNull().default(""),
@@ -57,11 +120,108 @@ export const categories = pgTable("categories", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("idx_categories_slug").on(table.slug),
+  index("idx_categories_parent_order").on(table.parentId, table.sortOrder),
   index("idx_categories_published_order").on(table.isPublished, table.archivedAt, table.sortOrder),
 ]);
 
+export const catalogProducts = pgTable("products", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  sku: text("sku").notNull(),
+  slug: text("slug").notNull(),
+  countryId: integer("country_id").notNull().references(() => countries.id, { onDelete: "restrict" }),
+  operatorId: integer("operator_id").notNull().references(() => operators.id, { onDelete: "restrict" }),
+  simType: text("sim_type", { enum: ["eSIM", "SIM"] }).notNull(),
+  price: integer("price").notNull(),
+  oldPrice: integer("old_price"),
+  currency: text("currency").notNull().default("RUB"),
+  shortDescription: text("short_description").notNull().default(""),
+  fullDescription: text("full_description").notNull().default(""),
+  characteristics: jsonb("characteristics").$type<JsonObject>().notNull().default(sql`'{}'::jsonb`),
+  validityDays: integer("validity_days").notNull(),
+  dataVolume: text("data_volume").notNull(),
+  dataMb: integer("data_mb"),
+  isUnlimited: boolean("is_unlimited").notNull().default(false),
+  hasCalls: boolean("has_calls").notNull().default(false),
+  callsDetails: text("calls_details"),
+  hasSms: boolean("has_sms").notNull().default(false),
+  smsDetails: text("sms_details"),
+  roamingTerms: text("roaming_terms").notNull().default(""),
+  activationTerms: text("activation_terms").notNull().default(""),
+  compatibility: text("compatibility").notNull().default(""),
+  instructions: text("instructions").notNull().default(""),
+  popular: boolean("popular").notNull().default(false),
+  tone: text("tone").notNull().default("from-[#1679f2] to-[#0d46ad]"),
+  available: boolean("available").notNull().default(false),
+  availabilityStatus: text("availability_status", { enum: ["IN_STOCK", "OUT_OF_STOCK", "PREORDER"] }).notNull().default("OUT_OF_STOCK"),
+  stockQuantity: integer("stock_quantity"),
+  publicationStatus: text("publication_status", { enum: ["DRAFT", "PUBLISHED", "ARCHIVED"] }).notNull().default("DRAFT"),
+  seoTitle: text("seo_title"),
+  seoDescription: text("seo_description"),
+  h1: text("h1"),
+  seoText: text("seo_text"),
+  canonicalUrl: text("canonical_url"),
+  ogTitle: text("og_title"),
+  ogDescription: text("og_description"),
+  ogImage: text("og_image"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  archivedAt: text("archived_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_products_sku").on(table.sku),
+  uniqueIndex("idx_products_slug").on(table.slug),
+  index("idx_products_publication_order").on(table.publicationStatus, table.archivedAt, table.sortOrder),
+  index("idx_products_catalog_filters").on(table.countryId, table.operatorId, table.simType, table.available),
+  index("idx_products_price_validity_data").on(table.price, table.validityDays, table.dataMb),
+  check("products_price_nonnegative", sql`${table.price} >= 0`),
+  check("products_old_price_nonnegative", sql`${table.oldPrice} IS NULL OR ${table.oldPrice} >= 0`),
+  check("products_validity_days_positive", sql`${table.validityDays} > 0`),
+  check("products_data_mb_nonnegative", sql`${table.dataMb} IS NULL OR ${table.dataMb} >= 0`),
+  check("products_stock_quantity_nonnegative", sql`${table.stockQuantity} IS NULL OR ${table.stockQuantity} >= 0`),
+]);
+
+export const productVariants = pgTable("product_variants", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").notNull().references(() => catalogProducts.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  sku: text("sku").notNull(),
+  slug: text("slug").notNull(),
+  price: integer("price").notNull(),
+  currency: text("currency").notNull().default("RUB"),
+  dataVolume: text("data_volume"),
+  validityDays: integer("validity_days"),
+  characteristics: jsonb("characteristics").$type<JsonObject>().notNull().default(sql`'{}'::jsonb`),
+  available: boolean("available").notNull().default(false),
+  availabilityStatus: text("availability_status", { enum: ["IN_STOCK", "OUT_OF_STOCK", "PREORDER"] }).notNull().default("OUT_OF_STOCK"),
+  stockQuantity: integer("stock_quantity"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_product_variants_sku").on(table.sku),
+  uniqueIndex("idx_product_variants_slug").on(table.slug),
+  index("idx_product_variants_product_order").on(table.productId, table.sortOrder),
+  check("product_variants_price_nonnegative", sql`${table.price} >= 0`),
+  check("product_variants_validity_days_positive", sql`${table.validityDays} IS NULL OR ${table.validityDays} > 0`),
+  check("product_variants_stock_quantity_nonnegative", sql`${table.stockQuantity} IS NULL OR ${table.stockQuantity} >= 0`),
+]);
+
+export const productImages = pgTable("product_images", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").notNull().references(() => catalogProducts.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  alt: text("alt").notNull().default(""),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_product_images_product_url").on(table.productId, table.url),
+  index("idx_product_images_product_order").on(table.productId, table.sortOrder),
+]);
+
 export const productCategories = pgTable("product_categories", {
-  productId: integer("product_id").notNull(),
+  productId: integer("product_id").notNull().references(() => catalogProducts.id, { onDelete: "restrict" }),
   categoryId: text("category_id").notNull().references(() => categories.id, { onDelete: "cascade" }),
 }, (table) => [
   uniqueIndex("idx_product_categories_pair").on(table.productId, table.categoryId),
@@ -77,3 +237,15 @@ export const adminAuditLog = pgTable("admin_audit_log", {
   metadata: text("metadata").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_admin_audit_created_at").on(table.createdAt)]);
+
+export const seoRedirects = pgTable("seo_redirects", {
+  id: serial("id").primaryKey(),
+  entityType: text("entity_type", { enum: ["category", "country", "product"] }).notNull(),
+  entityId: text("entity_id").notNull(),
+  oldSlug: text("old_slug").notNull(),
+  newSlug: text("new_slug").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_seo_redirects_entity_old_slug").on(table.entityType, table.oldSlug),
+  index("idx_seo_redirects_entity_id").on(table.entityType, table.entityId),
+]);
