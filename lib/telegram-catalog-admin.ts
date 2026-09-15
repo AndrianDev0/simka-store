@@ -96,6 +96,52 @@ function parseJsonObject(value: string) {
   }
 }
 
+function parseDeliveryOptions(value: string) {
+  if (!value.trim() || value.trim() === "-") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length > 20) return null;
+    const result: Array<{ id: string; label: string; cost: number | null; currency: string; regions: string[]; dispatchDaysMin: number | null; dispatchDaysMax: number | null }> = [];
+    const ids = new Set<string>();
+    for (const raw of parsed) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+      const item = raw as Record<string, unknown>;
+      const id = String(item.id ?? "").trim();
+      const label = String(item.label ?? "").trim();
+      const currency = String(item.currency ?? "RUB").trim().toUpperCase();
+      const cost = item.cost === null || item.cost === undefined ? null : Number(item.cost);
+      const dispatchDaysMin = item.dispatchDaysMin === null || item.dispatchDaysMin === undefined ? null : Number(item.dispatchDaysMin);
+      const dispatchDaysMax = item.dispatchDaysMax === null || item.dispatchDaysMax === undefined ? null : Number(item.dispatchDaysMax);
+      const regions = Array.isArray(item.regions) ? item.regions.map(String).map((region) => region.trim()).filter(Boolean) : [];
+      if (!slugPattern.test(id) || id.length > 24 || ids.has(id) || !label || label.length > 160 || !currencyPattern.test(currency)) return null;
+      if (cost !== null && (!Number.isInteger(cost) || cost < 0 || cost > 100000000)) return null;
+      if (regions.length > 50 || regions.some((region) => region.length > 120)) return null;
+      if (dispatchDaysMin !== null && (!Number.isInteger(dispatchDaysMin) || dispatchDaysMin < 0 || dispatchDaysMin > 365)) return null;
+      if (dispatchDaysMax !== null && (!Number.isInteger(dispatchDaysMax) || dispatchDaysMax < 0 || dispatchDaysMax > 365)) return null;
+      if (dispatchDaysMin !== null && dispatchDaysMax !== null && dispatchDaysMax < dispatchDaysMin) return null;
+      ids.add(id);
+      result.push({ id, label, cost, currency, regions, dispatchDaysMin, dispatchDaysMax });
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function parseDeliveryOptionInput(value: string) {
+  const [id = "", label = "", costRaw = "", currencyRaw = "RUB", regionsRaw = "", minRaw = "", maxRaw = ""] = value.split("|").map((part) => part.trim());
+  const cost = !costRaw || costRaw === "-" ? null : parseInteger(costRaw, 0, 100000000);
+  const dispatchDaysMin = !minRaw || minRaw === "-" ? null : parseInteger(minRaw, 0, 365);
+  const dispatchDaysMax = !maxRaw || maxRaw === "-" ? null : parseInteger(maxRaw, 0, 365);
+  const currency = currencyRaw.toUpperCase();
+  const regions = regionsRaw && regionsRaw !== "-" ? regionsRaw.split(",").map((region) => region.trim()).filter(Boolean) : [];
+  if (!slugPattern.test(id) || id.length > 24 || !label || label.length > 160 || !currencyPattern.test(currency)) return null;
+  if ((costRaw && costRaw !== "-" && cost === null) || (minRaw && minRaw !== "-" && dispatchDaysMin === null) || (maxRaw && maxRaw !== "-" && dispatchDaysMax === null)) return null;
+  if (regions.length > 50 || regions.some((region) => region.length > 120)) return null;
+  if (dispatchDaysMin !== null && dispatchDaysMax !== null && dispatchDaysMax < dispatchDaysMin) return null;
+  return { id, label, cost, currency, regions, dispatchDaysMin, dispatchDaysMax };
+}
+
 function parseFaq(value: string) {
   if (!value.trim() || value.trim() === "-") return [];
   const entries = value.split(/\r?\n/).map((line) => line.split("|").map((part) => part.trim())).filter((parts) => parts.length >= 2 && parts[0] && parts.slice(1).join(" | "));
@@ -203,7 +249,8 @@ async function showProduct(db: Db, token: string, chatId: number, productId: num
     operatorId: catalogProducts.operatorId, country: countries.name, operator: operators.name, simType: catalogProducts.simType, price: catalogProducts.price,
     currency: catalogProducts.currency, dataVolume: catalogProducts.dataVolume, validityDays: catalogProducts.validityDays, available: catalogProducts.available,
     availabilityStatus: catalogProducts.availabilityStatus, stockQuantity: catalogProducts.stockQuantity, publicationStatus: catalogProducts.publicationStatus,
-    archivedAt: catalogProducts.archivedAt, shortDescription: catalogProducts.shortDescription,
+    archivedAt: catalogProducts.archivedAt, shortDescription: catalogProducts.shortDescription, esimType: catalogProducts.esimType,
+    esimDeliveryMethod: catalogProducts.esimDeliveryMethod, deliveryOptions: catalogProducts.deliveryOptions,
   }).from(catalogProducts).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).innerJoin(operators, eq(catalogProducts.operatorId, operators.id)).where(eq(catalogProducts.id, productId)).limit(1);
   if (!product) { await sendMessage(token, chatId, "Товар не найден.", back("products:list")); return; }
   const [variantRows, imageRows, categoryRows] = await Promise.all([
@@ -215,16 +262,41 @@ async function showProduct(db: Db, token: string, chatId: number, productId: num
     `📦 ${product.name}`, `ID: ${product.id} · SKU: ${product.sku}`, `Slug: ${product.slug}`, `${product.country} · ${product.operator} · ${product.simType}`,
     `Цена: ${product.price.toLocaleString("ru-RU")} ${product.currency}`, `Интернет: ${product.dataVolume} · ${product.validityDays} дней`,
     `Статус: ${product.publicationStatus} · ${product.available ? product.availabilityStatus : "НЕДОСТУПЕН"}`, `Остаток: ${product.stockQuantity ?? "без ограничения"}`,
+    product.simType === "eSIM" ? `eSIM: ${product.esimType || "тип не задан"} · получение: ${product.esimDeliveryMethod || "не задано"}` : `Доставка: ${product.deliveryOptions.length} вариант(а)`,
     `Варианты: ${variantRows.length} · Изображения: ${imageRows.length} · Категории: ${categoryRows.length}`, "", clip(product.shortDescription),
   ].join("\n"), { inline_keyboard: [
     [{ text: product.publicationStatus === "PUBLISHED" ? "⏸ Снять с публикации" : "▶️ Опубликовать", callback_data: `product:publish:${product.id}` }],
     [{ text: product.available ? "⛔ Снять с наличия" : "✅ Отметить в наличии", callback_data: `product:availability:${product.id}` }],
     [{ text: product.archivedAt ? "♻️ Восстановить" : "📦 Архивировать", callback_data: `product:${product.archivedAt ? "restore" : "archive"}:${product.id}` }],
     [{ text: "✏️ Все поля", callback_data: `product:edit:${product.id}` }],
+    ...(product.simType === "SIM" ? [[{ text: `🚚 Варианты доставки (${product.deliveryOptions.length})`, callback_data: `delivery:list:${product.id}` }]] : []),
     [{ text: `🧩 Варианты (${variantRows.length})`, callback_data: `product:variants:${product.id}` }, { text: `🖼 Изображения (${imageRows.length})`, callback_data: `product:images:${product.id}` }],
     [{ text: `📂 Категории (${categoryRows.length})`, callback_data: `product:categories:${product.id}` }],
     [{ text: "🗑 Удалить", callback_data: `product:delete_prompt:${product.id}` }],
     [{ text: "◀️ К товарам", callback_data: "products:list" }],
+  ] });
+}
+
+async function showDeliveryOptions(db: Db, token: string, chatId: number, productId: number) {
+  const [product] = await db.select({ id: catalogProducts.id, name: catalogProducts.name, simType: catalogProducts.simType, deliveryOptions: catalogProducts.deliveryOptions }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1);
+  if (!product || product.simType !== "SIM") { await sendMessage(token, chatId, "Варианты доставки доступны только для физической SIM.", back(`product:view:${productId}`)); return; }
+  const rows = product.deliveryOptions.map((option) => [{ text: `🚚 ${option.label.slice(0, 48)}`, callback_data: `delivery:view:${productId}:${option.id}` }]);
+  rows.push([{ text: "➕ Добавить вариант доставки", callback_data: `delivery:create:${productId}` }]);
+  rows.push([{ text: "◀️ К товару", callback_data: `product:view:${productId}` }]);
+  await sendMessage(token, chatId, `Доставка для «${product.name}»:\n${product.deliveryOptions.length ? "Выберите вариант:" : "Варианты пока не настроены."}`, { inline_keyboard: rows });
+}
+
+async function showDeliveryOption(db: Db, token: string, chatId: number, productId: number, optionId: string) {
+  const [product] = await db.select({ deliveryOptions: catalogProducts.deliveryOptions }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1);
+  const option = product?.deliveryOptions.find((item) => item.id === optionId);
+  if (!option) { await sendMessage(token, chatId, "Вариант доставки больше не существует.", back(`delivery:list:${productId}`)); return; }
+  await sendMessage(token, chatId, [
+    `🚚 ${option.label}`, `ID: ${option.id}`, `Стоимость: ${option.cost === null ? "уточняет менеджер" : `${option.cost.toLocaleString("ru-RU")} ${option.currency}`}`,
+    `Регионы: ${option.regions.join(", ") || "не ограничены"}`, `Отправка: ${option.dispatchDaysMin ?? "—"}–${option.dispatchDaysMax ?? "—"} дн.`,
+  ].join("\n"), { inline_keyboard: [
+    [{ text: "✏️ Изменить", callback_data: `delivery:edit:${productId}:${option.id}` }],
+    [{ text: "🗑 Удалить", callback_data: `delivery:delete_prompt:${productId}:${option.id}` }],
+    [{ text: "◀️ К доставке", callback_data: `delivery:list:${productId}` }],
   ] });
 }
 
@@ -234,7 +306,8 @@ const productFields = {
   full: ["Полное описание", "fullDescription"], ch: ["Характеристики JSON", "characteristics"], vd: ["Срок, дней", "validityDays"], dv: ["Объём интернета", "dataVolume"],
   dm: ["Интернет, МБ", "dataMb"], un: ["Безлимит", "isUnlimited"], hc: ["Есть звонки", "hasCalls"], cd: ["Условия звонков", "callsDetails"],
   hs: ["Есть SMS", "hasSms"], sm: ["Условия SMS", "smsDetails"], rt: ["Роуминг", "roamingTerms"], at: ["Активация", "activationTerms"],
-  comp: ["Совместимость", "compatibility"], ins: ["Инструкция", "instructions"], pop: ["Популярный", "popular"], qty: ["Остаток", "stockQuantity"],
+  comp: ["Совместимость", "compatibility"], ins: ["Инструкция", "instructions"], et: ["Тип eSIM", "esimType"], ed: ["Способ получения eSIM", "esimDeliveryMethod"],
+  del: ["Варианты доставки JSON", "deliveryOptions"], pop: ["Популярный", "popular"], qty: ["Остаток", "stockQuantity"],
   st: ["SEO title", "seoTitle"], sd: ["SEO description", "seoDescription"], h: ["H1", "h1"], sx: ["SEO-текст", "seoText"], cu: ["Canonical", "canonicalUrl"],
   ot: ["OG title", "ogTitle"], od: ["OG description", "ogDescription"], oi: ["OG image", "ogImage"], so: ["Порядок", "sortOrder"],
 } as const;
@@ -244,6 +317,28 @@ function productEditKeyboard(id: number): InlineKeyboard {
     ...rowsOfTwo(Object.entries(productFields).map(([code, [label]]) => ({ text: `✏️ ${label}`, callback_data: `product:field:${id}:${code}` }))),
     [{ text: "◀️ К товару", callback_data: `product:view:${id}` }],
   ] };
+}
+
+async function productPublicationGaps(db: Db, product: typeof catalogProducts.$inferSelect) {
+  const required: Array<[string, unknown]> = [
+    ["краткое описание", product.shortDescription], ["полное описание", product.fullDescription], ["условия роуминга", product.roamingTerms],
+    ["условия активации", product.activationTerms], ["совместимость", product.compatibility], ["инструкция", product.instructions],
+  ];
+  const missing = required.filter(([, value]) => typeof value !== "string" || !value.trim()).map(([label]) => label);
+  if (product.simType === "eSIM") {
+    if (!product.esimType?.trim()) missing.push("тип eSIM");
+    if (!product.esimDeliveryMethod?.trim()) missing.push("способ получения eSIM");
+  } else {
+    if (!product.deliveryOptions?.length) missing.push("варианты доставки");
+    if (product.deliveryOptions?.some((option) => option.currency !== product.currency)) missing.push("валюта доставки должна совпадать с валютой товара");
+  }
+  const [country, operator] = await Promise.all([
+    db.select({ publicationStatus: countries.publicationStatus }).from(countries).where(eq(countries.id, product.countryId)).limit(1),
+    db.select({ publicationStatus: operators.publicationStatus }).from(operators).where(eq(operators.id, product.operatorId)).limit(1),
+  ]);
+  if (country[0]?.publicationStatus !== "PUBLISHED") missing.push("опубликованная страна");
+  if (operator[0]?.publicationStatus !== "PUBLISHED") missing.push("опубликованный оператор");
+  return missing;
 }
 
 const variantFields = {
@@ -382,6 +477,36 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     return true;
   }
 
+  if (scope === "delivery" && action === "list" && first) { await showDeliveryOptions(db, token, chatId, Number(first)); return true; }
+  if (scope === "delivery" && action === "view" && first && second) { await showDeliveryOption(db, token, chatId, Number(first), second); return true; }
+  if (scope === "delivery" && action === "create" && first) {
+    await sendMessage(token, chatId, `[CREATE_DELIVERY_OPTION:${first}]\nВведите: ID | Название | Стоимость или - | Валюта | Регионы через запятую или - | Дней от или - | Дней до или -`, { force_reply: true, selective: true, input_field_placeholder: "courier | Курьер | 500 | RUB | Москва, МО | 1 | 3" });
+    return true;
+  }
+  if (scope === "delivery" && action === "edit" && first && second) {
+    const [product] = await db.select({ deliveryOptions: catalogProducts.deliveryOptions }).from(catalogProducts).where(eq(catalogProducts.id, Number(first))).limit(1);
+    const option = product?.deliveryOptions.find((item) => item.id === second);
+    if (!option) { await sendMessage(token, chatId, "Вариант доставки не найден.", back(`delivery:list:${first}`)); return true; }
+    await sendMessage(token, chatId, `[EDIT_DELIVERY_OPTION:${first}:${second}]\nВведите целиком: ID | Название | Стоимость или - | Валюта | Регионы через запятую или - | Дней от или - | Дней до или -\n\nСейчас: ${option.id} | ${option.label} | ${option.cost ?? "-"} | ${option.currency} | ${option.regions.join(", ") || "-"} | ${option.dispatchDaysMin ?? "-"} | ${option.dispatchDaysMax ?? "-"}`, { force_reply: true, selective: true, input_field_placeholder: "courier | Курьер | 500 | RUB | Москва | 1 | 3" });
+    return true;
+  }
+  if (scope === "delivery" && action === "delete_prompt" && first && second) {
+    await sendMessage(token, chatId, "Удалить этот вариант доставки?", { inline_keyboard: [[{ text: "Да, удалить", callback_data: `delivery:delete_confirm:${first}:${second}` }], [{ text: "Отмена", callback_data: `delivery:view:${first}:${second}` }]] });
+    return true;
+  }
+  if (scope === "delivery" && action === "delete_confirm" && first && second) {
+    const productId = Number(first); const optionId = second;
+    const [product] = await db.select({ deliveryOptions: catalogProducts.deliveryOptions, publicationStatus: catalogProducts.publicationStatus }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1);
+    const option = product?.deliveryOptions.find((item) => item.id === optionId);
+    if (!product || !option) { await sendMessage(token, chatId, "Вариант доставки не найден.", back(`delivery:list:${productId}`)); return true; }
+    if (product.publicationStatus === "PUBLISHED" && product.deliveryOptions.length === 1) { await sendMessage(token, chatId, "У опубликованной физической SIM должен остаться хотя бы один вариант доставки. Сначала снимите товар с публикации.", back(`delivery:view:${productId}:${optionId}`)); return true; }
+    const deliveryOptions = product.deliveryOptions.filter((item) => item.id !== optionId);
+    await db.update(catalogProducts).set({ deliveryOptions, updatedAt: new Date().toISOString() }).where(eq(catalogProducts.id, productId));
+    await audit(db, adminId, "product.delivery_delete", String(productId), { optionId });
+    await showDeliveryOptions(db, token, chatId, productId);
+    return true;
+  }
+
   if (scope === "products" && action === "list") { await listProducts(db, token, chatId); return true; }
   if (scope === "product" && action === "create") {
     const [countryRows, operatorRows] = await Promise.all([
@@ -396,7 +521,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
   if (scope === "product" && action === "edit" && first) { await sendMessage(token, chatId, "Выберите поле товара:", productEditKeyboard(Number(first))); return true; }
   if (scope === "product" && action === "field" && first && second && second in productFields) {
     const label = productFields[second as keyof typeof productFields][0];
-    const hint = ["un", "hc", "hs", "pop"].includes(second) ? "Введите on или off" : second === "ch" ? "Введите JSON-объект, например {\"скорость\":\"5G\"}" : "Для очистки необязательного поля отправьте -";
+    const hint = ["un", "hc", "hs", "pop"].includes(second) ? "Введите on или off" : second === "ch" ? "Введите JSON-объект, например {\"скорость\":\"5G\"}" : second === "del" ? "Введите JSON-массив: [{\"id\":\"courier\",\"label\":\"Курьер\",\"cost\":500,\"currency\":\"RUB\",\"regions\":[\"Москва\"],\"dispatchDaysMin\":1,\"dispatchDaysMax\":3}]. Для очистки: -" : "Для очистки необязательного поля отправьте -";
     await sendMessage(token, chatId, `[EDIT_PRODUCT:${first}:${second}]\n${label}. ${hint}`, { force_reply: true, selective: true, input_field_placeholder: label });
     return true;
   }
@@ -448,17 +573,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
       return true;
     }
     if (action === "publish" && product.publicationStatus !== "PUBLISHED") {
-      const required: Array<[string, unknown]> = [
-        ["краткое описание", product.shortDescription], ["полное описание", product.fullDescription], ["условия роуминга", product.roamingTerms],
-        ["условия активации", product.activationTerms], ["совместимость", product.compatibility], ["инструкция", product.instructions],
-      ];
-      const missing = required.filter(([, value]) => typeof value !== "string" || !value.trim()).map(([label]) => label);
-      const [country, operator] = await Promise.all([
-        db.select({ publicationStatus: countries.publicationStatus }).from(countries).where(eq(countries.id, product.countryId)).limit(1),
-        db.select({ publicationStatus: operators.publicationStatus }).from(operators).where(eq(operators.id, product.operatorId)).limit(1),
-      ]);
-      if (country[0]?.publicationStatus !== "PUBLISHED") missing.push("опубликованная страна");
-      if (operator[0]?.publicationStatus !== "PUBLISHED") missing.push("опубликованный оператор");
+      const missing = await productPublicationGaps(db, product);
       if (missing.length) {
         await sendMessage(token, chatId, `Сначала заполните обязательные данные: ${missing.join(", ")}.`, back(`product:view:${id}`));
         return true;
@@ -627,13 +742,23 @@ async function updateProductFromReply(context: HandlerContext, id: number, code:
   }
   if (["isUnlimited", "hasCalls", "hasSms", "popular"].includes(key)) { value = parseBoolean(raw); if (value === null) throw new Error("INVALID_BOOLEAN"); }
   if (key === "characteristics") { value = parseJsonObject(raw.trim() === "-" ? "{}" : raw); if (value === null) throw new Error("INVALID_JSON"); }
+  if (key === "deliveryOptions") { value = parseDeliveryOptions(raw); if (value === null) throw new Error("INVALID_DELIVERY_OPTIONS"); }
+  if (["esimType", "esimDeliveryMethod"].includes(key)) {
+    value = raw.trim() === "-" ? null : raw.trim();
+    if (value && String(value).length > 160) throw new Error("VALUE_TOO_LONG");
+  }
   if (["ogImage"].includes(key)) { value = parseNullableUrl(raw); if (value === undefined) throw new Error("INVALID_URL"); }
   if (key === "canonicalUrl") { value = parseNullableUrl(raw, true); if (value === undefined) throw new Error("INVALID_URL"); }
   const update: Record<string, unknown> = { [key]: value, updatedAt: new Date().toISOString() };
   if (key === "stockQuantity" && value === 0) Object.assign(update, { available: false, availabilityStatus: "OUT_OF_STOCK" });
+  const publicationGaps = product.publicationStatus === "PUBLISHED"
+    ? await productPublicationGaps(db, { ...product, [key]: value } as typeof catalogProducts.$inferSelect)
+    : [];
+  if (publicationGaps.length) update.publicationStatus = "DRAFT";
   await db.update(catalogProducts).set(update as typeof catalogProducts.$inferInsert).where(eq(catalogProducts.id, id));
   if (key === "slug" && typeof value === "string") await recordSlugRedirect("product", String(id), product.slug, value);
-  await audit(db, context.adminId, "product.update", String(id), { field: key });
+  await audit(db, context.adminId, "product.update", String(id), { field: key, movedToDraft: publicationGaps.length > 0, publicationGaps });
+  if (publicationGaps.length) await sendMessage(context.token, context.chatId, `Товар автоматически снят с публикации: ${publicationGaps.join(", ")}. Заполните данные и опубликуйте его снова.`, back(`product:view:${id}`));
   await showProduct(db, context.token, context.chatId, id);
 }
 
@@ -662,6 +787,28 @@ async function updateVariantFromReply(context: HandlerContext, id: number, code:
 
 async function handleMessageInner(context: HandlerContext, text: string, replyContext: string): Promise<boolean> {
   const db = getDb();
+
+  const deliveryCreate = replyContext.match(/^\[CREATE_DELIVERY_OPTION:(\d+)\]/);
+  const deliveryEdit = replyContext.match(/^\[EDIT_DELIVERY_OPTION:(\d+):([a-z0-9-]{1,24})\]/);
+  if (deliveryCreate || deliveryEdit) {
+    const productId = Number((deliveryCreate || deliveryEdit)![1]);
+    const existingOptionId = deliveryEdit?.[2] ?? null;
+    const option = parseDeliveryOptionInput(text);
+    const [product] = await db.select().from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1);
+    if (!product || product.simType !== "SIM" || !option) throw new Error("INVALID_DELIVERY_OPTION");
+    if (existingOptionId === null && product.deliveryOptions.length >= 20) throw new Error("TOO_MANY_DELIVERY_OPTIONS");
+    const existingIndex = existingOptionId === null ? -1 : product.deliveryOptions.findIndex((item) => item.id === existingOptionId);
+    if (existingOptionId !== null && existingIndex < 0) throw new Error("DELIVERY_OPTION_NOT_FOUND");
+    if (product.deliveryOptions.some((item, optionIndex) => item.id === option.id && optionIndex !== existingIndex)) throw new Error("DUPLICATE_DELIVERY_OPTION");
+    const deliveryOptions = [...product.deliveryOptions];
+    if (existingOptionId === null) deliveryOptions.push(option); else deliveryOptions[existingIndex] = option;
+    const publicationGaps = product.publicationStatus === "PUBLISHED" ? await productPublicationGaps(db, { ...product, deliveryOptions }) : [];
+    await db.update(catalogProducts).set({ deliveryOptions, publicationStatus: publicationGaps.length ? "DRAFT" : product.publicationStatus, updatedAt: new Date().toISOString() }).where(eq(catalogProducts.id, productId));
+    await audit(db, context.adminId, existingOptionId === null ? "product.delivery_create" : "product.delivery_update", String(productId), { optionId: option.id, previousOptionId: existingOptionId, movedToDraft: publicationGaps.length > 0 });
+    if (publicationGaps.length) await sendMessage(context.token, context.chatId, `Товар снят с публикации: ${publicationGaps.join(", ")}.`, back(`product:view:${productId}`));
+    await showDeliveryOptions(db, context.token, context.chatId, productId);
+    return true;
+  }
 
   if (replyContext.startsWith("[CREATE_COUNTRY]")) {
     const [slug, name, flag = "", region = "", iso = ""] = text.split("|").map((part) => part.trim());
@@ -694,7 +841,13 @@ async function handleMessageInner(context: HandlerContext, text: string, replyCo
     await ensureProductRelation(db, { countryId, operatorId }, {});
     const conflicts = await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.slug, slug)).limit(1);
     if (conflicts[0] || (await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.sku, sku)).limit(1))[0]) throw new Error("DUPLICATE_PRODUCT");
-    const inserted = await db.insert(catalogProducts).values({ name, sku, slug, countryId, operatorId, simType: simType as "eSIM" | "SIM", price, currency: "RUB", shortDescription: "", fullDescription: "", validityDays, dataVolume, available: false, availabilityStatus: "OUT_OF_STOCK", publicationStatus: "DRAFT" }).returning({ id: catalogProducts.id });
+    const inserted = await db.insert(catalogProducts).values({
+      name, sku, slug, countryId, operatorId, simType: simType as "eSIM" | "SIM", price, currency: "RUB", shortDescription: "", fullDescription: "", validityDays, dataVolume,
+      esimType: simType === "eSIM" ? "consumer" : null,
+      esimDeliveryMethod: simType === "eSIM" ? "email" : null,
+      deliveryOptions: simType === "SIM" ? [{ id: "manager-delivery", label: "Доставка по согласованию с менеджером", cost: null, currency: "RUB", regions: ["Регион уточняется при оформлении"], dispatchDaysMin: null, dispatchDaysMax: null }] : [],
+      available: false, availabilityStatus: "OUT_OF_STOCK", publicationStatus: "DRAFT",
+    }).returning({ id: catalogProducts.id });
     await audit(db, context.adminId, "product.create", String(inserted[0].id), { sku, slug, name });
     await showProduct(db, context.token, context.chatId, inserted[0].id);
     return true;

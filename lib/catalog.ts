@@ -6,6 +6,16 @@ export type ProductAvailabilityStatus = "IN_STOCK" | "OUT_OF_STOCK" | "PREORDER"
 export type ProductCharacteristicValue = string | number | boolean | null;
 export type ProductCharacteristics = Record<string, ProductCharacteristicValue>;
 
+export type ProductDeliveryOption = {
+  id: string;
+  label: string;
+  cost: number | null;
+  currency: string;
+  regions: string[];
+  dispatchDaysMin: number | null;
+  dispatchDaysMax: number | null;
+};
+
 export type ProductImage = {
   id: number;
   productId: number;
@@ -69,6 +79,9 @@ export type Product = {
   activationTerms: string;
   compatibility: string;
   instructions: string;
+  esimType: string | null;
+  esimDeliveryMethod: string | null;
+  deliveryOptions: ProductDeliveryOption[];
   categoryIds: string[];
   images: ProductImage[];
   variants: ProductVariant[];
@@ -146,6 +159,17 @@ function createFallbackProduct(seed: LegacyProductSeed): Product {
       ? "Требуется разблокированное устройство с поддержкой eSIM."
       : "Требуется разблокированное устройство с подходящим SIM-слотом.",
     instructions: "Инструкция предоставляется после подтверждения оплаты.",
+    esimType: seed.type === "eSIM" ? "consumer" : null,
+    esimDeliveryMethod: seed.type === "eSIM" ? "email" : null,
+    deliveryOptions: seed.type === "SIM" ? [{
+      id: "manager-delivery",
+      label: "Доставка по согласованию с менеджером",
+      cost: null,
+      currency: "RUB",
+      regions: ["Регион уточняется при оформлении"],
+      dispatchDaysMin: null,
+      dispatchDaysMax: null,
+    }] : [],
     categoryIds: [],
     images: [],
     variants: [{

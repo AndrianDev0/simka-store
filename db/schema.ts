@@ -15,6 +15,15 @@ import {
 type JsonScalar = string | number | boolean | null;
 type JsonObject = Record<string, JsonScalar>;
 type CountryFaqItem = { question: string; answer: string };
+type DeliveryOption = {
+  id: string;
+  label: string;
+  cost: number | null;
+  currency: string;
+  regions: string[];
+  dispatchDaysMin: number | null;
+  dispatchDaysMax: number | null;
+};
 
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
@@ -28,15 +37,23 @@ export const orders = pgTable("orders", {
   paymentMethod: text("payment_method", { enum: ["crypto", "manager"] }).notNull(),
   // Kept as text so new workflow states can be added without a destructive migration.
   status: text("status").notNull(),
+  subtotalAmount: integer("subtotal_amount").notNull().default(0),
+  deliveryAmount: integer("delivery_amount").notNull().default(0),
   totalAmount: integer("total_amount").notNull(),
   currency: text("currency").notNull().default("RUB"),
   inventoryReserved: boolean("inventory_reserved").notNull().default(false),
+  paymentInstructionsSentAt: text("payment_instructions_sent_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("idx_orders_request_id").on(table.requestId),
   uniqueIndex("idx_orders_order_number").on(table.orderNumber),
   index("idx_orders_customer_email").on(table.customerEmail),
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
+  check("orders_subtotal_amount_nonnegative", sql`${table.subtotalAmount} >= 0`),
+  check("orders_delivery_amount_nonnegative", sql`${table.deliveryAmount} >= 0`),
+  check("orders_total_amount_nonnegative", sql`${table.totalAmount} >= 0`),
+  check("orders_total_amount_consistent", sql`${table.totalAmount} = ${table.subtotalAmount} + ${table.deliveryAmount}`),
 ]);
 
 export const orderItems = pgTable("order_items", {
@@ -51,7 +68,21 @@ export const orderItems = pgTable("order_items", {
   unitPrice: integer("unit_price").notNull(),
   quantity: integer("quantity").notNull(),
   lineTotal: integer("line_total").notNull(),
-}, (table) => [index("idx_order_items_order_id").on(table.orderId)]);
+  fulfillmentStatus: text("fulfillment_status").notNull().default("PENDING"),
+  deliveryMethod: text("delivery_method"),
+  deliveryCost: integer("delivery_cost").notNull().default(0),
+  deliveryCostConfirmed: boolean("delivery_cost_confirmed").notNull().default(false),
+  trackingNumber: text("tracking_number"),
+  trackingUrl: text("tracking_url"),
+  activationCodeEncrypted: text("activation_code_encrypted"),
+  fulfillmentInstructions: text("fulfillment_instructions"),
+  fulfilledAt: text("fulfilled_at"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_order_items_order_id").on(table.orderId),
+  index("idx_order_items_fulfillment_status").on(table.fulfillmentStatus),
+  check("order_items_delivery_cost_nonnegative", sql`${table.deliveryCost} >= 0`),
+]);
 
 export const countries = pgTable("countries", {
   id: serial("id").primaryKey(),
@@ -150,6 +181,9 @@ export const catalogProducts = pgTable("products", {
   activationTerms: text("activation_terms").notNull().default(""),
   compatibility: text("compatibility").notNull().default(""),
   instructions: text("instructions").notNull().default(""),
+  esimType: text("esim_type"),
+  esimDeliveryMethod: text("esim_delivery_method"),
+  deliveryOptions: jsonb("delivery_options").$type<DeliveryOption[]>().notNull().default(sql`'[]'::jsonb`),
   popular: boolean("popular").notNull().default(false),
   tone: text("tone").notNull().default("from-[#1679f2] to-[#0d46ad]"),
   available: boolean("available").notNull().default(false),
@@ -237,6 +271,13 @@ export const adminAuditLog = pgTable("admin_audit_log", {
   metadata: text("metadata").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_admin_audit_created_at").on(table.createdAt)]);
+
+export const storeSettings = pgTable("store_settings", {
+  key: text("key").primaryKey(),
+  encryptedValue: text("encrypted_value").notNull(),
+  updatedBy: text("updated_by").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
 
 export const seoRedirects = pgTable("seo_redirects", {
   id: serial("id").primaryKey(),

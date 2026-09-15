@@ -1,14 +1,16 @@
 import { and, asc, desc, eq, isNull, like, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, orderItems, orders, productCategories, productVariants } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
+import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
 
 const updateSchema = z.object({
   update_id: z.number().int(),
   message: z.object({
+    message_id: z.number().int(),
     text: z.string().max(4096).optional(),
     chat: z.object({ id: z.number().int() }),
     from: z.object({ id: z.number().int() }).optional(),
@@ -38,6 +40,7 @@ function safeEqual(left: string, right: string) {
 type InlineButton = { text: string; callback_data?: string; url?: string };
 type InlineKeyboard = { inline_keyboard: Array<Array<InlineButton>> };
 type ReplyMarkup = InlineKeyboard | { force_reply: true; selective: true; input_field_placeholder?: string };
+const PAYMENT_REQUISITES_KEY = "manager_payment_requisites";
 
 async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: ReplyMarkup) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -58,16 +61,35 @@ async function answerCallback(token: string, callbackId: string) {
   });
 }
 
+async function deleteSensitiveMessage(token: string, chatId: number, messageId: number) {
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) console.warn("telegram_sensitive_message_delete_failed", { status: response.status });
+  } catch (error) {
+    console.warn("telegram_sensitive_message_delete_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+  }
+}
+
 function mainKeyboard(): InlineKeyboard {
   return { inline_keyboard: [
     [{ text: "📦 Товары", callback_data: "products:list" }, { text: "📂 Категории", callback_data: "categories:list" }],
     [{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }],
-    [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "📊 Статус магазина", callback_data: "status" }],
+    [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
+    [{ text: "📊 Статус магазина", callback_data: "status" }],
   ] };
 }
 
 function backKeyboard(): InlineKeyboard {
   return { inline_keyboard: [[{ text: "◀️ В меню", callback_data: "menu" }]] };
+}
+
+function orderBackKeyboard(orderNumber: string): InlineKeyboard {
+  return { inline_keyboard: [[{ text: "◀️ К заказу", callback_data: `order:view:${orderNumber}` }]] };
 }
 
 function orderListKeyboard(list: Array<{ orderNumber: string; status: string }>): InlineKeyboard {
@@ -83,13 +105,42 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
     await sendMessage(token, chatId, "Заказ не найден.", backKeyboard());
     return;
   }
-  const items = await db.select({ productName: orderItems.productName, simType: orderItems.simType, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, order.id));
-  const hasPhysicalSim = items.some((item) => item.simType === "SIM");
-  const lines = items.map((item) => `• ${item.productName} × ${item.quantity}`).join("\n");
+  const items = await db.select({
+    id: orderItems.id, productName: orderItems.productName, simType: orderItems.simType, quantity: orderItems.quantity,
+    fulfillmentStatus: orderItems.fulfillmentStatus, deliveryMethod: orderItems.deliveryMethod, deliveryCost: orderItems.deliveryCost,
+    deliveryCostConfirmed: orderItems.deliveryCostConfirmed, trackingNumber: orderItems.trackingNumber, trackingUrl: orderItems.trackingUrl,
+    hasActivationCode: sql<boolean>`${orderItems.activationCodeEncrypted} IS NOT NULL`,
+  }).from(orderItems).where(eq(orderItems.orderId, order.id));
+  const lines = items.map((item) => [
+    `• ${item.productName} × ${item.quantity}`,
+    `  Исполнение: ${item.fulfillmentStatus}`,
+    item.simType === "SIM" ? `  Доставка: ${item.deliveryMethod || "не задана"} · ${item.deliveryCostConfirmed ? `${item.deliveryCost.toLocaleString("ru-RU")} ${order.currency}` : "стоимость не подтверждена"}` : "",
+    item.trackingNumber ? `  Трек: ${item.trackingNumber}${item.trackingUrl ? ` · ${item.trackingUrl}` : ""}` : "",
+  ].filter(Boolean).join("\n")).join("\n");
   const actions: Array<Array<InlineButton>> = [];
-  if (order.paymentMethod === "manager" && order.status === "WAITING_FOR_MANAGER") actions.push([{ text: "✅ Подтвердить получение оплаты", callback_data: `order:paid_prompt:${order.orderNumber}` }]);
+  const pendingDeliveryCosts = items.filter((item) => item.simType === "SIM" && !item.deliveryCostConfirmed);
+  if (order.status === "WAITING_FOR_MANAGER") {
+    for (const item of pendingDeliveryCosts) actions.push([{ text: `💵 Стоимость доставки · ${item.productName.slice(0, 28)}`, callback_data: `fulfill:cost:${item.id.slice(0, 12)}` }]);
+  }
+  if (order.paymentMethod === "manager" && order.status === "WAITING_FOR_MANAGER" && pendingDeliveryCosts.length === 0) {
+    actions.push([{ text: order.paymentInstructionsSentAt ? "📧 Повторить реквизиты" : "📧 Отправить реквизиты", callback_data: `order:requisites_prompt:${order.orderNumber}` }]);
+    if (order.paymentInstructionsSentAt) actions.push([{ text: "✅ Подтвердить получение оплаты", callback_data: `order:paid_prompt:${order.orderNumber}` }]);
+  }
   if (order.status === "PAID") actions.push([{ text: "⚙️ Начать выполнение", callback_data: `order:process:${order.orderNumber}` }]);
-  if (order.status === "PROCESSING") actions.push([{ text: hasPhysicalSim ? "📦 Отметить отправленным" : "✅ Отметить eSIM выданной", callback_data: `order:${hasPhysicalSim ? "ship" : "complete"}:${order.orderNumber}` }]);
+  if (order.status === "PROCESSING") {
+    for (const item of items) {
+      if (item.simType === "eSIM" && item.fulfillmentStatus === "PENDING") actions.push([{ text: `📲 Выдать eSIM · ${item.productName.slice(0, 30)}`, callback_data: `fulfill:esim:${item.id.slice(0, 12)}` }]);
+      if (item.simType === "SIM" && item.fulfillmentStatus === "PENDING") actions.push([{ text: `📦 Указать отправку · ${item.productName.slice(0, 28)}`, callback_data: `fulfill:ship:${item.id.slice(0, 12)}` }]);
+    }
+  }
+  if (!["CANCELLED", "REFUNDED", "FAILED"].includes(order.status)) {
+    for (const item of items.filter((entry) => entry.simType === "eSIM" && ["READY", "SENT"].includes(entry.fulfillmentStatus) && entry.hasActivationCode)) {
+      actions.push([{ text: `📧 Повторить eSIM-письмо · ${item.productName.slice(0, 23)}`, callback_data: `fulfill:resend:${item.id.slice(0, 12)}` }]);
+    }
+    for (const item of items.filter((entry) => entry.simType === "SIM" && ["SHIPPED", "DELIVERED", "COMPLETED"].includes(entry.fulfillmentStatus) && entry.trackingNumber)) {
+      actions.push([{ text: `📧 Повторить трек-письмо · ${item.productName.slice(0, 24)}`, callback_data: `fulfill:shipmail:${item.id.slice(0, 12)}` }]);
+    }
+  }
   if (order.status === "SHIPPED") actions.push([{ text: "🚚 Отметить доставленным", callback_data: `order:deliver:${order.orderNumber}` }]);
   if (order.status === "DELIVERED") actions.push([{ text: "✅ Завершить заказ", callback_data: `order:complete:${order.orderNumber}` }]);
   if (["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"].includes(order.status)) actions.push([{ text: "❌ Отменить заказ", callback_data: `order:cancel_prompt:${order.orderNumber}` }]);
@@ -103,6 +154,7 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
     order.deliveryAddress ? `Доставка: ${order.deliveryAddress}` : "",
     order.customerComment ? `Комментарий: ${order.customerComment}` : "",
     `Оплата: ${order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта"}`,
+    order.paymentInstructionsSentAt ? `Реквизиты отправлены: ${order.paymentInstructionsSentAt}` : "",
     `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     "",
     lines,
@@ -119,6 +171,205 @@ async function audit(db: ReturnType<typeof getDb>, adminId: number, action: stri
     entityId,
     metadata: JSON.stringify(metadata),
   });
+}
+
+async function resolveOrderItem(db: ReturnType<typeof getDb>, prefix: string) {
+  if (!/^[0-9a-f-]{8,36}$/i.test(prefix)) return null;
+  const matches = await db.select({
+    itemId: orderItems.id,
+    orderId: orderItems.orderId,
+    productId: orderItems.productId,
+    productName: orderItems.productName,
+    simType: orderItems.simType,
+    fulfillmentStatus: orderItems.fulfillmentStatus,
+    deliveryMethod: orderItems.deliveryMethod,
+    deliveryCost: orderItems.deliveryCost,
+    deliveryCostConfirmed: orderItems.deliveryCostConfirmed,
+    trackingNumber: orderItems.trackingNumber,
+    trackingUrl: orderItems.trackingUrl,
+    activationCodeEncrypted: orderItems.activationCodeEncrypted,
+    fulfillmentInstructions: orderItems.fulfillmentInstructions,
+    orderNumber: orders.orderNumber,
+    orderStatus: orders.status,
+    customerName: orders.customerName,
+    customerEmail: orders.customerEmail,
+    subtotalAmount: orders.subtotalAmount,
+    deliveryAmount: orders.deliveryAmount,
+    totalAmount: orders.totalAmount,
+    currency: orders.currency,
+  }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).where(like(orderItems.id, `${prefix}%`)).limit(2);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function validTrackingUrl(value: string) {
+  if (!value || value === "-") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function sendEsimDeliveryEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>, activationCode: string) {
+  const instructions = item.fulfillmentInstructions || "Следуйте инструкции из карточки тарифа. Если возникнет вопрос, ответьте на это письмо.";
+  return sendTransactionalEmail({
+    to: item.customerEmail,
+    subject: `eSIM по заказу ${item.orderNumber} — SIMKA`,
+    text: `Здравствуйте, ${item.customerName}!\n\neSIM по заказу ${item.orderNumber} готова.\nТариф: ${item.productName}\n\nКод активации:\n${activationCode}\n\nИнструкция:\n${instructions}\n\nНе передавайте код другим людям. Добавляйте eSIM только через настройки устройства.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Ваша eSIM готова</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Тариф: ${escapeHtml(item.productName)}</p><p>Код активации:</p><pre style="overflow-wrap:anywhere;white-space:pre-wrap;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px;font-size:15px">${escapeHtml(activationCode)}</pre><h2 style="font-size:18px">Инструкция</h2><p style="white-space:pre-line">${escapeHtml(instructions)}</p><p><strong>Не передавайте код другим людям.</strong> Добавляйте eSIM только через настройки устройства.</p></div>`,
+  });
+}
+
+async function sendShippingEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>) {
+  const trackingLine = item.trackingUrl ? `${item.trackingNumber}\n${item.trackingUrl}` : item.trackingNumber || "Уточняется";
+  const trackingHtml = item.trackingUrl
+    ? `<a href="${escapeHtml(item.trackingUrl)}">${escapeHtml(item.trackingNumber || "Открыть отслеживание")}</a>`
+    : escapeHtml(item.trackingNumber || "Уточняется");
+  return sendTransactionalEmail({
+    to: item.customerEmail,
+    subject: `SIM отправлена — заказ ${item.orderNumber}`,
+    text: `Здравствуйте, ${item.customerName}!\n\nФизическая SIM по заказу ${item.orderNumber} отправлена.\nТовар: ${item.productName}\nСлужба/способ: ${item.deliveryMethod || "Уточняется"}\nТрек-номер: ${trackingLine}\n\nСохраните это письмо до получения отправления.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">SIM отправлена</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Товар: ${escapeHtml(item.productName)}<br>Служба/способ: ${escapeHtml(item.deliveryMethod || "Уточняется")}<br>Трек-номер: ${trackingHtml}</p><p>Сохраните это письмо до получения отправления.</p></div>`,
+  });
+}
+
+async function sendDeliveryQuoteEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>, totals: { deliveryAmount: number; totalAmount: number; currency: string }) {
+  const total = `${totals.totalAmount.toLocaleString("ru-RU")} ${totals.currency}`;
+  const delivery = `${totals.deliveryAmount.toLocaleString("ru-RU")} ${totals.currency}`;
+  return sendTransactionalEmail({
+    to: item.customerEmail,
+    subject: `Итоговая стоимость заказа ${item.orderNumber} — SIMKA`,
+    text: `Здравствуйте, ${item.customerName}!\n\nСтоимость доставки по заказу ${item.orderNumber} подтверждена.\nДоставка: ${delivery}\nИтоговая сумма заказа: ${total}\n\nМенеджер отправит актуальные реквизиты на этот email.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Стоимость доставки подтверждена</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Доставка: <strong>${escapeHtml(delivery)}</strong><br>Итоговая сумма: <strong>${escapeHtml(total)}</strong></p><p>Менеджер отправит актуальные реквизиты на этот email.</p></div>`,
+  });
+}
+
+async function sendOrderStatusEmail(order: { customerEmail: string; customerName: string; orderNumber: string }, status: string) {
+  const descriptions: Record<string, { subject: string; title: string; body: string }> = {
+    PAID: { subject: "Оплата подтверждена", title: "Оплата получена", body: "Оплата подтверждена. Заказ передан на выполнение." },
+    PROCESSING: { subject: "Заказ выполняется", title: "Начали выполнение", body: "Менеджер начал выдачу eSIM или подготовку физической SIM к отправке." },
+    DELIVERED: { subject: "SIM доставлена", title: "Доставка отмечена завершённой", body: "Физическая SIM отмечена как доставленная. Если вы её не получили, сразу ответьте на это письмо." },
+    COMPLETED: { subject: "Заказ выполнен", title: "Заказ завершён", body: "Все позиции заказа отмечены как выданные или доставленные." },
+  };
+  const message = descriptions[status];
+  if (!message) return { delivered: false as const, reason: "not_configured" as const };
+  return sendTransactionalEmail({
+    to: order.customerEmail,
+    subject: `${message.subject} — ${order.orderNumber}`,
+    text: `Здравствуйте, ${order.customerName}!\n\n${message.body}\nЗаказ: ${order.orderNumber}`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">${escapeHtml(message.title)}</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>${escapeHtml(message.body)}</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong></p></div>`,
+  });
+}
+
+async function sendPaymentRequisitesEmail(order: { customerEmail: string; customerName: string; orderNumber: string; totalAmount: number; currency: string }, requisites: string) {
+  const amount = `${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`;
+  return sendTransactionalEmail({
+    to: order.customerEmail,
+    subject: `Реквизиты для заказа ${order.orderNumber} — SIMKA`,
+    text: `Здравствуйте, ${order.customerName}!\n\nИтоговая сумма заказа ${order.orderNumber}: ${amount}\n\nАктуальные реквизиты:\n${requisites}\n\nПосле оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Реквизиты для оплаты</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong><br>Итоговая сумма: <strong>${escapeHtml(amount)}</strong></p><div style="white-space:pre-line;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px">${escapeHtml(requisites)}</div><p>После оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.</p></div>`,
+  });
+}
+
+async function syncOrderFulfillmentStatus(db: ReturnType<typeof getDb>, orderId: string) {
+  const [order, items] = await Promise.all([
+    db.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)).limit(1),
+    db.select({ simType: orderItems.simType, status: orderItems.fulfillmentStatus }).from(orderItems).where(eq(orderItems.orderId, orderId)),
+  ]);
+  if (order[0]?.status !== "PROCESSING" || items.length === 0) return;
+  const esimReady = items.filter((item) => item.simType === "eSIM").every((item) => ["SENT", "DELIVERED", "COMPLETED"].includes(item.status));
+  const physical = items.filter((item) => item.simType === "SIM");
+  const physicalReady = physical.every((item) => ["SHIPPED", "DELIVERED", "COMPLETED"].includes(item.status));
+  if (!esimReady || !physicalReady) return;
+  const next = physical.length ? "SHIPPED" : "COMPLETED";
+  await db.update(orders).set({ status: next, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, orderId), eq(orders.status, "PROCESSING")));
+}
+
+async function handleFulfillmentReply(token: string, chatId: number, adminId: number, messageId: number, text: string, replyContext: string) {
+  const db = getDb();
+  if (replyContext.startsWith("[EDIT_PAYMENT_REQUISITES]")) {
+    const requisites = text.trim();
+    if (!requisites || requisites.length > 4000) { await sendMessage(token, chatId, "Реквизиты должны содержать от 1 до 4000 символов.", backKeyboard()); return true; }
+    const encryptedValue = await encryptFulfillmentSecret(requisites, `store-setting:${PAYMENT_REQUISITES_KEY}`);
+    await db.insert(storeSettings).values({ key: PAYMENT_REQUISITES_KEY, encryptedValue, updatedBy: String(adminId), updatedAt: new Date().toISOString() }).onConflictDoUpdate({ target: storeSettings.key, set: { encryptedValue, updatedBy: String(adminId), updatedAt: new Date().toISOString() } });
+    await deleteSensitiveMessage(token, chatId, messageId);
+    await audit(db, adminId, "settings.payment_requisites", PAYMENT_REQUISITES_KEY, { configured: true });
+    await sendMessage(token, chatId, "Реквизиты зашифрованы и сохранены. Их можно отправлять клиенту кнопкой в карточке заказа.", { inline_keyboard: [[{ text: "💳 Открыть реквизиты", callback_data: "settings:payment" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    return true;
+  }
+  const costReply = replyContext.match(/^\[DELIVERY_COST:([0-9a-f-]{36})\]/i);
+  if (costReply) {
+    const item = await resolveOrderItem(db, costReply[1]);
+    const cost = Number(text.trim());
+    if (!item || item.simType !== "SIM") { await sendMessage(token, chatId, "Строка заказа не найдена.", backKeyboard()); return true; }
+    if (item.orderStatus !== "WAITING_FOR_MANAGER") { await sendMessage(token, chatId, `Стоимость нельзя менять в статусе ${item.orderStatus}.`, orderBackKeyboard(item.orderNumber)); return true; }
+    if (item.deliveryCostConfirmed) { await sendMessage(token, chatId, "Стоимость этой доставки уже подтверждена. Старый запрос ввода больше не действует.", orderBackKeyboard(item.orderNumber)); return true; }
+    if (!Number.isInteger(cost) || cost < 0 || cost > 100000000) { await sendMessage(token, chatId, "Введите целую сумму от 0 до 100000000 без пробелов и знаков валюты.", orderBackKeyboard(item.orderNumber)); return true; }
+    const totals = await db.transaction(async (tx) => {
+      const [lockedOrder] = await tx.select({ status: orders.status, subtotalAmount: orders.subtotalAmount, currency: orders.currency }).from(orders).where(eq(orders.id, item.orderId)).for("update").limit(1);
+      if (!lockedOrder || lockedOrder.status !== "WAITING_FOR_MANAGER") return null;
+      await tx.update(orderItems).set({ deliveryCost: cost, deliveryCostConfirmed: true, updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
+      const deliveryRows = await tx.select({ simType: orderItems.simType, deliveryCost: orderItems.deliveryCost, confirmed: orderItems.deliveryCostConfirmed }).from(orderItems).where(eq(orderItems.orderId, item.orderId));
+      const deliveryAmount = deliveryRows.filter((row) => row.simType === "SIM").reduce((sum, row) => sum + row.deliveryCost, 0);
+      const pending = deliveryRows.some((row) => row.simType === "SIM" && !row.confirmed);
+      const totalAmount = lockedOrder.subtotalAmount + deliveryAmount;
+      await tx.update(orders).set({ deliveryAmount, totalAmount, paymentInstructionsSentAt: null, updatedAt: new Date().toISOString() }).where(eq(orders.id, item.orderId));
+      return { deliveryAmount, totalAmount, currency: lockedOrder.currency, pending };
+    });
+    if (!totals) { await sendMessage(token, chatId, "Статус заказа уже изменился. Стоимость не сохранена.", orderBackKeyboard(item.orderNumber)); return true; }
+    let delivered = false;
+    if (!totals.pending) delivered = (await sendDeliveryQuoteEmail(item, totals)).delivered;
+    await audit(db, adminId, "order.delivery_cost", item.orderId, { itemId: item.itemId, cost, currency: totals.currency, customerEmailDelivered: delivered });
+    await sendMessage(token, chatId, `Стоимость доставки сохранена: ${cost.toLocaleString("ru-RU")} ${totals.currency}.${totals.pending ? " В заказе ещё есть доставка без цены." : delivered ? " Клиенту отправлена итоговая сумма." : " Автоматическое письмо не доставлено — сообщите итог клиенту вручную."}`);
+    await sendOrderDetails(db, token, chatId, item.orderNumber);
+    return true;
+  }
+
+  const esimReply = replyContext.match(/^\[FULFILL_ESIM:([0-9a-f-]{36})\]/i);
+  if (esimReply) {
+    const item = await resolveOrderItem(db, esimReply[1]);
+    if (!item || item.simType !== "eSIM") { await sendMessage(token, chatId, "Строка eSIM не найдена.", backKeyboard()); return true; }
+    if (item.orderStatus !== "PROCESSING" || !["PENDING", "READY"].includes(item.fulfillmentStatus)) { await sendMessage(token, chatId, `Выдача недоступна: заказ ${item.orderStatus}, eSIM ${item.fulfillmentStatus}.`, orderBackKeyboard(item.orderNumber)); return true; }
+    const separator = text.indexOf("|");
+    const activationCode = (separator >= 0 ? text.slice(0, separator) : text).trim();
+    let instructions = (separator >= 0 ? text.slice(separator + 1) : "").trim();
+    if (!activationCode || activationCode.length > 4000 || instructions.length > 4000) { await sendMessage(token, chatId, "Код обязателен; код и инструкция — максимум по 4000 символов.", orderBackKeyboard(item.orderNumber)); return true; }
+    if (!instructions) {
+      const [product] = await db.select({ instructions: catalogProducts.instructions }).from(catalogProducts).where(eq(catalogProducts.id, item.productId)).limit(1);
+      instructions = product?.instructions || "Следуйте инструкции из карточки тарифа.";
+    }
+    const encrypted = await encryptFulfillmentSecret(activationCode, item.itemId);
+    await db.update(orderItems).set({ activationCodeEncrypted: encrypted, fulfillmentInstructions: instructions, fulfillmentStatus: "READY", updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
+    await deleteSensitiveMessage(token, chatId, messageId);
+    const readyItem = { ...item, activationCodeEncrypted: encrypted, fulfillmentInstructions: instructions, fulfillmentStatus: "READY" };
+    const delivered = (await sendEsimDeliveryEmail(readyItem, activationCode)).delivered;
+    if (delivered) await db.update(orderItems).set({ fulfillmentStatus: "SENT", fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
+    await syncOrderFulfillmentStatus(db, item.orderId);
+    await audit(db, adminId, "order.esim_delivery", item.orderId, { itemId: item.itemId, delivered });
+    await sendMessage(token, chatId, delivered ? "eSIM зашифрована, сохранена и отправлена клиенту по email." : "eSIM зашифрована и сохранена, но письмо не доставлено. После настройки почты нажмите «Повторить eSIM-письмо». ");
+    await sendOrderDetails(db, token, chatId, item.orderNumber);
+    return true;
+  }
+
+  const shipReply = replyContext.match(/^\[SHIP_ITEM:([0-9a-f-]{36})\]/i);
+  if (shipReply) {
+    const item = await resolveOrderItem(db, shipReply[1]);
+    if (!item || item.simType !== "SIM") { await sendMessage(token, chatId, "Строка физической SIM не найдена.", backKeyboard()); return true; }
+    if (item.orderStatus !== "PROCESSING" || item.fulfillmentStatus !== "PENDING" || !item.deliveryCostConfirmed) { await sendMessage(token, chatId, "Сначала подтвердите оплату и стоимость доставки, затем начните выполнение.", orderBackKeyboard(item.orderNumber)); return true; }
+    const [trackingNumber = "", rawUrl = "", rawMethod = ""] = text.split("|").map((part) => part.trim());
+    const trackingUrl = validTrackingUrl(rawUrl);
+    if (!trackingNumber || trackingNumber.length > 160 || trackingUrl === undefined || rawMethod.length > 160) { await sendMessage(token, chatId, "Формат: трек-номер | URL отслеживания или - | служба доставки. Максимум 160 символов.", orderBackKeyboard(item.orderNumber)); return true; }
+    await db.update(orderItems).set({ fulfillmentStatus: "SHIPPED", trackingNumber, trackingUrl, deliveryMethod: rawMethod || item.deliveryMethod, fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
+    const shipped = { ...item, fulfillmentStatus: "SHIPPED", trackingNumber, trackingUrl, deliveryMethod: rawMethod || item.deliveryMethod };
+    const delivered = (await sendShippingEmail(shipped)).delivered;
+    await syncOrderFulfillmentStatus(db, item.orderId);
+    await audit(db, adminId, "order.shipment", item.orderId, { itemId: item.itemId, trackingNumber, customerEmailDelivered: delivered });
+    await sendMessage(token, chatId, delivered ? "Отправка и трек-номер сохранены. Клиенту отправлено письмо." : "Отправка и трек-номер сохранены, но письмо клиенту не доставлено — сообщите трек вручную.");
+    await sendOrderDetails(db, token, chatId, item.orderNumber);
+    return true;
+  }
+  return false;
 }
 
 const editableCategoryFields = new Set([
@@ -241,6 +492,15 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, `SIMKA работает.\nЗаказов: ${recent.length}\nАктивных: ${active}`, backKeyboard());
     return;
   }
+  if (scope === "settings" && action === "payment") {
+    const [setting] = await db.select({ updatedAt: storeSettings.updatedAt, updatedBy: storeSettings.updatedBy }).from(storeSettings).where(eq(storeSettings.key, PAYMENT_REQUISITES_KEY)).limit(1);
+    await sendMessage(token, chatId, setting ? `Платёжные реквизиты настроены.\nОбновлены: ${setting.updatedAt}\nАдминистратор: ${setting.updatedBy}\n\nПолное значение намеренно не показывается в сообщениях.` : "Платёжные реквизиты ещё не настроены. Без них кнопка отправки клиенту не сработает.", { inline_keyboard: [[{ text: setting ? "✏️ Заменить реквизиты" : "➕ Добавить реквизиты", callback_data: "settings:payment_edit" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    return;
+  }
+  if (scope === "settings" && action === "payment_edit") {
+    await sendMessage(token, chatId, "[EDIT_PAYMENT_REQUISITES]\nВведите актуальные реквизиты и понятное назначение платежа. Значение будет зашифровано перед сохранением и не будет показано в карточках бота.", { force_reply: true, selective: true, input_field_placeholder: "Банк, получатель, номер счёта, назначение" });
+    return;
+  }
   if (scope === "orders" && action === "list") {
     const recent = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).orderBy(desc(orders.createdAt)).limit(5);
     const lines = recent.length ? recent.map((order) => `${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "Заказов пока нет.";
@@ -251,7 +511,72 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendOrderDetails(db, token, chatId, first);
     return;
   }
+  if (scope === "order" && action === "requisites_prompt" && first) {
+    const [order] = await db.select({ id: orders.id, paymentMethod: orders.paymentMethod, status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order || order.paymentMethod !== "manager" || order.status !== "WAITING_FOR_MANAGER") { await sendMessage(token, chatId, "Отправка реквизитов сейчас недоступна.", orderBackKeyboard(first)); return; }
+    const pending = await db.select({ id: orderItems.id }).from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM"), eq(orderItems.deliveryCostConfirmed, false))).limit(1);
+    if (pending[0]) { await sendMessage(token, chatId, "Сначала укажите стоимость доставки всех физических SIM.", orderBackKeyboard(first)); return; }
+    await sendMessage(token, chatId, `Отправить сохранённые реквизиты и итоговую сумму на email клиента по заказу ${first}?`, { inline_keyboard: [[{ text: "📧 Да, отправить", callback_data: `order:requisites_confirm:${first}` }], [{ text: "Отмена", callback_data: `order:view:${first}` }]] });
+    return;
+  }
+  if (scope === "order" && action === "requisites_confirm" && first) {
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, customerName: orders.customerName, customerEmail: orders.customerEmail, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order || order.paymentMethod !== "manager" || order.status !== "WAITING_FOR_MANAGER") { await sendMessage(token, chatId, "Отправка реквизитов сейчас недоступна.", orderBackKeyboard(first)); return; }
+    const pending = await db.select({ id: orderItems.id }).from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM"), eq(orderItems.deliveryCostConfirmed, false))).limit(1);
+    if (pending[0]) { await sendMessage(token, chatId, "Сначала укажите стоимость доставки всех физических SIM.", orderBackKeyboard(first)); return; }
+    const [setting] = await db.select({ encryptedValue: storeSettings.encryptedValue }).from(storeSettings).where(eq(storeSettings.key, PAYMENT_REQUISITES_KEY)).limit(1);
+    if (!setting) { await sendMessage(token, chatId, "Сначала добавьте платёжные реквизиты в разделе «💳 Реквизиты».", { inline_keyboard: [[{ text: "💳 Настроить", callback_data: "settings:payment" }], [{ text: "◀️ К заказу", callback_data: `order:view:${first}` }]] }); return; }
+    const requisites = await decryptFulfillmentSecret(setting.encryptedValue, `store-setting:${PAYMENT_REQUISITES_KEY}`);
+    const delivered = (await sendPaymentRequisitesEmail(order, requisites)).delivered;
+    if (delivered) await db.update(orders).set({ paymentInstructionsSentAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(orders.id, order.id));
+    await audit(db, adminId, "order.payment_requisites", order.id, { delivered });
+    await sendMessage(token, chatId, delivered ? "Реквизиты и итоговая сумма отправлены клиенту по email." : "Письмо не доставлено. Проверьте RESEND_API_KEY и EMAIL_FROM; реквизиты остаются сохранены на backend.");
+    await sendOrderDetails(db, token, chatId, order.orderNumber);
+    return;
+  }
+  if (scope === "fulfill" && ["cost", "esim", "resend", "ship", "shipmail"].includes(action) && first) {
+    const item = await resolveOrderItem(db, first);
+    if (!item) { await sendMessage(token, chatId, "Строка заказа не найдена или идентификатор неоднозначен.", backKeyboard()); return; }
+    if (action === "cost") {
+      if (item.simType !== "SIM" || item.orderStatus !== "WAITING_FOR_MANAGER") { await sendMessage(token, chatId, "Стоимость доставки сейчас изменить нельзя.", orderBackKeyboard(item.orderNumber)); return; }
+      await sendMessage(token, chatId, `[DELIVERY_COST:${item.itemId}]\nВведите итоговую стоимость доставки целым числом в ${item.currency}. Для бесплатной доставки отправьте 0.`, { force_reply: true, selective: true, input_field_placeholder: "Например: 500" });
+      return;
+    }
+    if (action === "esim") {
+      if (item.simType !== "eSIM" || item.orderStatus !== "PROCESSING") { await sendMessage(token, chatId, "Сначала подтвердите оплату и нажмите «Начать выполнение».", orderBackKeyboard(item.orderNumber)); return; }
+      await sendMessage(token, chatId, `[FULFILL_ESIM:${item.itemId}]\nВведите код активации | инструкцию. Инструкцию можно не указывать — будет использована инструкция товара. Код шифруется перед сохранением и не показывается в карточке заказа.`, { force_reply: true, selective: true, input_field_placeholder: "Код активации | Инструкция" });
+      return;
+    }
+    if (action === "resend") {
+      if (item.simType !== "eSIM" || !["PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(item.orderStatus) || !item.activationCodeEncrypted) { await sendMessage(token, chatId, "Повторная отправка сейчас недоступна.", orderBackKeyboard(item.orderNumber)); return; }
+      const activationCode = await decryptFulfillmentSecret(item.activationCodeEncrypted, item.itemId);
+      const delivered = (await sendEsimDeliveryEmail(item, activationCode)).delivered;
+      if (delivered) await db.update(orderItems).set({ fulfillmentStatus: "SENT", fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
+      await syncOrderFulfillmentStatus(db, item.orderId);
+      await audit(db, adminId, "order.esim_resend", item.orderId, { itemId: item.itemId, delivered });
+      await sendMessage(token, chatId, delivered ? "eSIM повторно отправлена клиенту." : "Письмо снова не доставлено. Проверьте RESEND_API_KEY и EMAIL_FROM.");
+      await sendOrderDetails(db, token, chatId, item.orderNumber);
+      return;
+    }
+    if (action === "ship") {
+      if (item.simType !== "SIM" || item.orderStatus !== "PROCESSING" || !item.deliveryCostConfirmed) { await sendMessage(token, chatId, "Сначала подтвердите стоимость, оплату и начните выполнение.", orderBackKeyboard(item.orderNumber)); return; }
+      await sendMessage(token, chatId, `[SHIP_ITEM:${item.itemId}]\nВведите: трек-номер | URL отслеживания или - | служба доставки`, { force_reply: true, selective: true, input_field_placeholder: "123456789 | https://… | СДЭК" });
+      return;
+    }
+    if (action === "shipmail") {
+      if (item.simType !== "SIM" || !["SHIPPED", "DELIVERED", "COMPLETED"].includes(item.fulfillmentStatus) || !item.trackingNumber) { await sendMessage(token, chatId, "Повторная отправка трек-номера недоступна.", orderBackKeyboard(item.orderNumber)); return; }
+      const delivered = (await sendShippingEmail(item)).delivered;
+      await audit(db, adminId, "order.shipment_resend", item.orderId, { itemId: item.itemId, delivered });
+      await sendMessage(token, chatId, delivered ? "Трек-номер повторно отправлен клиенту." : "Письмо не доставлено. Проверьте почтовые настройки.");
+      await sendOrderDetails(db, token, chatId, item.orderNumber);
+      return;
+    }
+  }
   if (scope === "order" && action === "paid_prompt" && first) {
+    const [order] = await db.select({ id: orders.id, paymentInstructionsSentAt: orders.paymentInstructionsSentAt }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    const pending = order ? await db.select({ id: orderItems.id }).from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM"), eq(orderItems.deliveryCostConfirmed, false))).limit(1) : [];
+    if (pending[0]) { await sendMessage(token, chatId, "Сначала укажите стоимость доставки всех физических SIM.", orderBackKeyboard(first)); return; }
+    if (!order?.paymentInstructionsSentAt) { await sendMessage(token, chatId, "Сначала отправьте клиенту реквизиты кнопкой в карточке заказа.", orderBackKeyboard(first)); return; }
     await sendMessage(token, chatId, `Подтвердить фактическое получение оплаты по заказу ${first}?`, { inline_keyboard: [[{ text: "Да, деньги получены", callback_data: `order:paid_confirm:${first}` }], [{ text: "Отмена", callback_data: `order:view:${first}` }]] });
     return;
   }
@@ -270,10 +595,15 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       await sendMessage(token, chatId, `Заказ в статусе ${order.status} отменить нельзя.`, { inline_keyboard: [[{ text: "◀️ К заказу", callback_data: `order:view:${order.orderNumber}` }]] });
       return;
     }
-    const cancelledItems = await db.select({ productId: orderItems.productId, variantId: orderItems.variantId, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, order.id));
+    const cancelledItems = await db.select({ productId: orderItems.productId, variantId: orderItems.variantId, quantity: orderItems.quantity, fulfillmentStatus: orderItems.fulfillmentStatus }).from(orderItems).where(eq(orderItems.orderId, order.id));
+    if (cancelledItems.some((item) => ["SENT", "SHIPPED", "DELIVERED", "COMPLETED"].includes(item.fulfillmentStatus))) {
+      await sendMessage(token, chatId, "Заказ уже частично выдан или отправлен. Простая отмена запрещена — оформите возврат отдельно.", orderBackKeyboard(order.orderNumber));
+      return;
+    }
     await db.transaction(async (tx) => {
-      const changed = await tx.update(orders).set({ status: "CANCELLED", inventoryReserved: false }).where(and(eq(orders.id, order.id), eq(orders.status, order.status))).returning({ id: orders.id });
+      const changed = await tx.update(orders).set({ status: "CANCELLED", inventoryReserved: false, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, order.id), eq(orders.status, order.status))).returning({ id: orders.id });
       if (!changed[0]) throw new Error("ORDER_STATUS_CHANGED");
+      await tx.update(orderItems).set({ fulfillmentStatus: "CANCELLED", activationCodeEncrypted: null, fulfillmentInstructions: null, updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
       const productQuantities = new Map<number, number>();
       const variantQuantities = new Map<number, number>();
       for (const item of order.inventoryReserved ? cancelledItems : []) {
@@ -316,27 +646,38 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.\n${cancellationEmailDelivered ? "Клиенту отправлено письмо об отмене." : "Автоматическое письмо клиенту не доставлено — сообщите об отмене вручную."}`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
     return;
   }
-  if (scope === "order" && ["paid_confirm", "process", "ship", "deliver", "complete"].includes(action) && first) {
-    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+  if (scope === "order" && ["paid_confirm", "process", "deliver", "complete"].includes(action) && first) {
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, customerName: orders.customerName, customerEmail: orders.customerEmail, paymentInstructionsSentAt: orders.paymentInstructionsSentAt }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
     if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
     const transitions: Record<string, { from: string; to: string }> = {
       paid_confirm: { from: "WAITING_FOR_MANAGER", to: "PAID" },
       process: { from: "PAID", to: "PROCESSING" },
-      ship: { from: "PROCESSING", to: "SHIPPED" },
       deliver: { from: "SHIPPED", to: "DELIVERED" },
-      complete: { from: order.status === "DELIVERED" ? "DELIVERED" : "PROCESSING", to: "COMPLETED" },
+      complete: { from: "DELIVERED", to: "COMPLETED" },
     };
     const transition = transitions[action];
     if (action === "paid_confirm" && order.paymentMethod !== "manager") {
       await sendMessage(token, chatId, "Криптовалютную оплату может подтвердить только защищённый webhook платёжного провайдера.");
       return;
     }
+    if (action === "paid_confirm" && !order.paymentInstructionsSentAt) {
+      await sendMessage(token, chatId, "Сначала отправьте клиенту реквизиты кнопкой в карточке заказа.", orderBackKeyboard(order.orderNumber));
+      return;
+    }
+    if (action === "paid_confirm") {
+      const pendingCost = await db.select({ id: orderItems.id }).from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM"), eq(orderItems.deliveryCostConfirmed, false))).limit(1);
+      if (pendingCost[0]) { await sendMessage(token, chatId, "Сначала укажите стоимость доставки всех физических SIM.", orderBackKeyboard(order.orderNumber)); return; }
+    }
     if (order.status !== transition.from) {
       await sendMessage(token, chatId, `Переход недоступен для статуса ${order.status}.`);
       return;
     }
-    await db.update(orders).set({ status: transition.to }).where(and(eq(orders.id, order.id), eq(orders.status, transition.from)));
-    await audit(db, adminId, `order.${action}`, order.id, { orderNumber: order.orderNumber, from: transition.from, to: transition.to });
+    const changed = await db.update(orders).set({ status: transition.to, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, order.id), eq(orders.status, transition.from))).returning({ id: orders.id });
+    if (!changed[0]) { await sendMessage(token, chatId, "Статус заказа уже изменился. Откройте его заново.", orderBackKeyboard(order.orderNumber)); return; }
+    if (action === "deliver") await db.update(orderItems).set({ fulfillmentStatus: "DELIVERED", fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM")));
+    if (action === "complete") await db.update(orderItems).set({ fulfillmentStatus: "COMPLETED", updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
+    const customerEmailDelivered = (await sendOrderStatusEmail(order, transition.to)).delivered;
+    await audit(db, adminId, `order.${action}`, order.id, { orderNumber: order.orderNumber, from: transition.from, to: transition.to, customerEmailDelivered });
     await sendOrderDetails(db, token, chatId, order.orderNumber);
     return;
   }
@@ -466,6 +807,7 @@ export async function POST(request: Request) {
 
     let { text = "" } = message!;
     const replyContext = message?.reply_to_message?.text ?? "";
+    if (await handleFulfillmentReply(token, chatId, from.id, message!.message_id, text, replyContext)) return Response.json({ ok: true });
     if (await handleCatalogAdminMessage({ token, chatId, adminId: from.id }, text, replyContext)) return Response.json({ ok: true });
     if (replyContext.startsWith("[CREATE_CATEGORY]")) {
       text = `/category_create ${text}`;
@@ -501,17 +843,25 @@ export async function POST(request: Request) {
         await sendMessage(token, chatId, "Укажите номер: /paid SIM-YYYYMMDD-XXXXXXXX");
       } else {
         const db = getDb();
-        const [order] = await db.select({ id: orders.id, status: orders.status, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod }).from(orders).where(eq(orders.orderNumber, number)).limit(1);
+        const [order] = await db.select({ id: orders.id, status: orders.status, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, customerName: orders.customerName, customerEmail: orders.customerEmail, paymentInstructionsSentAt: orders.paymentInstructionsSentAt }).from(orders).where(eq(orders.orderNumber, number)).limit(1);
         if (!order) {
           await sendMessage(token, chatId, "Заказ не найден.");
         } else if (order.paymentMethod !== "manager") {
           await sendMessage(token, chatId, "Криптовалютную оплату может подтвердить только защищённый webhook платёжного провайдера.");
         } else if (order.status !== "WAITING_FOR_MANAGER") {
           await sendMessage(token, chatId, `Нельзя подтвердить заказ в статусе ${order.status}.`);
+        } else if (!order.paymentInstructionsSentAt) {
+          await sendMessage(token, chatId, "Сначала отправьте клиенту реквизиты кнопкой в карточке заказа.", orderBackKeyboard(order.orderNumber));
         } else {
-          await db.update(orders).set({ status: "PAID" }).where(eq(orders.id, order.id));
-          await audit(db, from.id, "order.payment_confirmed", order.id, { orderNumber: order.orderNumber, method: "manager" });
-          await sendMessage(token, chatId, `Оплата подтверждена. Заказ ${order.orderNumber} → PAID.`);
+          const pendingCost = await db.select({ id: orderItems.id }).from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM"), eq(orderItems.deliveryCostConfirmed, false))).limit(1);
+          if (pendingCost[0]) {
+            await sendMessage(token, chatId, "Сначала укажите стоимость доставки всех физических SIM через карточку заказа.", orderBackKeyboard(order.orderNumber));
+          } else {
+            await db.update(orders).set({ status: "PAID", updatedAt: new Date().toISOString() }).where(eq(orders.id, order.id));
+            const customerEmailDelivered = (await sendOrderStatusEmail(order, "PAID")).delivered;
+            await audit(db, from.id, "order.payment_confirmed", order.id, { orderNumber: order.orderNumber, method: "manager", customerEmailDelivered });
+            await sendMessage(token, chatId, `Оплата подтверждена. Заказ ${order.orderNumber} → PAID.${customerEmailDelivered ? " Клиенту отправлено письмо." : " Письмо клиенту не доставлено."}`);
+          }
         }
       }
     } else if (command === "/categories") {

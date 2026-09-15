@@ -29,10 +29,14 @@ try {
       customer_comment TEXT NOT NULL DEFAULT '',
       payment_method TEXT NOT NULL CHECK (payment_method IN ('crypto', 'manager')),
       status TEXT NOT NULL CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT', 'PAYMENT_PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED')),
+      subtotal_amount INTEGER NOT NULL DEFAULT 0,
+      delivery_amount INTEGER NOT NULL DEFAULT 0,
       total_amount INTEGER NOT NULL,
       currency TEXT NOT NULL DEFAULT 'RUB',
       inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      payment_instructions_sent_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_request_id ON orders(request_id);
@@ -40,10 +44,14 @@ try {
     CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS subtotal_amount INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_amount INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
 
-    -- Older deploys used a three-state check. Replace it with the extensible workflow.
+    -- Statuses intentionally remain text so the workflow can be extended without
+    -- a destructive migration or a production restart race.
     ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
-    ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT', 'PAYMENT_PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED'));
 
     CREATE TABLE IF NOT EXISTS order_items (
       id TEXT PRIMARY KEY,
@@ -55,10 +63,31 @@ try {
       sim_type TEXT NOT NULL CHECK (sim_type IN ('eSIM', 'SIM')),
       unit_price INTEGER NOT NULL,
       quantity INTEGER NOT NULL,
-      line_total INTEGER NOT NULL
+      line_total INTEGER NOT NULL,
+      fulfillment_status TEXT NOT NULL DEFAULT 'PENDING',
+      delivery_method TEXT,
+      delivery_cost INTEGER NOT NULL DEFAULT 0,
+      delivery_cost_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      tracking_number TEXT,
+      tracking_url TEXT,
+      activation_code_encrypted TEXT,
+      fulfillment_instructions TEXT,
+      fulfilled_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     ALTER TABLE order_items ADD COLUMN IF NOT EXISTS variant_id INTEGER;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PENDING';
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS delivery_method TEXT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS delivery_cost INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS delivery_cost_confirmed BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS tracking_number TEXT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS tracking_url TEXT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS activation_code_encrypted TEXT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS fulfillment_instructions TEXT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS fulfilled_at TEXT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
+    CREATE INDEX IF NOT EXISTS idx_order_items_fulfillment_status ON order_items(fulfillment_status);
 
     CREATE TABLE IF NOT EXISTS countries (
       id SERIAL PRIMARY KEY,
@@ -155,6 +184,9 @@ try {
       activation_terms TEXT NOT NULL DEFAULT '',
       compatibility TEXT NOT NULL DEFAULT '',
       instructions TEXT NOT NULL DEFAULT '',
+      esim_type TEXT,
+      esim_delivery_method TEXT,
+      delivery_options JSONB NOT NULL DEFAULT '[]'::jsonb,
       popular BOOLEAN NOT NULL DEFAULT FALSE,
       tone TEXT NOT NULL DEFAULT 'from-[#1679f2] to-[#0d46ad]',
       available BOOLEAN NOT NULL DEFAULT FALSE,
@@ -179,6 +211,9 @@ try {
     CREATE INDEX IF NOT EXISTS idx_products_publication_order ON products(publication_status, archived_at, sort_order);
     CREATE INDEX IF NOT EXISTS idx_products_catalog_filters ON products(country_id, operator_id, sim_type, available);
     CREATE INDEX IF NOT EXISTS idx_products_price_validity_data ON products(price, validity_days, data_mb);
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS esim_type TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS esim_delivery_method TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_options JSONB NOT NULL DEFAULT '[]'::jsonb;
 
     CREATE TABLE IF NOT EXISTS product_variants (
       id SERIAL PRIMARY KEY,
@@ -231,6 +266,18 @@ try {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);
+
+    CREATE TABLE IF NOT EXISTS store_settings (
+      key TEXT PRIMARY KEY,
+      encrypted_value TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS app_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
 
     CREATE TABLE IF NOT EXISTS seo_redirects (
       id SERIAL PRIMARY KEY,
@@ -391,6 +438,76 @@ try {
       (6, 'SIM оператора KDDI: 15 ГБ, срок действия 16 дней.', 'SIM KDDI для Японии: 15 ГБ на 16 дней. Условия активации, доставка, цена и наличие в карточке тарифа.')
     ) AS seed(id, old_description, new_description)
     WHERE product.id = seed.id AND (product.og_description IS NULL OR product.og_description = seed.old_description);
+
+    -- One-time compatibility migration. The marker prevents later restarts from
+    -- overwriting legitimate zero subtotals or administrator-edited product data.
+    DO $fulfillment_v1$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM app_migrations WHERE id = '20260915_fulfillment_v1') THEN
+        UPDATE orders
+        SET subtotal_amount = total_amount, delivery_amount = 0
+        WHERE total_amount >= 0;
+
+        UPDATE order_items AS item
+        SET
+          fulfillment_status = CASE
+            WHEN parent.status IN ('CANCELLED', 'REFUNDED', 'FAILED') THEN parent.status
+            WHEN parent.status = 'COMPLETED' THEN 'COMPLETED'
+            WHEN parent.status = 'DELIVERED' THEN 'DELIVERED'
+            WHEN parent.status = 'SHIPPED' AND item.sim_type = 'SIM' THEN 'SHIPPED'
+            WHEN parent.status = 'SHIPPED' AND item.sim_type = 'eSIM' THEN 'SENT'
+            ELSE 'PENDING'
+          END,
+          delivery_cost_confirmed = CASE
+            WHEN item.sim_type = 'eSIM' THEN TRUE
+            WHEN parent.status = 'WAITING_FOR_MANAGER' THEN FALSE
+            ELSE TRUE
+          END
+        FROM orders AS parent
+        WHERE item.order_id = parent.id;
+
+        UPDATE products
+        SET
+          esim_type = COALESCE(esim_type, 'consumer'),
+          esim_delivery_method = COALESCE(esim_delivery_method, 'email')
+        WHERE sim_type = 'eSIM';
+
+        UPDATE products
+        SET delivery_options = jsonb_build_array(jsonb_build_object(
+          'id', 'manager-delivery',
+          'label', 'Доставка по согласованию с менеджером',
+          'cost', NULL,
+          'currency', currency,
+          'regions', jsonb_build_array('Регион уточняется при оформлении'),
+          'dispatchDaysMin', NULL,
+          'dispatchDaysMax', NULL
+        ))
+        WHERE sim_type = 'SIM' AND delivery_options = '[]'::jsonb;
+
+        INSERT INTO app_migrations (id) VALUES ('20260915_fulfillment_v1');
+      END IF;
+    END
+    $fulfillment_v1$;
+
+    DO $fulfillment_constraints$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_subtotal_amount_nonnegative') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_subtotal_amount_nonnegative CHECK (subtotal_amount >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_delivery_amount_nonnegative') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_delivery_amount_nonnegative CHECK (delivery_amount >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_total_amount_nonnegative') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_total_amount_nonnegative CHECK (total_amount >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_total_amount_consistent') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_total_amount_consistent CHECK (total_amount = subtotal_amount + delivery_amount);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'order_items_delivery_cost_nonnegative') THEN
+        ALTER TABLE order_items ADD CONSTRAINT order_items_delivery_cost_nonnegative CHECK (delivery_cost >= 0);
+      END IF;
+    END
+    $fulfillment_constraints$;
 
     INSERT INTO product_variants (
       id, product_id, name, sku, slug, price, currency, data_volume, validity_days,

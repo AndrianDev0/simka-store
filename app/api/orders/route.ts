@@ -14,6 +14,7 @@ const payloadSchema = z.object({
   customerComment: z.string().trim().max(1000).default(""),
   paymentMethod: z.enum(["crypto", "manager"]),
   items: z.array(z.object({ productId: z.number().int().positive(), variantId: z.number().int().positive().optional(), quantity: z.number().int().min(1).max(20) })).min(1).max(30),
+  deliverySelections: z.array(z.object({ productId: z.number().int().positive(), optionId: z.string().trim().min(1).max(80) })).max(30).default([]),
 }).strict();
 
 function orderNumber() {
@@ -45,6 +46,10 @@ async function notifyManagers(order: {
   customerContact: string;
   paymentMethod: "crypto" | "manager";
   totalAmount: number;
+  deliveryAmount: number;
+  deliveryAddress?: string;
+  deliveryMethods: string[];
+  hasPendingDeliveryCost: boolean;
   currency: string;
   items: Array<{ productName: string; quantity: number }>;
 }) {
@@ -61,6 +66,10 @@ async function notifyManagers(order: {
     order.customerContact ? `Контакт: ${order.customerContact}` : "",
     `Оплата: ${paymentLabel}`,
     `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
+    order.deliveryAmount ? `Доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
+    order.deliveryAddress ? `Адрес: ${order.deliveryAddress}` : "",
+    order.deliveryMethods.length ? `Способ доставки: ${order.deliveryMethods.join(", ")}` : "",
+    order.hasPendingDeliveryCost ? "Стоимость доставки ещё должен подтвердить менеджер до отправки реквизитов." : "",
     "",
     lines,
     "",
@@ -69,7 +78,7 @@ async function notifyManagers(order: {
   const telegramUsername = order.customerContact.match(/^@([a-zA-Z0-9_]{5,32})$/)?.[1];
   const keyboard = [
     ...(telegramUsername ? [[{ text: "💬 Связаться с клиентом", url: `https://t.me/${telegramUsername}` }]] : []),
-    [{ text: "✅ Подтвердить получение оплаты", callback_data: `order:paid_prompt:${order.orderNumber}` }],
+    [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }],
     [{ text: "🛒 Открыть заказы", callback_data: "orders:list" }],
   ];
   await Promise.all(adminIds.map(async (chatId) => {
@@ -90,6 +99,8 @@ async function notifyCustomer(order: {
   customerEmail: string;
   paymentMethod: "crypto" | "manager";
   totalAmount: number;
+  deliveryAmount: number;
+  hasPendingDeliveryCost: boolean;
   currency: string;
   items: Array<{ productName: string; quantity: number }>;
 }) {
@@ -105,8 +116,8 @@ async function notifyCustomer(order: {
   return sendTransactionalEmail({
     to: order.customerEmail,
     subject: `Заказ ${order.orderNumber} создан — SIMKA`,
-    text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\nСумма: ${amount}\n\n${lines}\n\n${paymentText}\n\nСохраните номер заказа для обращения в поддержку.`,
-    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>Сумма: <strong>${safeAmount}</strong></p><ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p><p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
+    text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}\n\nСохраните номер заказа для обращения в поддержку.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p><p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
   });
 }
 
@@ -162,13 +173,51 @@ export async function POST(request: Request) {
     const currencies = new Set(resolved.map((line) => line.currency));
     if (currencies.size !== 1) throw new Error("MIXED_CURRENCY");
     const currency = resolved[0].currency;
+    const esimUnitCount = resolved.filter(({ product }) => product.type === "eSIM").reduce((sum, line) => sum + line.quantity, 0);
+    if (esimUnitCount > 20) throw new Error("TOO_MANY_ESIM_UNITS");
     const hasPhysicalSim = resolved.some(({ product }) => product.type === "SIM");
     if (hasPhysicalSim && !parsed.data.deliveryAddress) return Response.json({ error: "Укажите адрес доставки физической SIM" }, { status: 400 });
 
+    const requestedDelivery = new Map<number, string>();
+    for (const selection of parsed.data.deliverySelections) {
+      if (requestedDelivery.has(selection.productId)) throw new Error("DELIVERY_OPTION_UNAVAILABLE");
+      requestedDelivery.set(selection.productId, selection.optionId);
+    }
+    const deliveryByProduct = new Map<number, NonNullable<(typeof resolved)[number]["product"]["deliveryOptions"]>[number]>();
+    for (const productId of new Set(resolved.filter(({ product }) => product.type === "SIM").map(({ product }) => product.id))) {
+      const product = productById.get(productId)!;
+      const optionId = requestedDelivery.get(productId);
+      const option = optionId ? product.deliveryOptions.find((item) => item.id === optionId) : undefined;
+      if (!option) throw new Error("DELIVERY_OPTION_UNAVAILABLE");
+      if (option.currency !== currency) throw new Error("DELIVERY_CURRENCY_MISMATCH");
+      deliveryByProduct.set(productId, option);
+    }
+    if (parsed.data.paymentMethod === "crypto" && [...deliveryByProduct.values()].some((option) => option.cost === null || option.regions.length > 0)) {
+      throw new Error("DELIVERY_REQUIRES_MANAGER");
+    }
+
     const id = crypto.randomUUID();
     const number = orderNumber();
-    const totalAmount = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
+    const subtotalAmount = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
+    const deliveryAmount = [...deliveryByProduct.values()].reduce((sum, option) => sum + (option.cost ?? 0), 0);
+    const totalAmount = subtotalAmount + deliveryAmount;
     const status = parsed.data.paymentMethod === "manager" ? "WAITING_FOR_MANAGER" : "WAITING_PAYMENT";
+    const chargedDeliveryProducts = new Set<number>();
+    const itemRows = resolved.flatMap(({ product, variant, quantity, unitPrice, lineTotal }) => {
+      const delivery = deliveryByProduct.get(product.id);
+      const chargeDelivery = Boolean(delivery) && !chargedDeliveryProducts.has(product.id);
+      if (delivery) chargedDeliveryProducts.add(product.id);
+      const baseName = variant ? `${product.name} · ${variant.name}` : product.name;
+      const units = product.type === "eSIM" ? quantity : 1;
+      return Array.from({ length: units }, (_, unitIndex) => ({
+        id: crypto.randomUUID(), orderId: id, productId: product.id, variantId: variant?.id, sku: variant?.sku ?? product.sku,
+        productName: units > 1 ? `${baseName} · eSIM ${unitIndex + 1}/${units}` : baseName, simType: product.type, unitPrice,
+        quantity: product.type === "eSIM" ? 1 : quantity, lineTotal: product.type === "eSIM" ? unitPrice : lineTotal,
+        fulfillmentStatus: "PENDING", deliveryMethod: delivery?.label ?? (product.type === "eSIM" ? product.esimDeliveryMethod || "email" : null),
+        deliveryCost: chargeDelivery && unitIndex === 0 ? delivery?.cost ?? 0 : 0,
+        deliveryCostConfirmed: product.type === "eSIM" || !chargeDelivery || unitIndex > 0 || (delivery?.cost !== null && delivery?.regions.length === 0),
+      }));
+    });
     await db.transaction(async (tx) => {
       for (const [productId, quantity] of quantityByProduct) {
         const product = productById.get(productId)!;
@@ -192,8 +241,8 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, totalAmount, currency, inventoryReserved: true });
-      await tx.insert(orderItems).values(resolved.map(({ product, variant, quantity, unitPrice, lineTotal }) => ({ id: crypto.randomUUID(), orderId: id, productId: product.id, variantId: variant?.id, sku: variant?.sku ?? product.sku, productName: variant ? `${product.name} · ${variant.name}` : product.name, simType: product.type, unitPrice, quantity, lineTotal })));
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true });
+      await tx.insert(orderItems).values(itemRows);
     });
     let managerNotified = false;
     let customerNotified = false;
@@ -204,6 +253,10 @@ export async function POST(request: Request) {
         customerContact: parsed.data.customerContact,
         paymentMethod: parsed.data.paymentMethod,
         totalAmount,
+        deliveryAmount,
+        deliveryAddress: parsed.data.deliveryAddress,
+        deliveryMethods: [...deliveryByProduct.values()].map((option) => option.label),
+        hasPendingDeliveryCost: [...deliveryByProduct.values()].some((option) => option.cost === null || option.regions.length > 0),
         currency,
         items: resolved.map(({ product, variant, quantity }) => ({ productName: variant ? `${product.name} · ${variant.name}` : product.name, quantity })),
       };
@@ -229,6 +282,10 @@ export async function POST(request: Request) {
     if (error instanceof Error && error.message === "PRODUCT_VARIANT_UNAVAILABLE") return Response.json({ error: "Выбранный вариант тарифа больше недоступен" }, { status: 409 });
     if (error instanceof Error && error.message === "INSUFFICIENT_STOCK") return Response.json({ error: "Выбранное количество превышает остаток" }, { status: 409 });
     if (error instanceof Error && error.message === "MIXED_CURRENCY") return Response.json({ error: "Оформите товары в разных валютах отдельными заказами" }, { status: 409 });
+    if (error instanceof Error && error.message === "TOO_MANY_ESIM_UNITS") return Response.json({ error: "В одном заказе можно оформить не более 20 eSIM" }, { status: 409 });
+    if (error instanceof Error && error.message === "DELIVERY_OPTION_UNAVAILABLE") return Response.json({ error: "Выберите доступный способ доставки для каждой физической SIM" }, { status: 409 });
+    if (error instanceof Error && error.message === "DELIVERY_CURRENCY_MISMATCH") return Response.json({ error: "Способ доставки указан в другой валюте. Оформите заказ отдельно." }, { status: 409 });
+    if (error instanceof Error && error.message === "DELIVERY_REQUIRES_MANAGER") return Response.json({ error: "Эту доставку должен подтвердить менеджер. Выберите оплату через менеджера." }, { status: 409 });
     console.error("order_creation_failed", { name: error instanceof Error ? error.name : "UnknownError" });
     return Response.json({ error: "Не удалось создать заказ. Попробуйте ещё раз." }, { status: 500 });
   }

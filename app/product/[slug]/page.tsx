@@ -14,6 +14,7 @@ import {
   Radio,
   ShieldCheck,
   Smartphone,
+  Truck,
   Wifi,
   type LucideIcon,
 } from "lucide-react";
@@ -44,6 +45,24 @@ function formatPrice(price: number, currency: string) {
   } catch {
     return `${new Intl.NumberFormat("ru-RU").format(price)} ${currency}`;
   }
+}
+
+function dispatchWindow(min: number | null, max: number | null) {
+  if (min === null && max === null) return "Срок подтвердит менеджер";
+  if (min !== null && max !== null && min !== max) return `Отправка через ${min}–${max} дн.`;
+  if (min !== null && max === null) return `Отправка от ${min} дн.`;
+  if (min === null && max !== null) return `Отправка до ${max} дн.`;
+  return `Отправка через ${min} дн.`;
+}
+
+function esimTypeLabel(value: string | null) {
+  const labels: Record<string, string> = { consumer: "Потребительская", travel: "Туристическая", m2m: "M2M / IoT" };
+  return value ? labels[value.toLowerCase()] ?? value : "Уточняется до оплаты";
+}
+
+function esimDeliveryLabel(value: string | null) {
+  const labels: Record<string, string> = { email: "По email", qr: "QR-код по email", api: "Автоматически после оплаты" };
+  return value ? labels[value.toLowerCase()] ?? value : "Email после оплаты";
 }
 
 function availabilityDetails(status: CatalogProduct["availabilityStatus"], available = true) {
@@ -255,6 +274,31 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
             </dl>
           </section>
         </div>
+
+        <section aria-labelledby="delivery-title" className="mt-12">
+          <h2 id="delivery-title" className="text-2xl font-black tracking-tight text-[#10213a]">Получение товара</h2>
+          {product.type === "eSIM" ? (
+            <div className="mt-5 grid gap-4 rounded-2xl border border-[#dbe5ef] bg-[#f7fbff] p-5 sm:grid-cols-3">
+              <Detail icon={Smartphone} label="Тип eSIM" value={esimTypeLabel(product.esimType)} />
+              <Detail icon={PackageCheck} label="Способ получения" value={esimDeliveryLabel(product.esimDeliveryMethod)} />
+              <Detail icon={ShieldCheck} label="Статус выдачи" value="Отслеживается менеджером в заказе" />
+            </div>
+          ) : product.deliveryOptions.length ? (
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {product.deliveryOptions.map((option) => (
+                <article key={option.id} className="rounded-2xl border border-[#dbe5ef] bg-white p-5">
+                  <span className="grid size-10 place-items-center rounded-xl bg-[#edf5ff] text-[#1168e8]"><Truck aria-hidden="true" className="size-5" /></span>
+                  <h3 className="mt-4 font-black text-[#10213a]">{option.label}</h3>
+                  <p className="mt-2 text-sm font-bold text-[#28577f]">{option.cost === null ? "Стоимость подтвердит менеджер" : formatPrice(option.cost, option.currency)}</p>
+                  <p className="mt-2 text-sm text-[#637389]">{dispatchWindow(option.dispatchDaysMin, option.dispatchDaysMax)}</p>
+                  {option.regions.length > 0 && <p className="mt-2 text-xs leading-5 text-[#718096]">Регионы: {option.regions.join(", ")}. Применимость к адресу подтвердит менеджер до оплаты.</p>}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Варианты, стоимость и регион доставки подтвердит менеджер до оплаты.</p>
+          )}
+        </section>
 
         {characteristics.length > 0 && (
           <section aria-labelledby="characteristics-title" className="mt-12">
