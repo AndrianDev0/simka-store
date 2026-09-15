@@ -62,13 +62,19 @@ async function notifyManagers(order: {
     "",
     lines,
     "",
-    `Для подтверждения оплаты: /paid ${order.orderNumber}`,
+    "Свяжитесь с клиентом, передайте актуальные реквизиты и подтвердите оплату только после фактического поступления средств.",
   ].filter(Boolean).join("\n");
+  const telegramUsername = order.customerContact.match(/^@([a-zA-Z0-9_]{5,32})$/)?.[1];
+  const keyboard = [
+    ...(telegramUsername ? [[{ text: "💬 Связаться с клиентом", url: `https://t.me/${telegramUsername}` }]] : []),
+    [{ text: "✅ Подтвердить получение оплаты", callback_data: `order:paid_prompt:${order.orderNumber}` }],
+    [{ text: "🛒 Открыть заказы", callback_data: "orders:list" }],
+  ];
   await Promise.all(adminIds.map(async (chatId) => {
     const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text, reply_markup: { inline_keyboard: keyboard } }),
     });
     if (!response.ok) throw new Error("TELEGRAM_NOTIFY_FAILED");
   }));
@@ -108,16 +114,22 @@ export async function POST(request: Request) {
       await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, totalAmount });
       await tx.insert(orderItems).values(resolved.map(({ product, quantity, lineTotal }) => ({ id: crypto.randomUUID(), orderId: id, productId: product.id, sku: product.sku, productName: `${product.country} · ${product.data}`, simType: product.type, unitPrice: product.price, quantity, lineTotal })));
     });
-    void notifyManagers({
-      orderNumber: number,
-      customerName: parsed.data.customerName,
-      customerEmail: parsed.data.customerEmail.toLowerCase(),
-      customerContact: parsed.data.customerContact,
-      paymentMethod: parsed.data.paymentMethod,
-      totalAmount,
-      items: resolved.map(({ product, quantity }) => ({ productName: `${product.country} · ${product.data}`, quantity })),
-    }).catch((error) => console.error("order_manager_notification_failed", { name: error instanceof Error ? error.name : "UnknownError" }));
-    return Response.json({ order: { orderNumber: number, status, totalAmount, currency: "RUB" } }, { status: 201, headers: { "Cache-Control": "no-store" } });
+    let managerNotified = true;
+    try {
+      await notifyManagers({
+        orderNumber: number,
+        customerName: parsed.data.customerName,
+        customerEmail: parsed.data.customerEmail.toLowerCase(),
+        customerContact: parsed.data.customerContact,
+        paymentMethod: parsed.data.paymentMethod,
+        totalAmount,
+        items: resolved.map(({ product, quantity }) => ({ productName: `${product.country} · ${product.data}`, quantity })),
+      });
+    } catch (error) {
+      managerNotified = false;
+      console.error("order_manager_notification_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+    }
+    return Response.json({ order: { orderNumber: number, status, totalAmount, currency: "RUB", managerNotified } }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof SyntaxError) return Response.json({ error: "Некорректный формат запроса" }, { status: 400 });
     if (error instanceof Error && error.message === "PRODUCT_UNAVAILABLE") return Response.json({ error: "Один из тарифов больше недоступен" }, { status: 409 });

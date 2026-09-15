@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, categories, orders, productCategories } from "@/db/schema";
+import { adminAuditLog, categories, orderItems, orders, productCategories } from "@/db/schema";
 import { getProductById } from "@/lib/catalog";
 
 const updateSchema = z.object({
@@ -33,7 +33,8 @@ function safeEqual(left: string, right: string) {
   return difference === 0;
 }
 
-type InlineKeyboard = { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+type InlineButton = { text: string; callback_data?: string; url?: string };
+type InlineKeyboard = { inline_keyboard: Array<Array<InlineButton>> };
 type ReplyMarkup = InlineKeyboard | { force_reply: true; selective: true; input_field_placeholder?: string };
 
 async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: ReplyMarkup) {
@@ -62,6 +63,45 @@ function mainKeyboard(): InlineKeyboard {
 
 function backKeyboard(): InlineKeyboard {
   return { inline_keyboard: [[{ text: "◀️ В меню", callback_data: "menu" }]] };
+}
+
+function orderListKeyboard(list: Array<{ orderNumber: string; status: string }>): InlineKeyboard {
+  return { inline_keyboard: [
+    ...list.map((order) => [{ text: `${order.status === "WAITING_FOR_MANAGER" ? "🟡" : order.status === "PAID" ? "🟢" : "📦"} ${order.orderNumber}`, callback_data: `order:view:${order.orderNumber}` }]),
+    [{ text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+}
+
+async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, orderNumber: string) {
+  const [order] = await db.select().from(orders).where(eq(orders.orderNumber, orderNumber)).limit(1);
+  if (!order) {
+    await sendMessage(token, chatId, "Заказ не найден.", backKeyboard());
+    return;
+  }
+  const items = await db.select({ productName: orderItems.productName, simType: orderItems.simType, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, order.id));
+  const hasPhysicalSim = items.some((item) => item.simType === "SIM");
+  const lines = items.map((item) => `• ${item.productName} × ${item.quantity}`).join("\n");
+  const actions: Array<Array<InlineButton>> = [];
+  if (order.paymentMethod === "manager" && order.status === "WAITING_FOR_MANAGER") actions.push([{ text: "✅ Подтвердить получение оплаты", callback_data: `order:paid_prompt:${order.orderNumber}` }]);
+  if (order.status === "PAID") actions.push([{ text: "⚙️ Начать выполнение", callback_data: `order:process:${order.orderNumber}` }]);
+  if (order.status === "PROCESSING") actions.push([{ text: hasPhysicalSim ? "📦 Отметить отправленным" : "✅ Отметить eSIM выданной", callback_data: `order:${hasPhysicalSim ? "ship" : "complete"}:${order.orderNumber}` }]);
+  if (order.status === "SHIPPED") actions.push([{ text: "🚚 Отметить доставленным", callback_data: `order:deliver:${order.orderNumber}` }]);
+  if (order.status === "DELIVERED") actions.push([{ text: "✅ Завершить заказ", callback_data: `order:complete:${order.orderNumber}` }]);
+  actions.push([{ text: "◀️ К заказам", callback_data: "orders:list" }]);
+  const text = [
+    `🛒 ${order.orderNumber}`,
+    `Статус: ${order.status}`,
+    `Клиент: ${order.customerName}`,
+    `Email: ${order.customerEmail}`,
+    order.customerContact ? `Контакт: ${order.customerContact}` : "",
+    order.deliveryAddress ? `Доставка: ${order.deliveryAddress}` : "",
+    order.customerComment ? `Комментарий: ${order.customerComment}` : "",
+    `Оплата: ${order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта"}`,
+    `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
+    "",
+    lines,
+  ].filter(Boolean).join("\n");
+  await sendMessage(token, chatId, text, { inline_keyboard: actions });
 }
 
 async function audit(db: ReturnType<typeof getDb>, adminId: number, action: string, entityId: string | null, metadata: Record<string, unknown> = {}) {
@@ -144,7 +184,39 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (scope === "orders" && action === "list") {
     const recent = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).orderBy(desc(orders.createdAt)).limit(5);
     const lines = recent.length ? recent.map((order) => `${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "Заказов пока нет.";
-    await sendMessage(token, chatId, `Последние заказы:\n\n${lines}`, backKeyboard());
+    await sendMessage(token, chatId, `Последние заказы:\n\n${lines}`, orderListKeyboard(recent));
+    return;
+  }
+  if (scope === "order" && action === "view" && first) {
+    await sendOrderDetails(db, token, chatId, first);
+    return;
+  }
+  if (scope === "order" && action === "paid_prompt" && first) {
+    await sendMessage(token, chatId, `Подтвердить фактическое получение оплаты по заказу ${first}?`, { inline_keyboard: [[{ text: "Да, деньги получены", callback_data: `order:paid_confirm:${first}` }], [{ text: "Отмена", callback_data: `order:view:${first}` }]] });
+    return;
+  }
+  if (scope === "order" && ["paid_confirm", "process", "ship", "deliver", "complete"].includes(action) && first) {
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    const transitions: Record<string, { from: string; to: string }> = {
+      paid_confirm: { from: "WAITING_FOR_MANAGER", to: "PAID" },
+      process: { from: "PAID", to: "PROCESSING" },
+      ship: { from: "PROCESSING", to: "SHIPPED" },
+      deliver: { from: "SHIPPED", to: "DELIVERED" },
+      complete: { from: order.status === "DELIVERED" ? "DELIVERED" : "PROCESSING", to: "COMPLETED" },
+    };
+    const transition = transitions[action];
+    if (action === "paid_confirm" && order.paymentMethod !== "manager") {
+      await sendMessage(token, chatId, "Криптовалютную оплату может подтвердить только защищённый webhook платёжного провайдера.");
+      return;
+    }
+    if (order.status !== transition.from) {
+      await sendMessage(token, chatId, `Переход недоступен для статуса ${order.status}.`);
+      return;
+    }
+    await db.update(orders).set({ status: transition.to }).where(and(eq(orders.id, order.id), eq(orders.status, transition.from)));
+    await audit(db, adminId, `order.${action}`, order.id, { orderNumber: order.orderNumber, from: transition.from, to: transition.to });
+    await sendOrderDetails(db, token, chatId, order.orderNumber);
     return;
   }
   if (scope === "categories" && action === "list") {
