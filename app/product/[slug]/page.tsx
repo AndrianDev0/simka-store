@@ -19,6 +19,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
+import { ProductAnalytics } from "@/app/components/product-analytics";
 import { getPublicCategories } from "@/lib/categories";
 import { getCatalogCountries, getCatalogProductBySlug, type CatalogProduct } from "@/lib/catalog-repository";
 import { absoluteUrl, breadcrumbJsonLd, jsonLd, pageMetadata } from "@/lib/seo";
@@ -187,6 +188,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
 
   return (
     <SiteShell eyebrow={`${product.flag} ${product.country} · ${product.operator}`} title={product.h1 || product.name} description={product.shortDescription}>
+      <ProductAnalytics itemId={product.sku} itemName={product.name} itemCategory={assignedCategories[0]?.name} itemVariant={product.type} price={displayPrice} currency={displayCurrency} />
       <ContentSection>
         <nav aria-label="Хлебные крошки" className="mb-7 overflow-x-auto text-sm text-[#637389]">
           <ol className="flex min-w-max items-center gap-1.5">

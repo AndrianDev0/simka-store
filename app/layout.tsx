@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { AnalyticsProvider } from "@/app/components/analytics-provider";
 import { DEFAULT_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from "@/lib/seo";
 import "./globals.css";
 
@@ -55,7 +56,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased"><AnalyticsProvider />{children}</body>
     </html>
   );
 }

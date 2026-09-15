@@ -40,6 +40,15 @@ npm run start:render
 
 Для отправки писем задаются `RESEND_API_KEY` и `EMAIL_FROM`.
 
+Для аналитики задаются только нужные интеграции (значения встраиваются в клиентскую сборку):
+
+- `NEXT_PUBLIC_GA_MEASUREMENT_ID` — Measurement ID Google Analytics 4 (`G-...`);
+- `NEXT_PUBLIC_YANDEX_METRIKA_ID` — числовой ID счётчика Яндекс.Метрики;
+- `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` — домен сайта в Plausible;
+- `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` и `NEXT_PUBLIC_PLAUSIBLE_API_URL` — необязательные URL для self-hosted Plausible.
+
+Передаются только обезличенные события: `page_view`, `view_item`, `view_cart`, `add_to_cart`, `remove_from_cart`, `begin_checkout` и `purchase` (с номером заказа, суммой, валютой и составом товаров). Персональные данные клиента в аналитику не отправляются.
+
 ## Структура
 
 - `app/` — страницы, API и пользовательские сценарии;
