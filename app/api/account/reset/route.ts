@@ -3,9 +3,10 @@ import { NextResponse } from "next/server";
 import { customerAccounts, customerPasswordResets, customerSessions } from "@/db/schema";
 import { getDb } from "@/db";
 import { createSession, findPasswordReset, hashPassword, sameOrigin, setSessionCookie, validatePassword } from "@/lib/customer-auth";
+import { absoluteUrl } from "@/lib/seo";
 
-function redirect(request: Request, path: string) {
-  return NextResponse.redirect(new URL(path, request.url), 303);
+function redirect(path: string) {
+  return NextResponse.redirect(absoluteUrl(path), 303);
 }
 
 export async function POST(request: Request) {
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
   const password = String(form.get("password") || "");
   const confirmation = String(form.get("passwordConfirmation") || "");
   const reset = await findPasswordReset(token);
-  if (!reset || !validatePassword(password) || password !== confirmation) return redirect(request, `/account/reset?error=Ссылка%20недействительна%20или%20пароли%20не%20совпадают&token=${encodeURIComponent(token)}`);
+  if (!reset || !validatePassword(password) || password !== confirmation) return redirect(`/account/reset?error=Ссылка%20недействительна%20или%20пароли%20не%20совпадают&token=${encodeURIComponent(token)}`);
   const now = new Date().toISOString();
   const db = getDb();
   await db.transaction(async (tx) => {
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
     await tx.delete(customerSessions).where(eq(customerSessions.accountId, reset.accountId));
     await tx.delete(customerPasswordResets).where(and(eq(customerPasswordResets.id, reset.id), eq(customerPasswordResets.accountId, reset.accountId)));
   });
-  const response = redirect(request, "/account");
+  const response = redirect("/account");
   setSessionCookie(response, await createSession(reset.accountId));
   return response;
 }
