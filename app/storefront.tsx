@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { trackEvent, trackPurchase, type AnalyticsItem } from "@/lib/analytics";
+import { trackEvent, trackOnce, type AnalyticsItem } from "@/lib/analytics";
 import { productDisplayOffer, productIsAvailable, variantIsAvailable, type Product, type ProductVariant } from "@/lib/catalog";
 import type { PublicCategory } from "@/lib/categories";
 const regions = ["Все направления", "Европа", "Азия", "Ближний Восток", "Америка"];
@@ -104,7 +104,7 @@ export default function Storefront({categories=[],products}:{categories?:PublicC
       <a href="#top" className="flex shrink-0 items-center gap-2.5" aria-label="SIMKA — на главную"><Logo/><span className="text-[21px] font-black tracking-[-0.04em] text-[#10213a]">SIMKA</span></a>
       <nav className="hidden items-center gap-7 text-[14px] font-semibold text-[#42526a] lg:flex"><a className="hover:text-[#1168e8]" href="#catalog">Каталог</a><a className="hover:text-[#1168e8]" href="/categories">Категории</a><a className="hover:text-[#1168e8]" href="/countries">Страны</a><a className="hover:text-[#1168e8]" href="#faq">FAQ</a></nav>
       <div className="ml-auto hidden items-center gap-2 md:flex"><Button asChild variant="ghost" className="h-11 rounded-xl text-[#42526a]"><a href="/account">Кабинет</a></Button><Button asChild variant="ghost" className="h-11 rounded-xl text-[#42526a]"><a href="/contacts"><Headphones className="size-4" aria-hidden="true"/>Помощь</a></Button></div>
-      <Cart open={cartOpen} onOpenChange={(open)=>{setCartOpen(open);if(open&&cartItems.length)trackEvent("view_cart",{currency:cartCurrency,value:total,items:cartItems.map((line)=>analyticsItem(line))})}} items={cartItems} count={cartCount} total={total} currency={cartCurrency} mixedCurrencies={mixedCurrencies} checkout={checkout} ordered={ordered} onChange={change} onCheckout={setCheckout} onBeginCheckout={()=>trackEvent("begin_checkout",{currency:cartCurrency,value:total,items:cartItems.map((line)=>analyticsItem(line))})} onOrder={(receipt)=>{trackPurchase(receipt.number,{currency:receipt.currency,value:receipt.value,items:receipt.items});setOrdered(receipt);setCart({});setCheckout(false)}}/>
+      <Cart open={cartOpen} onOpenChange={(open)=>{setCartOpen(open);if(open&&cartItems.length)trackEvent("view_cart",{currency:cartCurrency,value:total,items:cartItems.map((line)=>analyticsItem(line))})}} items={cartItems} count={cartCount} total={total} currency={cartCurrency} mixedCurrencies={mixedCurrencies} checkout={checkout} ordered={ordered} onChange={change} onCheckout={setCheckout} onBeginCheckout={()=>trackEvent("begin_checkout",{currency:cartCurrency,value:total,items:cartItems.map((line)=>analyticsItem(line))})} onOrder={(receipt)=>{trackOnce(`order-created:${receipt.number}`,"generate_lead",{transaction_id:receipt.number,currency:receipt.currency,value:receipt.value,items:receipt.items});setOrdered(receipt);setCart({});setCheckout(false)}}/>
       <button onClick={()=>setMobileMenu(!mobileMenu)} className="grid size-11 place-items-center rounded-xl border lg:hidden" aria-expanded={mobileMenu} aria-controls="mobile-navigation" aria-label={mobileMenu?"Закрыть меню":"Открыть меню"}>{mobileMenu?<X className="size-5"/>:<Menu className="size-5"/>}</button>
     </div>{mobileMenu&&<nav id="mobile-navigation" className="grid gap-1 border-t bg-white p-4 text-sm font-semibold lg:hidden">{[["Каталог","#catalog"],["Категории","/categories"],["Страны","/countries"],["Как это работает","#how"],["Доставка","/delivery"],["FAQ","#faq"],["Личный кабинет","/account"]].map(([label,href])=><a key={href} onClick={()=>setMobileMenu(false)} className="flex min-h-11 items-center rounded-lg px-3 hover:bg-muted" href={href}>{label}</a>)}</nav>}</header>
 
@@ -153,12 +153,13 @@ function Checkout({items,total,currency,onBack,onOrder}:{items:CartLine[];total:
 
   async function submit(event:React.FormEvent<HTMLFormElement>){
     event.preventDefault();setLoading(true);setError("");const form=new FormData(event.currentTarget);
+    trackEvent("add_payment_info",{payment_type:String(form.get("paymentMethod")||"manager"),currency,value:total,items:items.map((line)=>analyticsItem(line))});
     try{
       const response=await fetch("/api/orders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({requestId:requestId.current,customerName:form.get("customerName"),customerEmail:form.get("customerEmail"),customerContact:form.get("customerContact"),deliveryAddress:form.get("deliveryAddress")||undefined,customerComment:form.get("customerComment"),paymentMethod:form.get("paymentMethod"),items:items.map(line=>({productId:line.product.id,variantId:line.variant?.id,quantity:line.quantity})),deliverySelections:physicalProducts.map(product=>({productId:product.id,optionId:deliveryChoices[product.id]}))})});
       const data=await response.json() as {error?:string;order?:{orderNumber?:string;managerNotified?:boolean;customerNotified?:boolean;totalAmount?:number;currency?:string}};
       if(!response.ok||!data.order?.orderNumber)throw new Error(data.error||"Не удалось создать заказ");
       onOrder({number:data.order.orderNumber,managerNotified:data.order.managerNotified===true,customerNotified:data.order.customerNotified===true,value:typeof data.order.totalAmount === "number" ? data.order.totalAmount : total,currency:data.order.currency || currency,items:items.map((line)=>analyticsItem(line))});
-    }catch(reason){setError(reason instanceof Error?reason.message:"Не удалось создать заказ")}finally{setLoading(false)}
+    }catch(reason){trackEvent("checkout_error",{error_type:reason instanceof Error?reason.name:"UnknownError"});setError(reason instanceof Error?reason.message:"Не удалось создать заказ")}finally{setLoading(false)}
   }
 
   return <form className="flex flex-1 flex-col overflow-y-auto p-6" onSubmit={submit}>

@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     await tx.delete(customerSessions).where(eq(customerSessions.accountId, reset.accountId));
     await tx.delete(customerPasswordResets).where(and(eq(customerPasswordResets.id, reset.id), eq(customerPasswordResets.accountId, reset.accountId)));
   });
-  const response = redirect("/account");
+  const response = redirect("/account?analytics=password_reset");
   setSessionCookie(response, await createSession(reset.accountId));
   return response;
 }

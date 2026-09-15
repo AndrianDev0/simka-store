@@ -67,10 +67,22 @@ export function trackPurchase(orderNumber: string, params: AnalyticsParams) {
   if (!browserAvailable() || !orderNumber) return;
   const storageKey = `simka-analytics-purchase:${orderNumber}`;
   try {
-    if (window.sessionStorage.getItem(storageKey)) return;
-    window.sessionStorage.setItem(storageKey, "1");
+    if (window.localStorage.getItem(storageKey)) return;
+    window.localStorage.setItem(storageKey, "1");
   } catch {
     // Analytics must never block checkout when storage is unavailable.
   }
   trackEvent("purchase", { transaction_id: orderNumber, ...params });
+}
+
+export function trackOnce(key: string, name: string, params: AnalyticsParams = {}) {
+  if (!browserAvailable() || !key) return;
+  const storageKey = `simka-analytics-event:${key}`;
+  try {
+    if (window.localStorage.getItem(storageKey)) return;
+    window.localStorage.setItem(storageKey, "1");
+  } catch {
+    // The event may still be sent when persistent storage is unavailable.
+  }
+  trackEvent(name, params);
 }

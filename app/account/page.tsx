@@ -4,6 +4,7 @@ import { orders } from "@/db/schema";
 import { getDb } from "@/db";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
+import { IdentifyAnalyticsUser } from "@/app/components/analytics-events";
 import { pageMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +23,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
   const db = getDb();
   const accountOrders = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, createdAt: orders.createdAt, paymentMethod: orders.paymentMethod }).from(orders).where(eq(orders.customerAccountId, account.id)).orderBy(desc(orders.createdAt));
   return <SiteShell eyebrow="Личный кабинет" title={`Здравствуйте, ${account.name}`} description="Здесь собраны ваши заказы и контактные данные.">
+    <IdentifyAnalyticsUser userId={account.id}/>
     <ContentSection>
       {params.saved && <p className="mb-5 rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-800">Данные профиля сохранены.</p>}
       {params.error && <p className="mb-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">{String(params.error)}</p>}

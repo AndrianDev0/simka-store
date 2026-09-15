@@ -9,6 +9,12 @@ function redirect(path: string) {
   return NextResponse.redirect(absoluteUrl(path), 303);
 }
 
+function withAnalytics(path: string, event: string) {
+  const url = new URL(path, "https://simka.local");
+  url.searchParams.set("analytics", event);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return new Response(null, { status: 403 });
   try {
@@ -19,7 +25,7 @@ export async function POST(request: Request) {
     const safeReturn = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/account";
     const [account] = await getDb().select({ id: customerAccounts.id, passwordHash: customerAccounts.passwordHash }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1);
     if (!account || !(await verifyPassword(password, account.passwordHash))) return redirect(`/account/login?error=Неверный%20email%20или%20пароль&returnTo=${encodeURIComponent(safeReturn)}`);
-    const response = redirect(safeReturn);
+    const response = redirect(withAnalytics(safeReturn, "login"));
     setSessionCookie(response, await createSession(account.id));
     return response;
   } catch (error) {

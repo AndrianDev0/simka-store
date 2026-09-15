@@ -1,5 +1,6 @@
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
 import { CatalogGrid } from "@/app/components/catalog-grid";
+import { SearchAnalytics } from "@/app/components/analytics-events";
 import { getPublicCategories } from "@/lib/categories";
 import { getCatalogProducts } from "@/lib/catalog-repository";
 import { pageMetadata } from "@/lib/seo";
@@ -18,6 +19,7 @@ export default async function SearchPage({ searchParams }: { searchParams: Promi
     return `${product.name} ${product.country} ${product.operator} ${product.sku} ${product.type} ${product.shortDescription} ${product.data} ${assignedCategories} ${variants}`.toLowerCase().includes(query);
   }) : [];
   return <SiteShell eyebrow="Поиск" title="Найдите свой тариф" description="Ищите по названию, стране, оператору, категории, типу SIM или артикулу.">
+    <SearchAnalytics query={query} results={items.length}/>
     <ContentSection>
       <form className="mb-8 flex flex-col gap-3 sm:flex-row" action="/search">
         <label className="sr-only" htmlFor="catalog-search">Название, страна, оператор, категория или SKU</label>

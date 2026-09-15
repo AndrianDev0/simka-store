@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CatalogGrid } from "@/app/components/catalog-grid";
+import { CatalogAnalytics } from "@/app/components/analytics-events";
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
 import { getPublicCategories } from "@/lib/categories";
 import { getCatalogProducts } from "@/lib/catalog-repository";
@@ -73,8 +74,17 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
   const operators = [...new Set(products.map((product) => product.operator))].sort((a, b) => a.localeCompare(b, "ru"));
   const currencies = [...new Set(products.map((product) => productDisplayOffer(product).currency))].sort();
   const hasFilters = [q, country, operator, category, type, currency, availability, data, valueOf(raw.days), valueOf(raw.minPrice), valueOf(raw.maxPrice), valueOf(raw.sort)].some(Boolean);
+  const analyticsFilters = new URLSearchParams(Object.entries(raw).flatMap(([key, value]) => {
+    const item = valueOf(value).trim();
+    return item ? [[key, item] as [string, string]] : [];
+  })).toString();
+  const analyticsItems = filtered.map((product) => {
+    const offer = productDisplayOffer(product);
+    return { item_id: offer.variant?.sku ?? product.sku, item_name: product.name, item_category: product.type, item_variant: offer.variant?.name, price: offer.price, quantity: 1 };
+  });
 
   return <SiteShell eyebrow="Каталог" title="Тарифы для поездок" description="Сравните страну, оператора, объём интернета, срок и тип SIM. Цена и наличие повторно проверяются при оформлении.">
+    <CatalogAnalytics filters={analyticsFilters} items={analyticsItems}/>
     <ContentSection>
       <form action="/catalog" className="mb-8 rounded-2xl border border-[#dbe5ef] bg-[#f8fbfe] p-4" aria-label="Фильтры каталога">
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">

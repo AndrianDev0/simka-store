@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       return redirect("/account/login?error=Аккаунт%20с%20этим%20email%20уже%20существует");
     }
     const [account] = await db.insert(customerAccounts).values({ id: crypto.randomUUID(), email, passwordHash: await hashPassword(password), name, contact }).returning({ id: customerAccounts.id });
-    const response = redirect("/account");
+    const response = redirect("/account?analytics=sign_up");
     setSessionCookie(response, await createSession(account.id));
     return response;
   } catch (error) {
