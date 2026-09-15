@@ -12,6 +12,7 @@ import {
   productVariants,
 } from "@/db/schema";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
+import { SITE_ORIGIN } from "@/lib/seo";
 
 type Db = ReturnType<typeof getDb>;
 type InlineButton = { text: string; callback_data?: string; url?: string };
@@ -272,6 +273,7 @@ async function showProduct(db: Db, token: string, chatId: number, productId: num
     ...(product.simType === "SIM" ? [[{ text: `🚚 Варианты доставки (${product.deliveryOptions.length})`, callback_data: `delivery:list:${product.id}` }]] : []),
     [{ text: `🧩 Варианты (${variantRows.length})`, callback_data: `product:variants:${product.id}` }, { text: `🖼 Изображения (${imageRows.length})`, callback_data: `product:images:${product.id}` }],
     [{ text: `📂 Категории (${categoryRows.length})`, callback_data: `product:categories:${product.id}` }],
+    [{ text: "🌐 Открыть на сайте", url: `${SITE_ORIGIN}/product/${encodeURIComponent(product.slug)}` }],
     [{ text: "🗑 Удалить", callback_data: `product:delete_prompt:${product.id}` }],
     [{ text: "◀️ К товарам", callback_data: "products:list" }],
   ] });
@@ -388,6 +390,8 @@ async function showImage(db: Db, token: string, chatId: number, imageId: number)
   const [image] = await db.select().from(productImages).where(eq(productImages.id, imageId)).limit(1);
   if (!image) { await sendMessage(token, chatId, "Изображение не найдено.", back("products:list")); return; }
   await sendMessage(token, chatId, [`🖼 Изображение ${image.id}`, `URL: ${clip(image.url, 1000)}`, `Alt: ${image.alt || "—"}`, `Порядок: ${image.sortOrder}`, `Основное: ${image.isPrimary ? "да" : "нет"}`].join("\n"), { inline_keyboard: [
+    [{ text: "✏️ Изменить URL", callback_data: `image:edit:${image.id}:url` }, { text: "✏️ Изменить alt", callback_data: `image:edit:${image.id}:alt` }],
+    [{ text: "↕️ Изменить порядок", callback_data: `image:edit:${image.id}:sort` }],
     [{ text: "⭐ Сделать основным", callback_data: `image:primary:${image.id}` }],
     [{ text: "🗑 Удалить", callback_data: `image:delete_prompt:${image.id}` }],
     [{ text: "◀️ К изображениям", callback_data: `product:images:${image.productId}` }],
@@ -634,6 +638,11 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     return true;
   }
   if (scope === "image" && action === "view" && first) { await showImage(db, token, chatId, Number(first)); return true; }
+  if (scope === "image" && action === "edit" && first && ["url", "alt", "sort"].includes(second || "")) {
+    const labels: Record<string, string> = { url: "новый HTTPS URL", alt: "новый alt-текст (или - чтобы очистить)", sort: "порядок от 0 до 100000" };
+    await sendMessage(token, chatId, `[EDIT_IMAGE:${first}:${second}]\nВведите ${labels[second!]}.`, { force_reply: true, selective: true, input_field_placeholder: labels[second!] });
+    return true;
+  }
   if (scope === "image" && action === "delete_prompt" && first) {
     await sendMessage(token, chatId, "Удалить изображение?", { inline_keyboard: [[{ text: "Да, удалить", callback_data: `image:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `image:view:${first}` }]] });
     return true;
@@ -874,6 +883,29 @@ async function handleMessageInner(context: HandlerContext, text: string, replyCo
     const inserted = await db.insert(productImages).values({ productId, url, alt, sortOrder, isPrimary: !existing[0] }).returning({ id: productImages.id });
     await audit(db, context.adminId, "image.create", String(inserted[0].id), { productId });
     await showImage(db, context.token, context.chatId, inserted[0].id);
+    return true;
+  }
+  const imageEdit = replyContext.match(/^\[EDIT_IMAGE:(\d+):(url|alt|sort)\]/);
+  if (imageEdit) {
+    const id = Number(imageEdit[1]);
+    const [image] = await db.select({ id: productImages.id, productId: productImages.productId }).from(productImages).where(eq(productImages.id, id)).limit(1);
+    if (!image) throw new Error("INVALID_IMAGE");
+    const field = imageEdit[2];
+    if (field === "url") {
+      const url = parseNullableUrl(text.trim());
+      if (!url || url.length > 2048) throw new Error("INVALID_IMAGE_URL");
+      await db.update(productImages).set({ url }).where(eq(productImages.id, id));
+    } else if (field === "alt") {
+      const alt = text.trim() === "-" ? "" : text.trim();
+      if (alt.length > 500) throw new Error("INVALID_IMAGE_ALT");
+      await db.update(productImages).set({ alt }).where(eq(productImages.id, id));
+    } else {
+      const sortOrder = parseInteger(text.trim(), 0, 100000);
+      if (sortOrder === null) throw new Error("INVALID_IMAGE_SORT");
+      await db.update(productImages).set({ sortOrder }).where(eq(productImages.id, id));
+    }
+    await audit(db, context.adminId, "image.edit", String(id), { productId: image.productId, field });
+    await showImage(db, context.token, context.chatId, id);
     return true;
   }
   const countryEdit = replyContext.match(/^\[EDIT_COUNTRY:(\d+):([a-z]+)\]/);

@@ -14,6 +14,8 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test:crypto": "node --experimental-strip-types --test tests/crypto-payments.test.mjs",
     "test:email": "node --experimental-strip-types --test tests/email.test.mjs",
+    "test:security": "node --experimental-strip-types --test tests/request-security.test.mjs",
+    "db:restore": "node scripts/restore-postgres.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

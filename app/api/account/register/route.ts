@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { createSession, hashPassword, sameOrigin, setSessionCookie, validatePassword } from "@/lib/customer-auth";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { absoluteUrl } from "@/lib/seo";
+import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
 function redirect(path: string) {
   return NextResponse.redirect(absoluteUrl(path), 303);
@@ -12,6 +13,9 @@ function redirect(path: string) {
 
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return new Response(null, { status: 403 });
+  if (!contentLengthWithin(request, 15_000)) return new Response("Слишком большой запрос", { status: 413 });
+  const rateLimit = await consumeRateLimit({ request, action: "account-register", limit: 5, windowMs: 60 * 60 * 1000 });
+  if (!rateLimit.allowed) return tooManyRequests(rateLimit.retryAfterSeconds);
   try {
     const form = await request.formData();
     const name = String(form.get("name") || "").trim();

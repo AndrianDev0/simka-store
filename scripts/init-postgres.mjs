@@ -24,9 +24,15 @@ try {
       password_hash TEXT NOT NULL,
       name TEXT NOT NULL,
       contact TEXT NOT NULL DEFAULT '',
+      is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+      blocked_at TEXT,
+      blocked_reason TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS blocked_at TEXT;
+    ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email);
 
     CREATE TABLE IF NOT EXISTS customer_sessions (
@@ -50,6 +56,16 @@ try {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_password_resets_token_hash ON customer_password_resets(token_hash);
     CREATE INDEX IF NOT EXISTS idx_customer_password_resets_account_id ON customer_password_resets(account_id);
+
+    CREATE TABLE IF NOT EXISTS request_rate_limits (
+      key TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      subject_hash TEXT NOT NULL,
+      window_started_at TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1 CHECK (count > 0),
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_request_rate_limits_updated_at ON request_rate_limits(updated_at);
 
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,

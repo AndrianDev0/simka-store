@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { createPasswordResetToken, sameOrigin } from "@/lib/customer-auth";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { absoluteUrl } from "@/lib/seo";
+import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
 function response() {
   return NextResponse.redirect(absoluteUrl("/account/forgot?sent=1"), 303);
@@ -12,6 +13,9 @@ function response() {
 
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return new Response(null, { status: 403 });
+  if (!contentLengthWithin(request, 8_000)) return new Response("Слишком большой запрос", { status: 413 });
+  const rateLimit = await consumeRateLimit({ request, action: "password-forgot", limit: 5, windowMs: 60 * 60 * 1000 });
+  if (!rateLimit.allowed) return tooManyRequests(rateLimit.retryAfterSeconds);
   const form = await request.formData();
   const email = String(form.get("email") || "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return response();

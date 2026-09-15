@@ -31,6 +31,9 @@ export const customerAccounts = pgTable("customer_accounts", {
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull(),
   contact: text("contact").notNull().default(""),
+  isBlocked: boolean("is_blocked").notNull().default(false),
+  blockedAt: text("blocked_at"),
+  blockedReason: text("blocked_reason"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
@@ -357,6 +360,18 @@ export const storeSettings = pgTable("store_settings", {
   updatedBy: text("updated_by").notNull(),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const requestRateLimits = pgTable("request_rate_limits", {
+  key: text("key").primaryKey(),
+  action: text("action").notNull(),
+  subjectHash: text("subject_hash").notNull(),
+  windowStartedAt: text("window_started_at").notNull(),
+  count: integer("count").notNull().default(1),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_request_rate_limits_updated_at").on(table.updatedAt),
+  check("request_rate_limits_count_positive", sql`${table.count} > 0`),
+]);
 
 export const seoRedirects = pgTable("seo_redirects", {
   id: serial("id").primaryKey(),

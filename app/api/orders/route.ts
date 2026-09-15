@@ -7,6 +7,7 @@ import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } fro
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { releaseReservedInventory } from "@/lib/order-inventory";
+import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
@@ -142,8 +143,10 @@ export async function POST(request: Request) {
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 20_000) return Response.json({ error: "Слишком большой запрос" }, { status: 413 });
 
-  const origin = request.headers.get("origin");
-  if (origin && !isAllowedOrigin(request, origin)) return Response.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  const origin = request.headers.get("origin") || request.headers.get("referer");
+  if (!origin || !isAllowedOrigin(request, origin)) return Response.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  const rateLimit = await consumeRateLimit({ request, action: "order-create", limit: 12, windowMs: 10 * 60 * 1000 });
+  if (!rateLimit.allowed) return tooManyRequests(rateLimit.retryAfterSeconds, "Слишком много заказов. Подождите и попробуйте снова.");
 
   let validatedRequestId: string | null = null;
   try {

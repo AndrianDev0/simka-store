@@ -4,9 +4,13 @@ import { customerAccounts } from "@/db/schema";
 import { getDb } from "@/db";
 import { getCurrentAccount, sameOrigin } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
+import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   if (!sameOrigin(request)) return new Response(null, { status: 403 });
+  if (!contentLengthWithin(request, 10_000)) return new Response("Слишком большой запрос", { status: 413 });
+  const rateLimit = await consumeRateLimit({ request, action: "account-profile", limit: 30, windowMs: 15 * 60 * 1000 });
+  if (!rateLimit.allowed) return tooManyRequests(rateLimit.retryAfterSeconds);
   const account = await getCurrentAccount();
   if (!account) return NextResponse.redirect(absoluteUrl("/account/login"), 303);
   const form = await request.formData();

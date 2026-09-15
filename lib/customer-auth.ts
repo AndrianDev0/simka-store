@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { customerAccounts, customerPasswordResets, customerSessions } from "@/db/schema";
 import { getDb } from "@/db";
+import { sameRequestOrigin } from "@/lib/request-security";
 
 export const CUSTOMER_SESSION_COOKIE = "simka_customer_session";
 export const CUSTOMER_SESSION_MAX_AGE = 60 * 60 * 24 * 30;
@@ -54,20 +55,7 @@ export function validatePassword(password: string) {
 }
 
 export function sameOrigin(request: Request) {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  try {
-    const originUrl = new URL(origin);
-    const requestUrl = new URL(request.url);
-    if (originUrl.origin === requestUrl.origin) return true;
-    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-    const host = (forwardedHost || request.headers.get("host") || "").toLowerCase();
-    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-    const protocol = (forwardedProto || requestUrl.protocol.slice(0, -1)).toLowerCase();
-    return Boolean(host) && originUrl.host.toLowerCase() === host && originUrl.protocol.toLowerCase() === `${protocol}:`;
-  } catch {
-    return false;
-  }
+  return sameRequestOrigin(request);
 }
 
 export async function getCurrentAccount(): Promise<CustomerAccount | null> {
@@ -81,7 +69,7 @@ export async function getCurrentAccount(): Promise<CustomerAccount | null> {
     email: customerAccounts.email,
     name: customerAccounts.name,
     contact: customerAccounts.contact,
-  }).from(customerSessions).innerJoin(customerAccounts, eq(customerSessions.accountId, customerAccounts.id)).where(and(eq(customerSessions.tokenHash, hashToken(token)), gt(customerSessions.expiresAt, new Date().toISOString()))).limit(1);
+  }).from(customerSessions).innerJoin(customerAccounts, eq(customerSessions.accountId, customerAccounts.id)).where(and(eq(customerSessions.tokenHash, hashToken(token)), gt(customerSessions.expiresAt, new Date().toISOString()), eq(customerAccounts.isBlocked, false))).limit(1);
   if (!row) {
     return null;
   }

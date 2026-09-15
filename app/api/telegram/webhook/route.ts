@@ -1,9 +1,12 @@
-import { and, asc, desc, eq, gte, inArray, isNull, like, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, customerAccounts, customerPasswordResets, customerSessions, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
+import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
+import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
@@ -68,6 +71,15 @@ async function sendMessage(token: string, chatId: number, text: string, replyMar
   if (!response.ok) throw new Error("TELEGRAM_SEND_FAILED");
 }
 
+async function sendDocument(token: string, chatId: number, data: Buffer, filename: string, caption: string) {
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set("caption", caption);
+  form.set("document", new Blob([new Uint8Array(data)], { type: "application/json" }), filename);
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error("TELEGRAM_DOCUMENT_SEND_FAILED");
+}
+
 async function answerCallback(token: string, callbackId: string) {
   await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
     method: "POST",
@@ -96,8 +108,9 @@ function mainKeyboard(): InlineKeyboard {
     [{ text: "📦 Товары", callback_data: "products:list" }, { text: "📂 Категории", callback_data: "categories:list" }],
     [{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }],
     [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
+    [{ text: "👥 Клиенты", callback_data: "customers:list" }, { text: "✉️ Почта", callback_data: "settings:email" }],
     [{ text: "📈 Аналитика", callback_data: "analytics:period:7" }, { text: "📊 Статус", callback_data: "status" }],
-    [{ text: "✉️ Почта", callback_data: "settings:email" }],
+    [{ text: "🗄 Резервная копия", callback_data: "backup:prompt" }],
   ] };
 }
 
@@ -107,8 +120,9 @@ function persistentKeyboard(): ReplyKeyboard {
       [{ text: "📦 Товары" }, { text: "📂 Категории" }],
       [{ text: "🌍 Страны" }, { text: "📡 Операторы" }],
       [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
+      [{ text: "👥 Клиенты" }, { text: "✉️ Почта" }],
       [{ text: "📈 Аналитика" }, { text: "📊 Статус магазина" }],
-      [{ text: "✉️ Почта" }],
+      [{ text: "🗄 Резервная копия" }],
       [{ text: "🏠 Меню" }],
     ],
     resize_keyboard: true,
@@ -122,9 +136,11 @@ const adminButtonCommands: Record<string, string> = {
   "🌍 Страны": "/countries",
   "📡 Операторы": "/operators",
   "🛒 Заказы": "/orders",
+  "👥 Клиенты": "/customers",
   "💳 Реквизиты": "/payment_requisites",
   "📈 Аналитика": "/analytics",
   "📊 Статус магазина": "/status",
+  "🗄 Резервная копия": "/backup",
   "✉️ Почта": "/email",
   "🏠 Меню": "/start",
 };
@@ -146,11 +162,86 @@ function orderBackKeyboard(orderNumber: string): InlineKeyboard {
   return { inline_keyboard: [[{ text: "◀️ К заказу", callback_data: `order:view:${orderNumber}` }]] };
 }
 
-function orderListKeyboard(list: Array<{ orderNumber: string; status: string }>): InlineKeyboard {
+function orderListKeyboard(list: Array<{ orderNumber: string; status: string }>, page = 0, filter = "active", hasNext = false): InlineKeyboard {
+  const navigation: Array<InlineButton> = [];
+  if (page > 0) navigation.push({ text: "⬅️", callback_data: `orders:list:${page - 1}:${filter}` });
+  navigation.push({ text: `${page + 1}`, callback_data: `orders:list:${page}:${filter}` });
+  if (hasNext) navigation.push({ text: "➡️", callback_data: `orders:list:${page + 1}:${filter}` });
   return { inline_keyboard: [
     ...list.map((order) => [{ text: `${order.status === "WAITING_FOR_MANAGER" ? "🟡" : order.status === "PAID" ? "🟢" : "📦"} ${order.orderNumber}`, callback_data: `order:view:${order.orderNumber}` }]),
+    [{ text: `${filter === "active" ? "✅ " : ""}Активные`, callback_data: "orders:list:0:active" }, { text: `${filter === "all" ? "✅ " : ""}Все`, callback_data: "orders:list:0:all" }],
+    [{ text: `${filter === "PAID" ? "✅ " : ""}Оплачены`, callback_data: "orders:list:0:PAID" }, { text: `${filter === "CANCELLED" ? "✅ " : ""}Отменены`, callback_data: "orders:list:0:CANCELLED" }],
+    [{ text: `${filter === "REFUNDED" ? "✅ " : ""}Возвраты`, callback_data: "orders:list:0:REFUNDED" }, { text: `${filter === "FAILED" ? "✅ " : ""}Ошибки`, callback_data: "orders:list:0:FAILED" }],
+    navigation,
+    [{ text: "🔎 Найти по номеру", callback_data: "orders:search" }],
     [{ text: "◀️ В меню", callback_data: "menu" }],
   ] };
+}
+
+async function sendOrdersPage(db: ReturnType<typeof getDb>, token: string, chatId: number, requestedPage = 0, requestedFilter = "active") {
+  const pageSize = 6;
+  const page = Number.isInteger(requestedPage) && requestedPage >= 0 ? Math.min(requestedPage, 10000) : 0;
+  const allowedFilters = new Set(["active", "all", "PAID", "CANCELLED", "REFUNDED", "FAILED"]);
+  const filter = allowedFilters.has(requestedFilter) ? requestedFilter : "active";
+  const selection = { orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency };
+  const query = db.select(selection).from(orders);
+  const rows = filter === "all"
+    ? await query.orderBy(desc(orders.createdAt)).limit(pageSize + 1).offset(page * pageSize)
+    : await query.where(filter === "active" ? inArray(orders.status, [...activeOrderStatuses]) : eq(orders.status, filter)).orderBy(desc(orders.createdAt)).limit(pageSize + 1).offset(page * pageSize);
+  const hasNext = rows.length > pageSize;
+  const list = rows.slice(0, pageSize);
+  const labels: Record<string, string> = { active: "активные", all: "все", PAID: "оплаченные", CANCELLED: "отменённые", REFUNDED: "возвраты", FAILED: "ошибки" };
+  const lines = list.length ? list.map((order) => `${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "В этой группе заказов нет.";
+  await sendMessage(token, chatId, `Заказы: ${labels[filter]} · страница ${page + 1}\n\n${lines}`, orderListKeyboard(list, page, filter, hasNext));
+}
+
+async function sendCustomersPage(db: ReturnType<typeof getDb>, token: string, chatId: number, requestedPage = 0) {
+  const pageSize = 6;
+  const page = Number.isInteger(requestedPage) && requestedPage >= 0 ? Math.min(requestedPage, 10000) : 0;
+  const rows = await db.select({ id: customerAccounts.id, name: customerAccounts.name, email: customerAccounts.email, isBlocked: customerAccounts.isBlocked }).from(customerAccounts).orderBy(desc(customerAccounts.createdAt)).limit(pageSize + 1).offset(page * pageSize);
+  const hasNext = rows.length > pageSize;
+  const list = rows.slice(0, pageSize);
+  const navigation: Array<InlineButton> = [];
+  if (page > 0) navigation.push({ text: "⬅️", callback_data: `customers:list:${page - 1}` });
+  navigation.push({ text: `${page + 1}`, callback_data: `customers:list:${page}` });
+  if (hasNext) navigation.push({ text: "➡️", callback_data: `customers:list:${page + 1}` });
+  const keyboard: InlineKeyboard = { inline_keyboard: [
+    ...list.map((customer) => [{ text: `${customer.isBlocked ? "⛔" : "👤"} ${customer.name.slice(0, 24)}`, callback_data: `customer:view:${customer.id}` }]),
+    navigation,
+    [{ text: "🔎 Найти по email", callback_data: "customers:search" }],
+    [{ text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+  const lines = list.length ? list.map((customer) => `${customer.isBlocked ? "⛔" : "✅"} ${customer.name} · ${customer.email}`).join("\n") : "Клиентов пока нет.";
+  await sendMessage(token, chatId, `Клиенты · страница ${page + 1}\n\n${lines}`, keyboard);
+}
+
+async function sendCustomerDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, customerId: string) {
+  const [customer] = await db.select({ id: customerAccounts.id, name: customerAccounts.name, email: customerAccounts.email, contact: customerAccounts.contact, isBlocked: customerAccounts.isBlocked, blockedAt: customerAccounts.blockedAt, createdAt: customerAccounts.createdAt }).from(customerAccounts).where(eq(customerAccounts.id, customerId)).limit(1);
+  if (!customer) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return; }
+  const [customerOrders, sessions] = await Promise.all([
+    db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.customerAccountId, customer.id)).orderBy(desc(orders.createdAt)).limit(5),
+    db.select({ id: customerSessions.id }).from(customerSessions).where(eq(customerSessions.accountId, customer.id)),
+  ]);
+  const orderLines = customerOrders.length ? customerOrders.map((order) => `• ${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "• Заказов нет";
+  await sendMessage(token, chatId, [
+    `👤 ${customer.name}`,
+    `Email: ${customer.email}`,
+    `Контакт: ${customer.contact || "не указан"}`,
+    `Статус: ${customer.isBlocked ? `ЗАБЛОКИРОВАН${customer.blockedAt ? ` (${customer.blockedAt})` : ""}` : "активен"}`,
+    `Активных/сохранённых сессий: ${sessions.length}`,
+    `Регистрация: ${customer.createdAt}`,
+    "",
+    "Последние заказы:",
+    orderLines,
+  ].join("\n"), { inline_keyboard: [
+    customer.isBlocked
+      ? [{ text: "✅ Разблокировать", callback_data: `customer:unblock:${customer.id}` }]
+      : [{ text: "⛔ Заблокировать", callback_data: `customer:block_prompt:${customer.id}` }],
+    [{ text: "🚪 Завершить все сессии", callback_data: `customer:logout_prompt:${customer.id}` }],
+    [{ text: "📤 Экспорт данных", callback_data: `customer:export:${customer.id}` }],
+    [{ text: "🗑 Удалить аккаунт", callback_data: `customer:delete_prompt:${customer.id}` }],
+    [{ text: "◀️ К клиентам", callback_data: "customers:list" }],
+  ] });
 }
 
 function analyticsKeyboard(selectedDays: number): InlineKeyboard {
@@ -266,6 +357,8 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
   if (order.status === "SHIPPED") actions.push([{ text: "🚚 Отметить доставленным", callback_data: `order:deliver:${order.orderNumber}` }]);
   if (order.status === "DELIVERED") actions.push([{ text: "✅ Завершить заказ", callback_data: `order:complete:${order.orderNumber}` }]);
   if (["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"].includes(order.status)) actions.push([{ text: "❌ Отменить заказ", callback_data: `order:cancel_prompt:${order.orderNumber}` }]);
+  if (["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) actions.push([{ text: "⚠️ Закрыть с ошибкой", callback_data: `order:fail_prompt:${order.orderNumber}` }]);
+  if (["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(order.status)) actions.push([{ text: "↩️ Отметить возврат", callback_data: `order:refund_prompt:${order.orderNumber}` }]);
   actions.push([{ text: "◀️ К заказам", callback_data: "orders:list" }]);
   const text = [
     `🛒 ${order.orderNumber}`,
@@ -376,6 +469,8 @@ async function sendOrderStatusEmail(order: { customerEmail: string; customerName
     PROCESSING: { subject: "Заказ выполняется", title: "Начали выполнение", body: "Менеджер начал выдачу eSIM или подготовку физической SIM к отправке." },
     DELIVERED: { subject: "SIM доставлена", title: "Доставка отмечена завершённой", body: "Физическая SIM отмечена как доставленная. Если вы её не получили, сразу ответьте на это письмо." },
     COMPLETED: { subject: "Заказ выполнен", title: "Заказ завершён", body: "Все позиции заказа отмечены как выданные или доставленные." },
+    REFUNDED: { subject: "Возврат подтверждён", title: "Средства возвращены", body: "Менеджер отметил возврат средств по заказу как выполненный. Срок зачисления зависит от способа оплаты." },
+    FAILED: { subject: "Заказ не выполнен", title: "Заказ закрыт с ошибкой", body: "Заказ закрыт из-за ошибки до подтверждения оплаты. Деньги по этому заказу не были отмечены как полученные. Если вы уже оплатили, срочно свяжитесь с поддержкой." },
   };
   const message = descriptions[status];
   if (!message) return { delivered: false as const, reason: "not_configured" as const };
@@ -415,6 +510,42 @@ async function syncOrderFulfillmentStatus(db: ReturnType<typeof getDb>, orderId:
 
 async function handleFulfillmentReply(token: string, chatId: number, adminId: number, messageId: number, text: string, replyContext: string) {
   const db = getDb();
+  if (replyContext.startsWith("[FIND_ORDER]")) {
+    const orderNumber = text.trim().toUpperCase();
+    if (!/^[A-Z0-9-]{4,64}$/.test(orderNumber)) {
+      await sendMessage(token, chatId, "Введите номер заказа из букв, цифр и дефисов.", backKeyboard());
+      return true;
+    }
+    await audit(db, adminId, "order.search", null, { orderNumber });
+    await sendOrderDetails(db, token, chatId, orderNumber);
+    return true;
+  }
+  if (replyContext.startsWith("[FIND_CUSTOMER]")) {
+    const email = text.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+      await sendMessage(token, chatId, "Введите корректный email клиента.", backKeyboard());
+      return true;
+    }
+    const [customer] = await db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1);
+    await audit(db, adminId, "customer.search", customer?.id ?? null, { found: Boolean(customer) });
+    if (!customer) { await sendMessage(token, chatId, "Клиент с таким email не найден.", { inline_keyboard: [[{ text: "🔎 Искать ещё", callback_data: "customers:search" }], [{ text: "◀️ К клиентам", callback_data: "customers:list" }]] }); return true; }
+    await sendCustomerDetails(db, token, chatId, customer.id);
+    return true;
+  }
+  const blockCustomerReply = replyContext.match(/^\[BLOCK_CUSTOMER:([0-9a-f-]{36})\]/i);
+  if (blockCustomerReply) {
+    const reason = text.trim();
+    if (!reason || reason.length > 500) { await sendMessage(token, chatId, "Укажите причину от 1 до 500 символов.", backKeyboard()); return true; }
+    const now = new Date().toISOString();
+    const [changed] = await db.update(customerAccounts).set({ isBlocked: true, blockedAt: now, blockedReason: reason, updatedAt: now }).where(eq(customerAccounts.id, blockCustomerReply[1])).returning({ id: customerAccounts.id });
+    if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return true; }
+    const sessions = await db.delete(customerSessions).where(eq(customerSessions.accountId, changed.id)).returning({ id: customerSessions.id });
+    await db.delete(customerPasswordResets).where(eq(customerPasswordResets.accountId, changed.id));
+    await audit(db, adminId, "customer.block", changed.id, { sessionsRevoked: sessions.length, reason });
+    await sendMessage(token, chatId, `Клиент заблокирован. Завершено сессий: ${sessions.length}.`);
+    await sendCustomerDetails(db, token, chatId, changed.id);
+    return true;
+  }
   if (replyContext.startsWith("[TEST_EMAIL]")) {
     const email = text.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
@@ -650,14 +781,36 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
   if (data === "status") {
-    const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
+    const staleBoundary = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const [recent, stale, lowStock] = await Promise.all([
+      db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100),
+      db.select({ id: orders.id }).from(orders).where(and(inArray(orders.status, [...activeOrderStatuses]), lt(orders.updatedAt, staleBoundary))).limit(100),
+      db.select({ id: catalogProducts.id }).from(catalogProducts).where(and(eq(catalogProducts.isPublished, true), or(eq(catalogProducts.available, false), sql`${catalogProducts.stockQuantity} IS NOT NULL AND ${catalogProducts.stockQuantity} <= 3`))).limit(100),
+    ]);
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
     const email = getEmailConfigurationStatus();
-    await sendMessage(token, chatId, `SIMKA работает.\nЗаказов: ${recent.length}\nАктивных: ${active}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "status" }], [{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
     return;
   }
   if (scope === "analytics" && action === "period") {
     await sendAnalyticsSummary(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "backup" && action === "prompt") {
+    await sendMessage(token, chatId, "Создать зашифрованную копию базы и отправить её в этот администраторский чат? Файл содержит персональные данные и должен храниться закрыто.", { inline_keyboard: [[{ text: "🗄 Создать копию", callback_data: "backup:confirm" }], [{ text: "Отмена", callback_data: "menu" }]] });
+    return;
+  }
+  if (scope === "backup" && action === "confirm") {
+    await sendMessage(token, chatId, "Создаю согласованную копию базы. Это может занять несколько секунд…");
+    try {
+      const backup = await createEncryptedDatabaseBackup();
+      const filename = `simka-backup-${backup.createdAt.replace(/[:.]/g, "-")}.json.enc`;
+      await sendDocument(token, chatId, backup.data, filename, `Зашифрованная копия SIMKA · ${backup.tableCount} таблиц · ${Math.ceil(backup.byteCount / 1024)} КБ. Для расшифровки нужен текущий BACKUP_ENCRYPTION_KEY или FULFILLMENT_ENCRYPTION_KEY.`);
+      await audit(db, adminId, "database.backup", null, { tableCount: backup.tableCount, byteCount: backup.byteCount });
+    } catch (error) {
+      console.error("database_backup_failed", { name: error instanceof Error ? error.message : "UnknownError" });
+      await sendMessage(token, chatId, error instanceof Error && error.message === "BACKUP_TOO_LARGE" ? "Копия превышает безопасный лимит Telegram. Для большого магазина понадобится внешнее хранилище на основном сервере." : "Не удалось создать резервную копию. Проверьте базу и ключ шифрования.", backKeyboard());
+    }
     return;
   }
   if (scope === "settings" && action === "payment") {
@@ -679,9 +832,68 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "orders" && action === "list") {
-    const recent = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).orderBy(desc(orders.createdAt)).limit(5);
-    const lines = recent.length ? recent.map((order) => `${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "Заказов пока нет.";
-    await sendMessage(token, chatId, `Последние заказы:\n\n${lines}`, orderListKeyboard(recent));
+    await sendOrdersPage(db, token, chatId, Number(first || 0), second || "active");
+    return;
+  }
+  if (scope === "orders" && action === "search") {
+    await sendMessage(token, chatId, "[FIND_ORDER]\nВведите полный номер заказа.", { force_reply: true, selective: true, input_field_placeholder: "Например: SIMKA-123456" });
+    return;
+  }
+  if (scope === "customers" && action === "list") {
+    await sendCustomersPage(db, token, chatId, Number(first || 0));
+    return;
+  }
+  if (scope === "customers" && action === "search") {
+    await sendMessage(token, chatId, "[FIND_CUSTOMER]\nВведите email клиента.", { force_reply: true, selective: true, input_field_placeholder: "name@example.com" });
+    return;
+  }
+  if (scope === "customer" && action === "view" && first) {
+    await sendCustomerDetails(db, token, chatId, first);
+    return;
+  }
+  if (scope === "customer" && action === "block_prompt" && first) {
+    await sendMessage(token, chatId, `[BLOCK_CUSTOMER:${first}]\nУкажите причину блокировки. Все сессии клиента будут завершены.`, { force_reply: true, selective: true, input_field_placeholder: "Причина блокировки" });
+    return;
+  }
+  if (scope === "customer" && action === "unblock" && first) {
+    const [changed] = await db.update(customerAccounts).set({ isBlocked: false, blockedAt: null, blockedReason: null, updatedAt: new Date().toISOString() }).where(eq(customerAccounts.id, first)).returning({ id: customerAccounts.id });
+    if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return; }
+    await audit(db, adminId, "customer.unblock", changed.id);
+    await sendCustomerDetails(db, token, chatId, changed.id);
+    return;
+  }
+  if (scope === "customer" && action === "logout_prompt" && first) {
+    await sendMessage(token, chatId, "Завершить все входы этого клиента на всех устройствах?", { inline_keyboard: [[{ text: "🚪 Да, завершить", callback_data: `customer:logout_confirm:${first}` }], [{ text: "Отмена", callback_data: `customer:view:${first}` }]] });
+    return;
+  }
+  if (scope === "customer" && action === "logout_confirm" && first) {
+    const revoked = await db.delete(customerSessions).where(eq(customerSessions.accountId, first)).returning({ id: customerSessions.id });
+    await audit(db, adminId, "customer.sessions_revoke", first, { sessionsRevoked: revoked.length });
+    await sendMessage(token, chatId, `Завершено сессий: ${revoked.length}.`);
+    await sendCustomerDetails(db, token, chatId, first);
+    return;
+  }
+  if (scope === "customer" && action === "export" && first) {
+    const [customer, customerOrders] = await Promise.all([
+      db.select({ name: customerAccounts.name, email: customerAccounts.email, contact: customerAccounts.contact, isBlocked: customerAccounts.isBlocked, createdAt: customerAccounts.createdAt, updatedAt: customerAccounts.updatedAt }).from(customerAccounts).where(eq(customerAccounts.id, first)).limit(1),
+      db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, createdAt: orders.createdAt }).from(orders).where(eq(orders.customerAccountId, first)).orderBy(desc(orders.createdAt)).limit(20),
+    ]);
+    if (!customer[0]) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return; }
+    const exportText = ["ЭКСПОРТ ДАННЫХ КЛИЕНТА", `Имя: ${customer[0].name}`, `Email: ${customer[0].email}`, `Контакт: ${customer[0].contact || "—"}`, `Заблокирован: ${customer[0].isBlocked ? "да" : "нет"}`, `Создан: ${customer[0].createdAt}`, `Обновлён: ${customer[0].updatedAt}`, "", "Последние 20 заказов:", ...(customerOrders.length ? customerOrders.map((order) => `${order.createdAt} · ${order.orderNumber} · ${order.status} · ${order.totalAmount} ${order.currency}`) : ["Заказов нет"])].join("\n");
+    await audit(db, adminId, "customer.export", first, { ordersIncluded: customerOrders.length });
+    await sendMessage(token, chatId, exportText, { inline_keyboard: [[{ text: "◀️ К клиенту", callback_data: `customer:view:${first}` }]] });
+    return;
+  }
+  if (scope === "customer" && action === "delete_prompt" && first) {
+    await sendMessage(token, chatId, "Удалить аккаунт, пароль, сбросы и все сессии? Заказы сохранятся по требованиям учёта, но отвяжутся от личного кабинета.", { inline_keyboard: [[{ text: "🗑 Да, удалить аккаунт", callback_data: `customer:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `customer:view:${first}` }]] });
+    return;
+  }
+  if (scope === "customer" && action === "delete_confirm" && first) {
+    const [customer] = await db.select({ email: customerAccounts.email }).from(customerAccounts).where(eq(customerAccounts.id, first)).limit(1);
+    if (!customer) { await sendMessage(token, chatId, "Аккаунт уже удалён.", { inline_keyboard: [[{ text: "◀️ К клиентам", callback_data: "customers:list" }]] }); return; }
+    await audit(db, adminId, "customer.delete", first, { emailHash: createHash("sha256").update(customer.email).digest("hex") });
+    await db.delete(customerAccounts).where(eq(customerAccounts.id, first));
+    await sendMessage(token, chatId, "Аккаунт клиента удалён. История заказов сохранена и отвязана от кабинета.", { inline_keyboard: [[{ text: "◀️ К клиентам", callback_data: "customers:list" }]] });
     return;
   }
   if (scope === "order" && action === "view" && first) {
@@ -823,6 +1035,47 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     }
     await audit(db, adminId, "order.cancellation_email", order.id, { delivered: cancellationEmailDelivered });
     await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.\n${cancellationEmailDelivered ? "Клиенту отправлено письмо об отмене." : "Автоматическое письмо клиенту не доставлено — сообщите об отмене вручную."}`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
+    return;
+  }
+  if (scope === "order" && action === "fail_prompt" && first) {
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    if (!["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) { await sendMessage(token, chatId, `Статус ${order.status} нельзя закрыть как ошибку.`, orderBackKeyboard(first)); return; }
+    await sendMessage(token, chatId, `Закрыть неоплаченный заказ ${first} с ошибкой и вернуть зарезервированный остаток?`, { inline_keyboard: [[{ text: "⚠️ Да, закрыть", callback_data: `order:fail_confirm:${first}` }], [{ text: "Не закрывать", callback_data: `order:view:${first}` }]] });
+    return;
+  }
+  if (scope === "order" && action === "fail_confirm" && first) {
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, customerName: orders.customerName, customerEmail: orders.customerEmail }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    const allowed = ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"];
+    const changed = await releaseReservedInventory(order.id, "FAILED", allowed);
+    if (!changed) { await sendMessage(token, chatId, "Заказ уже изменился или резерв отсутствует. Обновите карточку.", orderBackKeyboard(first)); return; }
+    await db.update(orderItems).set({ fulfillmentStatus: "FAILED", activationCodeEncrypted: null, fulfillmentInstructions: null, updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
+    const customerEmailDelivered = (await sendOrderStatusEmail(order, "FAILED")).delivered;
+    await audit(db, adminId, "order.fail", order.id, { from: order.status, to: "FAILED", customerEmailDelivered });
+    await sendMessage(token, chatId, `Заказ ${order.orderNumber} закрыт со статусом FAILED. Резерв товара возвращён.${customerEmailDelivered ? " Клиент уведомлён по email." : " Письмо клиенту не доставлено."}`);
+    await sendOrderDetails(db, token, chatId, order.orderNumber);
+    return;
+  }
+  if (scope === "order" && action === "refund_prompt" && first) {
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    if (!["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(order.status)) { await sendMessage(token, chatId, `Возврат недоступен для статуса ${order.status}.`, orderBackKeyboard(first)); return; }
+    await sendMessage(token, chatId, `Подтвердите, что деньги по заказу ${first} уже фактически возвращены клиенту. Эта кнопка сама не переводит деньги.`, { inline_keyboard: [[{ text: "↩️ Деньги возвращены", callback_data: `order:refund_confirm:${first}` }], [{ text: "Отмена", callback_data: `order:view:${first}` }]] });
+    return;
+  }
+  if (scope === "order" && action === "refund_confirm" && first) {
+    const refundable = ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"];
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, customerName: orders.customerName, customerEmail: orders.customerEmail }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order || !refundable.includes(order.status)) { await sendMessage(token, chatId, "Заказ уже изменился или возврат недоступен.", orderBackKeyboard(first)); return; }
+    const [changed] = await db.update(orders).set({ status: "REFUNDED", updatedAt: new Date().toISOString() }).where(and(eq(orders.id, order.id), eq(orders.status, order.status))).returning({ id: orders.id });
+    if (!changed) { await sendMessage(token, chatId, "Статус заказа уже изменился. Обновите карточку.", orderBackKeyboard(first)); return; }
+    await db.update(orderItems).set({ fulfillmentStatus: "REFUNDED", updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
+    const customerEmailDelivered = (await sendOrderStatusEmail(order, "REFUNDED")).delivered;
+    await reportOrderAnalytics(order.id, "REFUNDED");
+    await audit(db, adminId, "order.refund", order.id, { from: order.status, to: "REFUNDED", customerEmailDelivered, inventoryRestocked: false });
+    await sendMessage(token, chatId, `Заказ ${order.orderNumber} отмечен как REFUNDED.${customerEmailDelivered ? " Клиент уведомлён по email." : " Письмо клиенту не доставлено."}\nОстаток автоматически не увеличен: возвращённый товар нужно проверить вручную.`);
+    await sendOrderDetails(db, token, chatId, order.orderNumber);
     return;
   }
   if (scope === "order" && ["paid_confirm", "process", "deliver", "complete"].includes(action) && first) {
@@ -1026,18 +1279,15 @@ export async function POST(request: Request) {
     } else if (command === "/operators") {
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "operators:list");
     } else if (command === "/status") {
-      const db = getDb();
-      const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
-      const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
-      const email = getEmailConfigurationStatus();
-      await sendMessage(token, chatId, `SIMKA работает.\nЗаказов в последней выборке: ${recent.length}\nАктивных: ${active}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+      await handleCallback(token, chatId, from.id, "status");
+    } else if (command === "/backup") {
+      await handleCallback(token, chatId, from.id, "backup:prompt");
     } else if (command === "/analytics") {
       await sendAnalyticsSummary(getDb(), token, chatId, 7);
+    } else if (command === "/customers") {
+      await sendCustomersPage(getDb(), token, chatId);
     } else if (command === "/orders") {
-      const db = getDb();
-      const recent = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).orderBy(desc(orders.createdAt)).limit(5);
-      const lines = recent.length ? recent.map((order) => `${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "Заказов пока нет.";
-      await sendMessage(token, chatId, `Последние заказы:\n\n${lines}`, backKeyboard());
+      await sendOrdersPage(getDb(), token, chatId);
     } else if (command === "/paid") {
       const number = text.trim().split(/\s+/)[1]?.toUpperCase();
       if (!number) {
