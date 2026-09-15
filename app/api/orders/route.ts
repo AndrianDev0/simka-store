@@ -62,7 +62,7 @@ async function notifyManagers(order: {
     "",
     lines,
     "",
-    "Свяжитесь с клиентом, передайте актуальные реквизиты и подтвердите оплату только после фактического поступления средств.",
+    `Отправьте актуальные реквизиты на email ${order.customerEmail} и подтвердите оплату только после фактического поступления средств.`,
   ].filter(Boolean).join("\n");
   const telegramUsername = order.customerContact.match(/^@([a-zA-Z0-9_]{5,32})$/)?.[1];
   const keyboard = [
