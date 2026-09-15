@@ -87,6 +87,7 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
   if (order.status === "PROCESSING") actions.push([{ text: hasPhysicalSim ? "📦 Отметить отправленным" : "✅ Отметить eSIM выданной", callback_data: `order:${hasPhysicalSim ? "ship" : "complete"}:${order.orderNumber}` }]);
   if (order.status === "SHIPPED") actions.push([{ text: "🚚 Отметить доставленным", callback_data: `order:deliver:${order.orderNumber}` }]);
   if (order.status === "DELIVERED") actions.push([{ text: "✅ Завершить заказ", callback_data: `order:complete:${order.orderNumber}` }]);
+  if (["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"].includes(order.status)) actions.push([{ text: "❌ Отменить заказ", callback_data: `order:cancel_prompt:${order.orderNumber}` }]);
   actions.push([{ text: "◀️ К заказам", callback_data: "orders:list" }]);
   const text = [
     `🛒 ${order.orderNumber}`,
@@ -193,6 +194,26 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "order" && action === "paid_prompt" && first) {
     await sendMessage(token, chatId, `Подтвердить фактическое получение оплаты по заказу ${first}?`, { inline_keyboard: [[{ text: "Да, деньги получены", callback_data: `order:paid_confirm:${first}` }], [{ text: "Отмена", callback_data: `order:view:${first}` }]] });
+    return;
+  }
+  if (scope === "order" && action === "cancel_prompt" && first) {
+    const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    const paidWarning = ["PAID", "PROCESSING"].includes(order.status) ? "\n\nВнимание: заказ уже оплачен. Отмена не возвращает деньги автоматически — возврат нужно провести отдельно." : "";
+    await sendMessage(token, chatId, `Точно отменить заказ ${first}?${paidWarning}`, { inline_keyboard: [[{ text: "❌ Да, отменить заказ", callback_data: `order:cancel_confirm:${first}` }], [{ text: "Не отменять", callback_data: `order:view:${first}` }]] });
+    return;
+  }
+  if (scope === "order" && action === "cancel_confirm" && first) {
+    const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    const cancellableStatuses = ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"];
+    if (!cancellableStatuses.includes(order.status)) {
+      await sendMessage(token, chatId, `Заказ в статусе ${order.status} отменить нельзя.`, { inline_keyboard: [[{ text: "◀️ К заказу", callback_data: `order:view:${order.orderNumber}` }]] });
+      return;
+    }
+    await db.update(orders).set({ status: "CANCELLED" }).where(and(eq(orders.id, order.id), eq(orders.status, order.status)));
+    await audit(db, adminId, "order.cancel", order.id, { orderNumber: order.orderNumber, from: order.status, to: "CANCELLED" });
+    await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
     return;
   }
   if (scope === "order" && ["paid_confirm", "process", "ship", "deliver", "complete"].includes(action) && first) {
