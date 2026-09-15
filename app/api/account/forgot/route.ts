@@ -25,6 +25,7 @@ export async function POST(request: Request) {
         subject: "Восстановление доступа — SIMKA",
         text: `Здравствуйте, ${account.name}!\n\nЧтобы задать новый пароль, откройте ссылку: ${resetUrl}\n\nСсылка действует один час. Если вы не запрашивали восстановление, просто проигнорируйте это письмо.`,
         html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1>Восстановление доступа</h1><p>Здравствуйте, ${escapeHtml(account.name)}!</p><p><a href="${escapeHtml(resetUrl)}">Задать новый пароль</a></p><p>Ссылка действует один час. Если вы не запрашивали восстановление, проигнорируйте письмо.</p></div>`,
+        idempotencyKey: `password-reset/${account.id}/${token.slice(-16)}`,
       });
     } catch (error) {
       console.error("customer_password_reset_email_failed", { name: error instanceof Error ? error.name : "UnknownError" });

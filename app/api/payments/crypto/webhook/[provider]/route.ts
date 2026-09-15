@@ -28,6 +28,7 @@ async function notifyPaymentConfirmed(order: { customerEmail: string; customerNa
     subject: `Оплата заказа ${order.orderNumber} подтверждена — SIMKA`,
     text: `Здравствуйте, ${order.customerName}!\n\nПлатёж по заказу ${order.orderNumber} на сумму ${amount} подтверждён платёжным провайдером. Заказ передан в обработку.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Оплата подтверждена</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Платёж по заказу <strong>${escapeHtml(order.orderNumber)}</strong> на сумму <strong>${escapeHtml(amount)}</strong> подтверждён платёжным провайдером.</p><p>Заказ передан в обработку.</p></div>`,
+    idempotencyKey: `crypto-payment-confirmed/${order.orderNumber}`,
   });
 
   await notifyManagers(`Криптоплатёж подтверждён\nЗаказ: ${order.orderNumber}\nСумма: ${amount}`, order.orderNumber);

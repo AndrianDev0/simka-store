@@ -2,7 +2,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, like, sql } from "drizzle-orm
 import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
-import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
+import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
@@ -97,6 +97,7 @@ function mainKeyboard(): InlineKeyboard {
     [{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }],
     [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
     [{ text: "📈 Аналитика", callback_data: "analytics:period:7" }, { text: "📊 Статус", callback_data: "status" }],
+    [{ text: "✉️ Почта", callback_data: "settings:email" }],
   ] };
 }
 
@@ -107,6 +108,7 @@ function persistentKeyboard(): ReplyKeyboard {
       [{ text: "🌍 Страны" }, { text: "📡 Операторы" }],
       [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
       [{ text: "📈 Аналитика" }, { text: "📊 Статус магазина" }],
+      [{ text: "✉️ Почта" }],
       [{ text: "🏠 Меню" }],
     ],
     resize_keyboard: true,
@@ -123,6 +125,7 @@ const adminButtonCommands: Record<string, string> = {
   "💳 Реквизиты": "/payment_requisites",
   "📈 Аналитика": "/analytics",
   "📊 Статус магазина": "/status",
+  "✉️ Почта": "/email",
   "🏠 Меню": "/start",
 };
 
@@ -330,17 +333,18 @@ function validTrackingUrl(value: string) {
   }
 }
 
-async function sendEsimDeliveryEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>, activationCode: string) {
+async function sendEsimDeliveryEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>, activationCode: string, idempotencyKey = `esim-delivery/${item.itemId}`) {
   const instructions = item.fulfillmentInstructions || "Следуйте инструкции из карточки тарифа. Если возникнет вопрос, ответьте на это письмо.";
   return sendTransactionalEmail({
     to: item.customerEmail,
     subject: `eSIM по заказу ${item.orderNumber} — SIMKA`,
     text: `Здравствуйте, ${item.customerName}!\n\neSIM по заказу ${item.orderNumber} готова.\nТариф: ${item.productName}\n\nКод активации:\n${activationCode}\n\nИнструкция:\n${instructions}\n\nНе передавайте код другим людям. Добавляйте eSIM только через настройки устройства.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Ваша eSIM готова</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Тариф: ${escapeHtml(item.productName)}</p><p>Код активации:</p><pre style="overflow-wrap:anywhere;white-space:pre-wrap;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px;font-size:15px">${escapeHtml(activationCode)}</pre><h2 style="font-size:18px">Инструкция</h2><p style="white-space:pre-line">${escapeHtml(instructions)}</p><p><strong>Не передавайте код другим людям.</strong> Добавляйте eSIM только через настройки устройства.</p></div>`,
+    idempotencyKey,
   });
 }
 
-async function sendShippingEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>) {
+async function sendShippingEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>, idempotencyKey = `sim-shipped/${item.itemId}`) {
   const trackingLine = item.trackingUrl ? `${item.trackingNumber}\n${item.trackingUrl}` : item.trackingNumber || "Уточняется";
   const trackingHtml = item.trackingUrl
     ? `<a href="${escapeHtml(item.trackingUrl)}">${escapeHtml(item.trackingNumber || "Открыть отслеживание")}</a>`
@@ -350,6 +354,7 @@ async function sendShippingEmail(item: NonNullable<Awaited<ReturnType<typeof res
     subject: `SIM отправлена — заказ ${item.orderNumber}`,
     text: `Здравствуйте, ${item.customerName}!\n\nФизическая SIM по заказу ${item.orderNumber} отправлена.\nТовар: ${item.productName}\nСлужба/способ: ${item.deliveryMethod || "Уточняется"}\nТрек-номер: ${trackingLine}\n\nСохраните это письмо до получения отправления.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">SIM отправлена</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Товар: ${escapeHtml(item.productName)}<br>Служба/способ: ${escapeHtml(item.deliveryMethod || "Уточняется")}<br>Трек-номер: ${trackingHtml}</p><p>Сохраните это письмо до получения отправления.</p></div>`,
+    idempotencyKey,
   });
 }
 
@@ -361,6 +366,7 @@ async function sendDeliveryQuoteEmail(item: NonNullable<Awaited<ReturnType<typeo
     subject: `Итоговая стоимость заказа ${item.orderNumber} — SIMKA`,
     text: `Здравствуйте, ${item.customerName}!\n\nСтоимость доставки по заказу ${item.orderNumber} подтверждена.\nДоставка: ${delivery}\nИтоговая сумма заказа: ${total}\n\nМенеджер отправит актуальные реквизиты на этот email.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Стоимость доставки подтверждена</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Доставка: <strong>${escapeHtml(delivery)}</strong><br>Итоговая сумма: <strong>${escapeHtml(total)}</strong></p><p>Менеджер отправит актуальные реквизиты на этот email.</p></div>`,
+    idempotencyKey: `delivery-quote/${item.orderId}/${totals.deliveryAmount}/${totals.totalAmount}`,
   });
 }
 
@@ -378,6 +384,7 @@ async function sendOrderStatusEmail(order: { customerEmail: string; customerName
     subject: `${message.subject} — ${order.orderNumber}`,
     text: `Здравствуйте, ${order.customerName}!\n\n${message.body}\nЗаказ: ${order.orderNumber}`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">${escapeHtml(message.title)}</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>${escapeHtml(message.body)}</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong></p></div>`,
+    idempotencyKey: `order-status/${order.orderNumber}/${status}`,
   });
 }
 
@@ -388,6 +395,7 @@ async function sendPaymentRequisitesEmail(order: { customerEmail: string; custom
     subject: `Реквизиты для заказа ${order.orderNumber} — SIMKA`,
     text: `Здравствуйте, ${order.customerName}!\n\nИтоговая сумма заказа ${order.orderNumber}: ${amount}\n\nАктуальные реквизиты:\n${requisites}\n\nПосле оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Реквизиты для оплаты</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong><br>Итоговая сумма: <strong>${escapeHtml(amount)}</strong></p><div style="white-space:pre-line;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px">${escapeHtml(requisites)}</div><p>После оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.</p></div>`,
+    idempotencyKey: `payment-requisites/${order.orderNumber}/${order.totalAmount}`,
   });
 }
 
@@ -407,6 +415,24 @@ async function syncOrderFulfillmentStatus(db: ReturnType<typeof getDb>, orderId:
 
 async function handleFulfillmentReply(token: string, chatId: number, adminId: number, messageId: number, text: string, replyContext: string) {
   const db = getDb();
+  if (replyContext.startsWith("[TEST_EMAIL]")) {
+    const email = text.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+      await sendMessage(token, chatId, "Введите корректный email для теста.", backKeyboard());
+      return true;
+    }
+    const sentAt = new Date();
+    const delivery = await sendTransactionalEmail({
+      to: email,
+      subject: "Проверка почты SIMKA",
+      text: `Почтовая отправка SIMKA работает.\n\nТест выполнен: ${sentAt.toLocaleString("ru-RU", { timeZone: "UTC" })} UTC.`,
+      html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Почта SIMKA работает</h1><p>Это безопасное тестовое письмо из панели администратора.</p><p>Тест выполнен: <strong>${escapeHtml(sentAt.toLocaleString("ru-RU", { timeZone: "UTC" }))} UTC</strong>.</p></div>`,
+      idempotencyKey: `admin-email-test/${adminId}/${sentAt.getTime()}`,
+    });
+    await audit(db, adminId, "settings.email_test", "transactional_email", { delivered: delivery.delivered, reason: delivery.reason ?? null });
+    await sendMessage(token, chatId, delivery.delivered ? `Тестовое письмо принято почтовым сервисом и отправлено на ${email}. Проверьте «Входящие» и «Спам».` : delivery.reason === "not_configured" ? "Почта ещё не настроена: добавьте RESEND_API_KEY и EMAIL_FROM в Render." : "Resend отклонил письмо или временно недоступен. Проверьте подтверждение домена и журнал Resend.", { inline_keyboard: [[{ text: "✉️ Проверить ещё раз", callback_data: "settings:email_test" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    return true;
+  }
   if (replyContext.startsWith("[EDIT_PAYMENT_REQUISITES]")) {
     const requisites = text.trim();
     if (!requisites || requisites.length > 4000) { await sendMessage(token, chatId, "Реквизиты должны содержать от 1 до 4000 символов.", backKeyboard()); return true; }
@@ -626,7 +652,8 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (data === "status") {
     const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
-    await sendMessage(token, chatId, `SIMKA работает.\nЗаказов: ${recent.length}\nАктивных: ${active}`, backKeyboard());
+    const email = getEmailConfigurationStatus();
+    await sendMessage(token, chatId, `SIMKA работает.\nЗаказов: ${recent.length}\nАктивных: ${active}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
     return;
   }
   if (scope === "analytics" && action === "period") {
@@ -636,6 +663,15 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (scope === "settings" && action === "payment") {
     const [setting] = await db.select({ updatedAt: storeSettings.updatedAt, updatedBy: storeSettings.updatedBy }).from(storeSettings).where(eq(storeSettings.key, PAYMENT_REQUISITES_KEY)).limit(1);
     await sendMessage(token, chatId, setting ? `Платёжные реквизиты настроены.\nОбновлены: ${setting.updatedAt}\nАдминистратор: ${setting.updatedBy}\n\nПолное значение намеренно не показывается в сообщениях.` : "Платёжные реквизиты ещё не настроены. Без них кнопка отправки клиенту не сработает.", { inline_keyboard: [[{ text: setting ? "✏️ Заменить реквизиты" : "➕ Добавить реквизиты", callback_data: "settings:payment_edit" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    return;
+  }
+  if (scope === "settings" && action === "email") {
+    const email = getEmailConfigurationStatus();
+    await sendMessage(token, chatId, email.configured ? `Почтовая отправка настроена.\nОтправитель: ${email.from}\n\nПроверьте реальную доставку тестовым письмом.` : `Почтовая отправка не настроена.\nНе хватает: ${email.missing.join(", ")}\n\nДобавьте переменные в Render и дождитесь нового deploy.`, { inline_keyboard: [[{ text: "📨 Отправить тест", callback_data: "settings:email_test" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    return;
+  }
+  if (scope === "settings" && action === "email_test") {
+    await sendMessage(token, chatId, "[TEST_EMAIL]\nВведите email, на который отправить безопасное тестовое письмо.", { force_reply: true, selective: true, input_field_placeholder: "name@example.com" });
     return;
   }
   if (scope === "settings" && action === "payment_edit") {
@@ -691,7 +727,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     if (action === "resend") {
       if (item.simType !== "eSIM" || !["PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(item.orderStatus) || !item.activationCodeEncrypted) { await sendMessage(token, chatId, "Повторная отправка сейчас недоступна.", orderBackKeyboard(item.orderNumber)); return; }
       const activationCode = await decryptFulfillmentSecret(item.activationCodeEncrypted, item.itemId);
-      const delivered = (await sendEsimDeliveryEmail(item, activationCode)).delivered;
+      const delivered = (await sendEsimDeliveryEmail(item, activationCode, `esim-resend/${item.itemId}/${Date.now()}`)).delivered;
       if (delivered) await db.update(orderItems).set({ fulfillmentStatus: "SENT", fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
       await syncOrderFulfillmentStatus(db, item.orderId);
       await audit(db, adminId, "order.esim_resend", item.orderId, { itemId: item.itemId, delivered });
@@ -706,7 +742,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     }
     if (action === "shipmail") {
       if (item.simType !== "SIM" || !["SHIPPED", "DELIVERED", "COMPLETED"].includes(item.fulfillmentStatus) || !item.trackingNumber) { await sendMessage(token, chatId, "Повторная отправка трек-номера недоступна.", orderBackKeyboard(item.orderNumber)); return; }
-      const delivered = (await sendShippingEmail(item)).delivered;
+      const delivered = (await sendShippingEmail(item, `shipment-resend/${item.itemId}/${Date.now()}`)).delivered;
       await audit(db, adminId, "order.shipment_resend", item.orderId, { itemId: item.itemId, delivered });
       await sendMessage(token, chatId, delivered ? "Трек-номер повторно отправлен клиенту." : "Письмо не доставлено. Проверьте почтовые настройки.");
       await sendOrderDetails(db, token, chatId, item.orderNumber);
@@ -779,6 +815,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
         subject: `Заказ ${order.orderNumber} отменён — SIMKA`,
         text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} отменён. Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа — возврат обрабатывается отдельно.`,
         html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ отменён</h1><p>Здравствуйте, ${safeName}!</p><p>Заказ <strong>${safeNumber}</strong> отменён.</p><p>Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа — возврат обрабатывается отдельно.</p></div>`,
+        idempotencyKey: `order-cancelled/${order.id}`,
       });
       cancellationEmailDelivered = delivery.delivered;
     } catch (error) {
@@ -980,6 +1017,8 @@ export async function POST(request: Request) {
       await sendAdminMenu(token, chatId);
     } else if (command === "/payment_requisites") {
       await handleCallback(token, chatId, from.id, "settings:payment");
+    } else if (command === "/email") {
+      await handleCallback(token, chatId, from.id, "settings:email");
     } else if (command === "/products") {
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "products:list");
     } else if (command === "/countries") {
@@ -990,7 +1029,8 @@ export async function POST(request: Request) {
       const db = getDb();
       const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
       const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
-      await sendMessage(token, chatId, `SIMKA работает.\nЗаказов в последней выборке: ${recent.length}\nАктивных: ${active}`, backKeyboard());
+      const email = getEmailConfigurationStatus();
+      await sendMessage(token, chatId, `SIMKA работает.\nЗаказов в последней выборке: ${recent.length}\nАктивных: ${active}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
     } else if (command === "/analytics") {
       await sendAnalyticsSummary(getDb(), token, chatId, 7);
     } else if (command === "/orders") {

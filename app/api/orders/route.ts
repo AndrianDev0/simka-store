@@ -134,6 +134,7 @@ async function notifyCustomer(order: {
     subject: `Заказ ${order.orderNumber} создан — SIMKA`,
     text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}${paymentLinkText}\n\nСохраните номер заказа для обращения в поддержку.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p>${paymentLinkHtml}<p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
+    idempotencyKey: `order-created/${order.orderNumber}`,
   });
 }
 
