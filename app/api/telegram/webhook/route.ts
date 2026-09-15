@@ -39,7 +39,14 @@ function safeEqual(left: string, right: string) {
 
 type InlineButton = { text: string; callback_data?: string; url?: string };
 type InlineKeyboard = { inline_keyboard: Array<Array<InlineButton>> };
-type ReplyMarkup = InlineKeyboard | { force_reply: true; selective: true; input_field_placeholder?: string };
+type ReplyKeyboard = {
+  keyboard: Array<Array<{ text: string }>>;
+  resize_keyboard?: boolean;
+  is_persistent?: boolean;
+  one_time_keyboard?: boolean;
+  selective?: boolean;
+};
+type ReplyMarkup = InlineKeyboard | ReplyKeyboard | { force_reply: true; selective: true; input_field_placeholder?: string };
 const PAYMENT_REQUISITES_KEY = "manager_payment_requisites";
 
 async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: ReplyMarkup) {
@@ -82,6 +89,39 @@ function mainKeyboard(): InlineKeyboard {
     [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
     [{ text: "📊 Статус магазина", callback_data: "status" }],
   ] };
+}
+
+function persistentKeyboard(): ReplyKeyboard {
+  return {
+    keyboard: [
+      [{ text: "📦 Товары" }, { text: "📂 Категории" }],
+      [{ text: "🌍 Страны" }, { text: "📡 Операторы" }],
+      [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
+      [{ text: "📊 Статус магазина" }, { text: "🏠 Меню" }],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+}
+
+const adminButtonCommands: Record<string, string> = {
+  "📦 Товары": "/products",
+  "📂 Категории": "/categories",
+  "🌍 Страны": "/countries",
+  "📡 Операторы": "/operators",
+  "🛒 Заказы": "/orders",
+  "💳 Реквизиты": "/payment_requisites",
+  "📊 Статус магазина": "/status",
+  "🏠 Меню": "/start",
+};
+
+async function sendAdminMenu(token: string, chatId: number) {
+  await sendMessage(token, chatId, "Панель управления SIMKA", persistentKeyboard());
+  await sendMessage(token, chatId, "Выберите раздел:", mainKeyboard());
+}
+
+function isEncryptionConfigError(error: unknown) {
+  return error instanceof Error && error.message === "FULFILLMENT_ENCRYPTION_KEY_NOT_CONFIGURED";
 }
 
 function backKeyboard(): InlineKeyboard {
@@ -291,7 +331,16 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
   if (replyContext.startsWith("[EDIT_PAYMENT_REQUISITES]")) {
     const requisites = text.trim();
     if (!requisites || requisites.length > 4000) { await sendMessage(token, chatId, "Реквизиты должны содержать от 1 до 4000 символов.", backKeyboard()); return true; }
-    const encryptedValue = await encryptFulfillmentSecret(requisites, `store-setting:${PAYMENT_REQUISITES_KEY}`);
+    let encryptedValue: string;
+    try {
+      encryptedValue = await encryptFulfillmentSecret(requisites, `store-setting:${PAYMENT_REQUISITES_KEY}`);
+    } catch (error) {
+      if (isEncryptionConfigError(error)) {
+        await sendMessage(token, chatId, "Сохранение реквизитов временно недоступно: администратору нужно добавить FULFILLMENT_ENCRYPTION_KEY в настройках Render (минимум 32 символа), затем повторить ввод.", backKeyboard());
+        return true;
+      }
+      throw error;
+    }
     await db.insert(storeSettings).values({ key: PAYMENT_REQUISITES_KEY, encryptedValue, updatedBy: String(adminId), updatedAt: new Date().toISOString() }).onConflictDoUpdate({ target: storeSettings.key, set: { encryptedValue, updatedBy: String(adminId), updatedAt: new Date().toISOString() } });
     await deleteSensitiveMessage(token, chatId, messageId);
     await audit(db, adminId, "settings.payment_requisites", PAYMENT_REQUISITES_KEY, { configured: true });
@@ -339,7 +388,16 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
       const [product] = await db.select({ instructions: catalogProducts.instructions }).from(catalogProducts).where(eq(catalogProducts.id, item.productId)).limit(1);
       instructions = product?.instructions || "Следуйте инструкции из карточки тарифа.";
     }
-    const encrypted = await encryptFulfillmentSecret(activationCode, item.itemId);
+    let encrypted: string;
+    try {
+      encrypted = await encryptFulfillmentSecret(activationCode, item.itemId);
+    } catch (error) {
+      if (isEncryptionConfigError(error)) {
+        await sendMessage(token, chatId, "Выдача eSIM временно недоступна: администратору нужно добавить FULFILLMENT_ENCRYPTION_KEY в настройках Render (минимум 32 символа), затем повторить ввод.", orderBackKeyboard(item.orderNumber));
+        return true;
+      }
+      throw error;
+    }
     await db.update(orderItems).set({ activationCodeEncrypted: encrypted, fulfillmentInstructions: instructions, fulfillmentStatus: "READY", updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
     await deleteSensitiveMessage(token, chatId, messageId);
     const readyItem = { ...item, activationCodeEncrypted: encrypted, fulfillmentInstructions: instructions, fulfillmentStatus: "READY" };
@@ -482,7 +540,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   const db = getDb();
   const [scope, action, first, second] = data.split(":");
   if (data === "menu") {
-    await sendMessage(token, chatId, "SIMKA Admin\nВыберите раздел:", mainKeyboard());
+    await sendAdminMenu(token, chatId);
     return;
   }
   if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
@@ -824,9 +882,25 @@ export async function POST(request: Request) {
       }
     }
 
+    // Reply-keyboard labels are ordinary Telegram text messages. Convert them
+    // to the same commands used by the existing handlers, but never while a
+    // sensitive/admin input prompt is active.
+    if (!replyContext) {
+      const buttonCommand = adminButtonCommands[text.trim()];
+      if (buttonCommand) text = buttonCommand;
+    }
+
     const command = text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
     if (command === "/start" || command === "/help") {
-      await sendMessage(token, chatId, "SIMKA Admin\nВыберите раздел:", mainKeyboard());
+      await sendAdminMenu(token, chatId);
+    } else if (command === "/payment_requisites") {
+      await handleCallback(token, chatId, from.id, "settings:payment");
+    } else if (command === "/products") {
+      await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "products:list");
+    } else if (command === "/countries") {
+      await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "countries:list");
+    } else if (command === "/operators") {
+      await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "operators:list");
     } else if (command === "/status") {
       const db = getDb();
       const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
