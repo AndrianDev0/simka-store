@@ -274,6 +274,7 @@ async function showProduct(db: Db, token: string, chatId: number, productId: num
     [{ text: `🧩 Варианты (${variantRows.length})`, callback_data: `product:variants:${product.id}` }, { text: `🖼 Изображения (${imageRows.length})`, callback_data: `product:images:${product.id}` }],
     [{ text: `📂 Категории (${categoryRows.length})`, callback_data: `product:categories:${product.id}` }],
     [{ text: "🌐 Открыть на сайте", url: `${SITE_ORIGIN}/product/${encodeURIComponent(product.slug)}` }],
+    [{ text: "📄 Дублировать как черновик", callback_data: `product:copy_prompt:${product.id}` }],
     [{ text: "🗑 Удалить", callback_data: `product:delete_prompt:${product.id}` }],
     [{ text: "◀️ К товарам", callback_data: "products:list" }],
   ] });
@@ -522,6 +523,38 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     return true;
   }
   if (scope === "product" && action === "view" && first) { await showProduct(db, token, chatId, Number(first)); return true; }
+  if (scope === "product" && action === "copy_prompt" && first) {
+    await sendMessage(token, chatId, "Создать копию товара со всеми вариантами, изображениями и категориями? Копия будет черновиком с новым SKU и slug.", { inline_keyboard: [[{ text: "📄 Создать копию", callback_data: `product:copy_confirm:${first}` }], [{ text: "Отмена", callback_data: `product:view:${first}` }]] });
+    return true;
+  }
+  if (scope === "product" && action === "copy_confirm" && first) {
+    const id = Number(first);
+    const [source] = await db.select().from(catalogProducts).where(eq(catalogProducts.id, id)).limit(1);
+    if (!source) { await sendMessage(token, chatId, "Товар не найден.", back("products:list")); return true; }
+    const suffix = `copy-${Date.now().toString(36)}`;
+    const [copy] = await db.transaction(async (tx) => {
+      const inserted = await tx.insert(catalogProducts).values({
+        name: `${source.name} (копия)`.slice(0, 220), sku: `${source.sku}-${suffix}`.slice(0, 120), slug: `${source.slug}-${suffix}`.slice(0, 160), countryId: source.countryId, operatorId: source.operatorId,
+        simType: source.simType, price: source.price, oldPrice: source.oldPrice, currency: source.currency, shortDescription: source.shortDescription, fullDescription: source.fullDescription,
+        characteristics: source.characteristics, validityDays: source.validityDays, dataVolume: source.dataVolume, dataMb: source.dataMb, isUnlimited: source.isUnlimited, hasCalls: source.hasCalls,
+        callsDetails: source.callsDetails, hasSms: source.hasSms, smsDetails: source.smsDetails, roamingTerms: source.roamingTerms, activationTerms: source.activationTerms, compatibility: source.compatibility,
+        instructions: source.instructions, esimType: source.esimType, esimDeliveryMethod: source.esimDeliveryMethod, deliveryOptions: source.deliveryOptions, popular: false, tone: source.tone,
+        available: false, availabilityStatus: "OUT_OF_STOCK", stockQuantity: source.stockQuantity, publicationStatus: "DRAFT", archivedAt: null, seoTitle: source.seoTitle, seoDescription: source.seoDescription,
+        h1: source.h1, seoText: source.seoText, canonicalUrl: null, ogTitle: source.ogTitle, ogDescription: source.ogDescription, ogImage: source.ogImage, sortOrder: source.sortOrder,
+      }).returning({ id: catalogProducts.id });
+      const variants = await tx.select().from(productVariants).where(eq(productVariants.productId, id));
+      for (const variant of variants) await tx.insert(productVariants).values({ productId: inserted[0].id, name: variant.name, sku: `${variant.sku}-${suffix}`.slice(0, 120), slug: `${variant.slug}-${suffix}`.slice(0, 160), price: variant.price, currency: variant.currency, dataVolume: variant.dataVolume, validityDays: variant.validityDays, characteristics: variant.characteristics, available: false, availabilityStatus: "OUT_OF_STOCK", stockQuantity: variant.stockQuantity, sortOrder: variant.sortOrder });
+      const images = await tx.select().from(productImages).where(eq(productImages.productId, id));
+      for (const image of images) await tx.insert(productImages).values({ productId: inserted[0].id, url: image.url, alt: image.alt, sortOrder: image.sortOrder, isPrimary: image.isPrimary });
+      const links = await tx.select().from(productCategories).where(eq(productCategories.productId, id));
+      for (const link of links) await tx.insert(productCategories).values({ productId: inserted[0].id, categoryId: link.categoryId });
+      return inserted;
+    });
+    await audit(db, adminId, "product.copy", String(copy.id), { sourceProductId: id });
+    await sendMessage(token, chatId, "Копия создана как черновик. Проверьте SKU/slug и остаток перед публикацией.");
+    await showProduct(db, token, chatId, copy.id);
+    return true;
+  }
   if (scope === "product" && action === "edit" && first) { await sendMessage(token, chatId, "Выберите поле товара:", productEditKeyboard(Number(first))); return true; }
   if (scope === "product" && action === "field" && first && second && second in productFields) {
     const label = productFields[second as keyof typeof productFields][0];
