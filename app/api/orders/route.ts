@@ -48,7 +48,7 @@ async function notifyManagers(order: {
 }) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminIds = (process.env.TELEGRAM_ADMIN_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-  if (!token || !adminIds.length) return;
+  if (!token || !adminIds.length) return false;
   const paymentLabel = order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта (ожидает провайдера)";
   const lines = order.items.map((item) => `• ${item.productName} × ${item.quantity}`).join("\n");
   const text = [
@@ -78,6 +78,7 @@ async function notifyManagers(order: {
     });
     if (!response.ok) throw new Error("TELEGRAM_NOTIFY_FAILED");
   }));
+  return true;
 }
 
 export async function POST(request: Request) {
@@ -114,9 +115,9 @@ export async function POST(request: Request) {
       await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, totalAmount });
       await tx.insert(orderItems).values(resolved.map(({ product, quantity, lineTotal }) => ({ id: crypto.randomUUID(), orderId: id, productId: product.id, sku: product.sku, productName: `${product.country} · ${product.data}`, simType: product.type, unitPrice: product.price, quantity, lineTotal })));
     });
-    let managerNotified = true;
+    let managerNotified = false;
     try {
-      await notifyManagers({
+      managerNotified = await notifyManagers({
         orderNumber: number,
         customerName: parsed.data.customerName,
         customerEmail: parsed.data.customerEmail.toLowerCase(),
