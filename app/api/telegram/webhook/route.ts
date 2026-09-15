@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
@@ -96,7 +96,7 @@ function mainKeyboard(): InlineKeyboard {
     [{ text: "📦 Товары", callback_data: "products:list" }, { text: "📂 Категории", callback_data: "categories:list" }],
     [{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }],
     [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
-    [{ text: "📊 Статус магазина", callback_data: "status" }],
+    [{ text: "📈 Аналитика", callback_data: "analytics:period:7" }, { text: "📊 Статус", callback_data: "status" }],
   ] };
 }
 
@@ -106,7 +106,8 @@ function persistentKeyboard(): ReplyKeyboard {
       [{ text: "📦 Товары" }, { text: "📂 Категории" }],
       [{ text: "🌍 Страны" }, { text: "📡 Операторы" }],
       [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
-      [{ text: "📊 Статус магазина" }, { text: "🏠 Меню" }],
+      [{ text: "📈 Аналитика" }, { text: "📊 Статус магазина" }],
+      [{ text: "🏠 Меню" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -120,6 +121,7 @@ const adminButtonCommands: Record<string, string> = {
   "📡 Операторы": "/operators",
   "🛒 Заказы": "/orders",
   "💳 Реквизиты": "/payment_requisites",
+  "📈 Аналитика": "/analytics",
   "📊 Статус магазина": "/status",
   "🏠 Меню": "/start",
 };
@@ -146,6 +148,74 @@ function orderListKeyboard(list: Array<{ orderNumber: string; status: string }>)
     ...list.map((order) => [{ text: `${order.status === "WAITING_FOR_MANAGER" ? "🟡" : order.status === "PAID" ? "🟢" : "📦"} ${order.orderNumber}`, callback_data: `order:view:${order.orderNumber}` }]),
     [{ text: "◀️ В меню", callback_data: "menu" }],
   ] };
+}
+
+function analyticsKeyboard(selectedDays: number): InlineKeyboard {
+  const button = (label: string, days: number) => ({ text: `${selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
+  return { inline_keyboard: [
+    [button("24 часа", 1), button("7 дней", 7), button("30 дней", 30)],
+    [button("Всё время", 0)],
+    [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
+    [{ text: "🛒 Последние заказы", callback_data: "orders:list" }],
+    [{ text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+}
+
+const paidOrderStatuses = new Set(["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"]);
+const activeOrderStatuses = new Set(["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING", "SHIPPED", "DELIVERED"]);
+const analyticsStatusLabels: Record<string, string> = {
+  NEW: "Новые", WAITING_FOR_MANAGER: "Ждут менеджера", WAITING_PAYMENT: "Ждут оплаты", PAYMENT_PENDING: "Платёж проверяется",
+  PAID: "Оплачены", PROCESSING: "Выполняются", SHIPPED: "Отправлены", DELIVERED: "Доставлены", COMPLETED: "Завершены",
+  CANCELLED: "Отменены", REFUNDED: "Возвраты", FAILED: "Ошибки",
+};
+
+async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
+  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency };
+  const rows = normalizedDays
+    ? await db.select(selection).from(orders).where(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()))
+    : await db.select(selection).from(orders);
+  const paid = rows.filter((order) => paidOrderStatuses.has(order.status));
+  const active = await db.select({ id: orders.id }).from(orders).where(inArray(orders.status, [...activeOrderStatuses]));
+  const cancelled = rows.filter((order) => order.status === "CANCELLED");
+  const refunded = rows.filter((order) => order.status === "REFUNDED");
+  const failed = rows.filter((order) => order.status === "FAILED");
+  const paidIds = paid.map((order) => order.id);
+  const soldItems = paidIds.length
+    ? await db.select({ simType: orderItems.simType, quantity: orderItems.quantity }).from(orderItems).where(inArray(orderItems.orderId, paidIds))
+    : [];
+  const soldEsim = soldItems.filter((item) => item.simType === "eSIM").reduce((sum, item) => sum + item.quantity, 0);
+  const soldSim = soldItems.filter((item) => item.simType === "SIM").reduce((sum, item) => sum + item.quantity, 0);
+  const revenue = new Map<string, number>();
+  for (const order of paid) revenue.set(order.currency, (revenue.get(order.currency) ?? 0) + order.totalAmount);
+  const revenueLines = [...revenue].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
+  const averageLines = [...revenue].map(([currency, amount]) => `${Math.round(amount / paid.filter((order) => order.currency === currency).length).toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
+  const statusCounts = new Map<string, number>();
+  for (const order of rows) statusCounts.set(order.status, (statusCounts.get(order.status) ?? 0) + 1);
+  const statusLines = [...statusCounts].sort((left, right) => right[1] - left[1]).map(([status, count]) => `• ${analyticsStatusLabels[status] ?? status}: ${count}`).join("\n") || "• Заказов пока нет";
+  const period = normalizedDays === 0 ? "за всё время" : normalizedDays === 1 ? "за последние 24 часа" : `за последние ${normalizedDays} дней`;
+  const conversion = rows.length ? (paid.length / rows.length * 100).toFixed(1).replace(".", ",") : "0";
+  const text = [
+    `📈 Аналитика SIMKA ${period}`,
+    "",
+    `🛒 Заказов создано: ${rows.length}`,
+    `✅ Оплаченных: ${paid.length}`,
+    `💰 Оборот: ${revenueLines}`,
+    `🧾 Средний оплаченный заказ: ${averageLines}`,
+    `📊 Конверсия заказ → оплата: ${conversion}%`,
+    `⚙️ Активных сейчас: ${active.length}`,
+    `❌ Отменено: ${cancelled.length}`,
+    `↩️ Возвратов: ${refunded.length}`,
+    `⚠️ Ошибок: ${failed.length}`,
+    `📲 Продано eSIM: ${soldEsim}`,
+    `📦 Продано SIM: ${soldSim}`,
+    "",
+    "Статусы:",
+    statusLines,
+    "",
+    "Данные обновляются напрямую из базы магазина.",
+  ].join("\n");
+  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays));
 }
 
 async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, orderNumber: string) {
@@ -559,6 +629,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, `SIMKA работает.\nЗаказов: ${recent.length}\nАктивных: ${active}`, backKeyboard());
     return;
   }
+  if (scope === "analytics" && action === "period") {
+    await sendAnalyticsSummary(db, token, chatId, Number(first));
+    return;
+  }
   if (scope === "settings" && action === "payment") {
     const [setting] = await db.select({ updatedAt: storeSettings.updatedAt, updatedBy: storeSettings.updatedBy }).from(storeSettings).where(eq(storeSettings.key, PAYMENT_REQUISITES_KEY)).limit(1);
     await sendMessage(token, chatId, setting ? `Платёжные реквизиты настроены.\nОбновлены: ${setting.updatedAt}\nАдминистратор: ${setting.updatedBy}\n\nПолное значение намеренно не показывается в сообщениях.` : "Платёжные реквизиты ещё не настроены. Без них кнопка отправки клиенту не сработает.", { inline_keyboard: [[{ text: setting ? "✏️ Заменить реквизиты" : "➕ Добавить реквизиты", callback_data: "settings:payment_edit" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
@@ -917,6 +991,8 @@ export async function POST(request: Request) {
       const recent = await db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100);
       const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
       await sendMessage(token, chatId, `SIMKA работает.\nЗаказов в последней выборке: ${recent.length}\nАктивных: ${active}`, backKeyboard());
+    } else if (command === "/analytics") {
+      await sendAnalyticsSummary(getDb(), token, chatId, 7);
     } else if (command === "/orders") {
       const db = getDb();
       const recent = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).orderBy(desc(orders.createdAt)).limit(5);
