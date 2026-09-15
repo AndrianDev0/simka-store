@@ -32,7 +32,7 @@ export async function consumeRateLimit({ request, action, limit, windowMs, subje
   }).returning({ count: requestRateLimits.count });
 
   // Opportunistic cleanup keeps the table bounded without requiring a scheduler.
-  if (row.count === 1 && nowMs % 97 === 0) {
+  if (row.count === 1 && Math.random() < 0.01) {
     await db.delete(requestRateLimits).where(lt(requestRateLimits.updatedAt, new Date(nowMs - 7 * 24 * 60 * 60 * 1000).toISOString()));
   }
 

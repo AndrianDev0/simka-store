@@ -250,9 +250,48 @@ function analyticsKeyboard(selectedDays: number): InlineKeyboard {
     [button("24 часа", 1), button("7 дней", 7), button("30 дней", 30)],
     [button("Всё время", 0)],
     [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
+    [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
     [{ text: "🛒 Последние заказы", callback_data: "orders:list" }],
     [{ text: "◀️ В меню", callback_data: "menu" }],
   ] };
+}
+
+function analyticsPeriod(days: number) {
+  return days === 0 ? "за всё время" : days === 1 ? "за последние 24 часа" : `за последние ${days} дней`;
+}
+
+async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
+  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const paidStatuses = [...paidOrderStatuses];
+  const conditions = [inArray(orders.status, paidStatuses)];
+  if (normalizedDays) conditions.push(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()));
+  const rows = await db.select({ productName: orderItems.productName, sku: orderItems.sku, quantity: orderItems.quantity, unitPrice: orderItems.unitPrice }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).where(and(...conditions));
+  const groups = new Map<string, { quantity: number; revenue: number }>();
+  for (const row of rows) {
+    const key = row.sku || row.productName;
+    const current = groups.get(key) || { quantity: 0, revenue: 0 };
+    current.quantity += row.quantity;
+    current.revenue += row.unitPrice * row.quantity;
+    groups.set(key, current);
+  }
+  const lines = [...groups.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15).map(([key, value], index) => `${index + 1}. ${key} · ${value.quantity} шт. · ${value.revenue.toLocaleString("ru-RU")} (валюты могут отличаться)`).join("\n") || "Оплаченных товаров пока нет.";
+  await sendMessage(token, chatId, `📦 Продажи по товарам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+}
+
+async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
+  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const conditions = [inArray(orders.status, [...paidOrderStatuses])];
+  if (normalizedDays) conditions.push(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()));
+  const rows = await db.select({ country: countries.name, quantity: orderItems.quantity, revenue: sql<number>`${orderItems.unitPrice} * ${orderItems.quantity}` }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).innerJoin(catalogProducts, eq(orderItems.productId, catalogProducts.id)).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).where(and(...conditions));
+  const groups = new Map<string, { quantity: number; revenue: number }>();
+  for (const row of rows) {
+    const current = groups.get(row.country) || { quantity: 0, revenue: 0 };
+    current.quantity += row.quantity;
+    current.revenue += Number(row.revenue) || 0;
+    groups.set(row.country, current);
+  }
+  const lines = [...groups.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15).map(([country, value], index) => `${index + 1}. ${country} · ${value.quantity} шт. · ${value.revenue.toLocaleString("ru-RU")} (валюты могут отличаться)`).join("\n") || "Оплаченных продаж по странам пока нет.";
+  await sendMessage(token, chatId, `🌍 Продажи по странам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 
 const paidOrderStatuses = new Set(["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"]);
@@ -794,6 +833,14 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "period") {
     await sendAnalyticsSummary(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "analytics" && action === "products") {
+    await sendProductAnalytics(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "analytics" && action === "countries") {
+    await sendCountryAnalytics(db, token, chatId, Number(first));
     return;
   }
   if (scope === "backup" && action === "prompt") {
