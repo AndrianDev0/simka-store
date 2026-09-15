@@ -239,6 +239,8 @@ async function sendCustomerDetails(db: ReturnType<typeof getDb>, token: string, 
       : [{ text: "⛔ Заблокировать", callback_data: `customer:block_prompt:${customer.id}` }],
     [{ text: "🚪 Завершить все сессии", callback_data: `customer:logout_prompt:${customer.id}` }],
     [{ text: "📤 Экспорт данных", callback_data: `customer:export:${customer.id}` }],
+    [{ text: "✏️ Изменить имя", callback_data: `customer:edit:${customer.id}:name` }, { text: "✏️ Изменить контакт", callback_data: `customer:edit:${customer.id}:contact` }],
+    [{ text: "✏️ Изменить email", callback_data: `customer:edit:${customer.id}:email` }],
     [{ text: "🗑 Удалить аккаунт", callback_data: `customer:delete_prompt:${customer.id}` }],
     [{ text: "◀️ К клиентам", callback_data: "customers:list" }],
   ] });
@@ -585,6 +587,26 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await sendCustomerDetails(db, token, chatId, changed.id);
     return true;
   }
+  const editCustomerReply = replyContext.match(/^\[EDIT_CUSTOMER:([0-9a-f-]{36}):(name|contact|email)\]/i);
+  if (editCustomerReply) {
+    const id = editCustomerReply[1];
+    const field = editCustomerReply[2];
+    const value = text.trim();
+    const normalizedValue = field === "contact" && value === "-" ? "" : value;
+    if (field === "name" && (normalizedValue.length < 2 || normalizedValue.length > 100)) { await sendMessage(token, chatId, "Имя должно быть от 2 до 100 символов.", backKeyboard()); return true; }
+    if (field === "contact" && normalizedValue.length > 100) { await sendMessage(token, chatId, "Контакт должен быть не длиннее 100 символов.", backKeyboard()); return true; }
+    if (field === "email" && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedValue.toLowerCase()) || normalizedValue.length > 254)) { await sendMessage(token, chatId, "Введите корректный email.", backKeyboard()); return true; }
+    if (field === "email") {
+      const duplicate = await db.select({ id: customerAccounts.id }).from(customerAccounts).where(and(eq(customerAccounts.email, normalizedValue.toLowerCase()), sql`${customerAccounts.id} <> ${id}`)).limit(1);
+      if (duplicate[0]) { await sendMessage(token, chatId, "Этот email уже занят другим аккаунтом.", { inline_keyboard: [[{ text: "◀️ К клиенту", callback_data: `customer:view:${id}` }]] }); return true; }
+    }
+    const update = field === "email" ? { email: normalizedValue.toLowerCase(), updatedAt: new Date().toISOString() } : field === "name" ? { name: normalizedValue, updatedAt: new Date().toISOString() } : { contact: normalizedValue, updatedAt: new Date().toISOString() };
+    const [changed] = await db.update(customerAccounts).set(update).where(eq(customerAccounts.id, id)).returning({ id: customerAccounts.id });
+    if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return true; }
+    await audit(db, adminId, "customer.edit", id, { field });
+    await sendCustomerDetails(db, token, chatId, id);
+    return true;
+  }
   if (replyContext.startsWith("[TEST_EMAIL]")) {
     const email = text.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
@@ -900,6 +922,11 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "customer" && action === "block_prompt" && first) {
     await sendMessage(token, chatId, `[BLOCK_CUSTOMER:${first}]\nУкажите причину блокировки. Все сессии клиента будут завершены.`, { force_reply: true, selective: true, input_field_placeholder: "Причина блокировки" });
+    return;
+  }
+  if (scope === "customer" && action === "edit" && first && ["name", "contact", "email"].includes(second || "")) {
+    const labels: Record<string, string> = { name: "новое имя", contact: "новый контакт или - чтобы очистить", email: "новый email" };
+    await sendMessage(token, chatId, `[EDIT_CUSTOMER:${first}:${second}]\nВведите ${labels[second!]}.`, { force_reply: true, selective: true, input_field_placeholder: labels[second!] });
     return;
   }
   if (scope === "customer" && action === "unblock" && first) {
