@@ -20,6 +20,23 @@ function orderNumber() {
   return `SIM-${date}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
+function isAllowedOrigin(request: Request, origin: string) {
+  try {
+    const originUrl = new URL(origin);
+    const requestUrl = new URL(request.url);
+    if (originUrl.origin === requestUrl.origin) return true;
+
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+    const host = (forwardedHost || request.headers.get("host") || "").toLowerCase();
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+    const protocol = (forwardedProto || requestUrl.protocol.slice(0, -1)).toLowerCase();
+
+    return Boolean(host) && originUrl.host.toLowerCase() === host && originUrl.protocol.toLowerCase() === `${protocol}:`;
+  } catch {
+    return false;
+  }
+}
+
 async function notifyManagers(order: {
   orderNumber: string;
   customerName: string;
@@ -62,7 +79,7 @@ export async function POST(request: Request) {
   if (contentLength > 20_000) return Response.json({ error: "Слишком большой запрос" }, { status: 413 });
 
   const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) return Response.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  if (origin && !isAllowedOrigin(request, origin)) return Response.json({ error: "Недопустимый источник запроса" }, { status: 403 });
 
   try {
     const parsed = payloadSchema.safeParse(await request.json());
