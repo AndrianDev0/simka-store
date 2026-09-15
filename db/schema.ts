@@ -25,10 +25,47 @@ type DeliveryOption = {
   dispatchDaysMax: number | null;
 };
 
+export const customerAccounts = pgTable("customer_accounts", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  name: text("name").notNull(),
+  contact: text("contact").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_customer_accounts_email").on(table.email),
+]);
+
+export const customerSessions = pgTable("customer_sessions", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => customerAccounts.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastUsedAt: text("last_used_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_customer_sessions_token_hash").on(table.tokenHash),
+  index("idx_customer_sessions_account_id").on(table.accountId),
+  index("idx_customer_sessions_expires_at").on(table.expiresAt),
+]);
+
+export const customerPasswordResets = pgTable("customer_password_resets", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => customerAccounts.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_customer_password_resets_token_hash").on(table.tokenHash),
+  index("idx_customer_password_resets_account_id").on(table.accountId),
+]);
+
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),
   orderNumber: text("order_number").notNull(),
+  customerAccountId: text("customer_account_id").references(() => customerAccounts.id, { onDelete: "set null" }),
   customerName: text("customer_name").notNull(),
   customerEmail: text("customer_email").notNull(),
   customerContact: text("customer_contact").notNull().default(""),
@@ -49,6 +86,7 @@ export const orders = pgTable("orders", {
   uniqueIndex("idx_orders_request_id").on(table.requestId),
   uniqueIndex("idx_orders_order_number").on(table.orderNumber),
   index("idx_orders_customer_email").on(table.customerEmail),
+  index("idx_orders_customer_account_id").on(table.customerAccountId),
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
   check("orders_subtotal_amount_nonnegative", sql`${table.subtotalAmount} >= 0`),
   check("orders_delivery_amount_nonnegative", sql`${table.deliveryAmount} >= 0`),

@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { catalogProducts, orderItems, orders, productVariants } from "@/db/schema";
 import { getCatalogProducts } from "@/lib/catalog-repository";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
+import { getCurrentAccount } from "@/lib/customer-auth";
 
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
@@ -138,6 +139,9 @@ export async function POST(request: Request) {
     }
 
     const db = getDb();
+    // Keep guest checkout available, but link new orders to the signed-in
+    // customer so the personal cabinet can show a private order history.
+    const account = await getCurrentAccount();
     const [existing] = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
     if (existing) return Response.json({ order: { ...existing, managerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
 
@@ -241,7 +245,7 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true });
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true });
       await tx.insert(orderItems).values(itemRows);
     });
     let managerNotified = false;

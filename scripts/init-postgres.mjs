@@ -18,10 +18,44 @@ await client.connect();
 try {
   await client.query("BEGIN");
   await client.query(`
+    CREATE TABLE IF NOT EXISTS customer_accounts (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      contact TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email);
+
+    CREATE TABLE IF NOT EXISTS customer_sessions (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES customer_accounts(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_sessions_token_hash ON customer_sessions(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_customer_sessions_account_id ON customer_sessions(account_id);
+    CREATE INDEX IF NOT EXISTS idx_customer_sessions_expires_at ON customer_sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS customer_password_resets (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES customer_accounts(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_password_resets_token_hash ON customer_password_resets(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_customer_password_resets_account_id ON customer_password_resets(account_id);
+
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,
       order_number TEXT NOT NULL,
+      customer_account_id TEXT CONSTRAINT orders_customer_account_id_fkey REFERENCES customer_accounts(id) ON DELETE SET NULL,
       customer_name TEXT NOT NULL,
       customer_email TEXT NOT NULL,
       customer_contact TEXT NOT NULL DEFAULT '',
@@ -42,12 +76,14 @@ try {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_request_id ON orders(request_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number);
     CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);
-    CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_account_id TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS subtotal_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
+    CREATE INDEX IF NOT EXISTS idx_orders_customer_account_id ON orders(customer_account_id);
+    CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
 
     -- Statuses intentionally remain text so the workflow can be extended without
     -- a destructive migration or a production restart race.
@@ -305,6 +341,22 @@ try {
       END IF;
     END
     $catalog$;
+  `);
+
+  // Existing orders predate customer accounts. Add the nullable relationship
+  // idempotently while keeping guest orders valid and private.
+  await client.query(`
+    DO $accounts$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'orders_customer_account_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_customer_account_id_fkey
+          FOREIGN KEY (customer_account_id) REFERENCES customer_accounts(id) ON DELETE SET NULL;
+      END IF;
+    END
+    $accounts$;
   `);
 
   await client.query(`
