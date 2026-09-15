@@ -80,6 +80,10 @@ export const orders = pgTable("orders", {
   currency: text("currency").notNull().default("RUB"),
   inventoryReserved: boolean("inventory_reserved").notNull().default(false),
   paymentInstructionsSentAt: text("payment_instructions_sent_at"),
+  analyticsClientId: text("analytics_client_id"),
+  analyticsPurchaseSentAt: text("analytics_purchase_sent_at"),
+  analyticsCancellationSentAt: text("analytics_cancellation_sent_at"),
+  analyticsRefundSentAt: text("analytics_refund_sent_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [

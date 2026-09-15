@@ -69,6 +69,10 @@ try {
       currency TEXT NOT NULL DEFAULT 'RUB',
       inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE,
       payment_instructions_sent_at TEXT,
+      analytics_client_id TEXT,
+      analytics_purchase_sent_at TEXT,
+      analytics_cancellation_sent_at TEXT,
+      analytics_refund_sent_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -82,6 +86,10 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_client_id TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_purchase_sent_at TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_cancellation_sent_at TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_refund_sent_at TEXT;
     CREATE INDEX IF NOT EXISTS idx_orders_customer_account_id ON orders(customer_account_id);
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
 

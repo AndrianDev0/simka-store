@@ -74,8 +74,8 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
   const operators = [...new Set(products.map((product) => product.operator))].sort((a, b) => a.localeCompare(b, "ru"));
   const currencies = [...new Set(products.map((product) => productDisplayOffer(product).currency))].sort();
   const hasFilters = [q, country, operator, category, type, currency, availability, data, valueOf(raw.days), valueOf(raw.minPrice), valueOf(raw.maxPrice), valueOf(raw.sort)].some(Boolean);
-  const analyticsFilters = new URLSearchParams(Object.entries(raw).flatMap(([key, value]) => {
-    const item = valueOf(value).trim();
+  const analyticsFilters = new URLSearchParams(Object.entries({ country, operator, category, type, currency, availability, data, days: valueOf(raw.days), minPrice: valueOf(raw.minPrice), maxPrice: valueOf(raw.maxPrice), sort: valueOf(raw.sort) }).flatMap(([key, value]) => {
+    const item = String(value).trim();
     return item ? [[key, item] as [string, string]] : [];
   })).toString();
   const analyticsItems = filtered.map((product) => {
@@ -84,7 +84,7 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
   });
 
   return <SiteShell eyebrow="Каталог" title="Тарифы для поездок" description="Сравните страну, оператора, объём интернета, срок и тип SIM. Цена и наличие повторно проверяются при оформлении.">
-    <CatalogAnalytics filters={analyticsFilters} items={analyticsItems}/>
+    <CatalogAnalytics filters={analyticsFilters} hasSearch={Boolean(q)} items={analyticsItems}/>
     <ContentSection>
       <form action="/catalog" className="mb-8 rounded-2xl border border-[#dbe5ef] bg-[#f8fbfe] p-4" aria-label="Фильтры каталога">
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">

@@ -31,6 +31,15 @@ export default function Storefront({categories=[],products}:{categories?:PublicC
   const change=(key:string,amount:number)=>{const [productId,variantId]=key.split(":").map(Number);const product=products.find(item=>item.id===productId);const variant=variantId?product?.variants.find(item=>item.id===variantId):null;const stock=variant?.stockQuantity??product?.stockQuantity??null;const previous=cart[key]||0;const requested=Math.max(0,previous+amount);const next=stock===null?requested:Math.min(stock,requested);if(product&&next!==previous){const quantity=Math.abs(next-previous);const line:CartLine={key,product,variant:variant??null,quantity,price:variant?.price??product.price,currency:variant?.currency??product.currency,sku:variant?.sku??product.sku,data:variant?.data??product.data,days:variant?.days??product.days};trackEvent(amount>0?"add_to_cart":"remove_from_cart",{currency:line.currency,value:line.price*quantity,items:[analyticsItem(line,quantity)]})}setCart(current=>{const updated={...current,[key]:next};if(!next)delete updated[key];return updated})};
 
   useEffect(()=>{
+    if(!query&&region==="Все направления"&&type==="Все типы")return;
+    const timer=window.setTimeout(()=>{
+      if(query)trackEvent("search",{query_length:Math.min(query.length,100),results_count:visible.length,no_results:visible.length===0,search_location:"home"});
+      if(region!=="Все направления"||type!=="Все типы")trackEvent("catalog_filter",{region:region==="Все направления"?"all":region,sim_type:type==="Все типы"?"all":type,results_count:visible.length,filter_location:"home"});
+    },500);
+    return()=>window.clearTimeout(timer);
+  },[query,region,type,visible.length]);
+
+  useEffect(()=>{
     const params=new URLSearchParams(window.location.search);
     const requestedReorder=params.get("reorder")?.trim();
     if(requestedReorder){
@@ -153,7 +162,7 @@ function Checkout({items,total,currency,onBack,onOrder}:{items:CartLine[];total:
 
   async function submit(event:React.FormEvent<HTMLFormElement>){
     event.preventDefault();setLoading(true);setError("");const form=new FormData(event.currentTarget);
-    trackEvent("add_payment_info",{payment_type:String(form.get("paymentMethod")||"manager"),currency,value:total,items:items.map((line)=>analyticsItem(line))});
+    trackEvent("add_payment_info",{payment_type:String(form.get("paymentMethod")||"manager"),currency,value:finalTotal,items:items.map((line)=>analyticsItem(line))});
     try{
       const response=await fetch("/api/orders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({requestId:requestId.current,customerName:form.get("customerName"),customerEmail:form.get("customerEmail"),customerContact:form.get("customerContact"),deliveryAddress:form.get("deliveryAddress")||undefined,customerComment:form.get("customerComment"),paymentMethod:form.get("paymentMethod"),items:items.map(line=>({productId:line.product.id,variantId:line.variant?.id,quantity:line.quantity})),deliverySelections:physicalProducts.map(product=>({productId:product.id,optionId:deliveryChoices[product.id]}))})});
       const data=await response.json() as {error?:string;order?:{orderNumber?:string;managerNotified?:boolean;customerNotified?:boolean;totalAmount?:number;currency?:string}};

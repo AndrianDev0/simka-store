@@ -5,6 +5,7 @@ import { adminAuditLog, catalogProducts, categories, orderItems, orders, product
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
+import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
 
 const updateSchema = z.object({
@@ -29,6 +30,14 @@ type BotEnvironment = {
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_ADMIN_IDS?: string;
 };
+
+async function reportOrderAnalytics(orderId: string, status: "PAID" | "CANCELLED" | "REFUNDED") {
+  try {
+    await sendOrderAnalytics(orderId, status);
+  } catch (error) {
+    console.error("order_analytics_failed", { status, name: error instanceof Error ? error.name : "UnknownError" });
+  }
+}
 
 function safeEqual(left: string, right: string) {
   if (left.length !== right.length) return false;
@@ -686,6 +695,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       }
     });
     await audit(db, adminId, "order.cancel", order.id, { orderNumber: order.orderNumber, from: order.status, to: "CANCELLED" });
+    await reportOrderAnalytics(order.id, "CANCELLED");
     let cancellationEmailDelivered = false;
     try {
       const safeName = escapeHtml(order.customerName);
@@ -735,6 +745,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     if (action === "deliver") await db.update(orderItems).set({ fulfillmentStatus: "DELIVERED", fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM")));
     if (action === "complete") await db.update(orderItems).set({ fulfillmentStatus: "COMPLETED", updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
     const customerEmailDelivered = (await sendOrderStatusEmail(order, transition.to)).delivered;
+    if (transition.to === "PAID") await reportOrderAnalytics(order.id, "PAID");
     await audit(db, adminId, `order.${action}`, order.id, { orderNumber: order.orderNumber, from: transition.from, to: transition.to, customerEmailDelivered });
     await sendOrderDetails(db, token, chatId, order.orderNumber);
     return;
@@ -933,6 +944,7 @@ export async function POST(request: Request) {
           } else {
             await db.update(orders).set({ status: "PAID", updatedAt: new Date().toISOString() }).where(eq(orders.id, order.id));
             const customerEmailDelivered = (await sendOrderStatusEmail(order, "PAID")).delivered;
+            await reportOrderAnalytics(order.id, "PAID");
             await audit(db, from.id, "order.payment_confirmed", order.id, { orderNumber: order.orderNumber, method: "manager", customerEmailDelivered });
             await sendMessage(token, chatId, `Оплата подтверждена. Заказ ${order.orderNumber} → PAID.${customerEmailDelivered ? " Клиенту отправлено письмо." : " Письмо клиенту не доставлено."}`);
           }

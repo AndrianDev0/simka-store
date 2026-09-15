@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
-import { analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
+import { useReportWebVitals } from "next/web-vitals";
+import { ANALYTICS_CONSENT_KEY, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
 
-const CONSENT_KEY = "simka-analytics-consent";
 type Consent = "accepted" | "declined" | null;
 
 function subscribeToConsent(callback: () => void) {
@@ -17,8 +17,12 @@ function subscribeToConsent(callback: () => void) {
 }
 
 function consentSnapshot(): Consent {
-  const stored = window.localStorage.getItem(CONSENT_KEY);
-  return stored === "accepted" || stored === "declined" ? stored : null;
+  try {
+    const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
+    return stored === "accepted" || stored === "declined" ? stored : null;
+  } catch {
+    return "declined";
+  }
 }
 
 function appendScript(id: string, src: string, configure?: (script: HTMLScriptElement) => void) {
@@ -69,6 +73,10 @@ export function AnalyticsProvider() {
   const pathname = usePathname();
   const consent = useSyncExternalStore(subscribeToConsent, consentSnapshot, () => "declined");
 
+  useReportWebVitals(useCallback((metric) => {
+    trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: Math.round(metric.value) });
+  }, []));
+
   useEffect(() => {
     if (consent !== "accepted" || window.__simkaAnalyticsInitialised) return;
     const { gaMeasurementId, yandexMetrikaId, plausibleDomain } = analyticsConfig();
@@ -76,6 +84,7 @@ export function AnalyticsProvider() {
     if (yandexMetrikaId) initialiseYandexMetrika(yandexMetrikaId);
     if (plausibleDomain) initialisePlausible(plausibleDomain);
     window.__simkaAnalyticsInitialised = Boolean(gaMeasurementId || yandexMetrikaId || plausibleDomain);
+    if (window.__simkaAnalyticsInitialised) window.dispatchEvent(new Event(ANALYTICS_READY_EVENT));
   }, [consent]);
 
   useEffect(() => {
@@ -110,47 +119,18 @@ export function AnalyticsProvider() {
 
   useEffect(() => {
     if (consent !== "accepted") return;
-    const report = (name: string, value: number) => {
-      if (!Number.isFinite(value) || value < 0) return;
-      window.gtag?.("event", "web_vital", { metric_name: name, value: Math.round(value), non_interaction: true });
-    };
-    const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-    if (navigation) report("TTFB", navigation.responseStart);
-    let lcp = 0;
-    let cls = 0;
-    let inp = 0;
-    const observers: PerformanceObserver[] = [];
-    const observe = (type: string, callback: PerformanceObserverCallback) => {
-      try {
-        const observer = new PerformanceObserver(callback);
-        observer.observe({ type, buffered: true });
-        observers.push(observer);
-      } catch { /* Unsupported browser metric. */ }
-    };
-    observe("largest-contentful-paint", (list) => { lcp = list.getEntries().at(-1)?.startTime ?? lcp; });
-    observe("layout-shift", (list) => {
-      for (const entry of list.getEntries() as Array<PerformanceEntry & { value?: number; hadRecentInput?: boolean }>) {
-        if (!entry.hadRecentInput) cls += entry.value ?? 0;
-      }
-    });
-    observe("event", (list) => {
-      for (const entry of list.getEntries()) inp = Math.max(inp, entry.duration);
-    });
-    const flush = () => {
-      report("LCP", lcp);
-      report("CLS", cls * 1000);
-      report("INP", inp);
-    };
-    window.addEventListener("pagehide", flush, { once: true });
+    const onError = () => trackEvent("exception", { fatal: false, error_area: "window" });
+    const onUnhandledRejection = () => trackEvent("exception", { fatal: false, error_area: "unhandled_promise" });
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
     return () => {
-      flush();
-      observers.forEach((observer) => observer.disconnect());
-      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
     };
   }, [consent]);
 
   const choose = (next: Exclude<Consent, null>) => {
-    window.localStorage.setItem(CONSENT_KEY, next);
+    try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { return; }
     window.dispatchEvent(new Event("simka-consent-change"));
   };
 
@@ -162,5 +142,21 @@ export function AnalyticsProvider() {
 }
 
 export function AnalyticsConsentReset() {
-  return <button type="button" onClick={() => { window.localStorage.removeItem(CONSENT_KEY); window.location.reload(); }} className="mt-4 min-h-11 rounded-xl border border-[#cddbea] bg-white px-4 text-sm font-bold text-[#1168e8] hover:bg-[#f4f8fd]">Изменить настройки аналитики</button>;
+  const reset = () => {
+    try {
+      window.localStorage.removeItem(ANALYTICS_CONSENT_KEY);
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith("simka-analytics-")) window.localStorage.removeItem(key);
+      }
+    } catch { /* Storage may be disabled. */ }
+    const analyticsCookie = /^(?:_ga|_gid|_gat|_ym_|yandexuid)/;
+    for (const cookie of document.cookie.split(";")) {
+      const name = cookie.split("=", 1)[0]?.trim();
+      if (!name || !analyticsCookie.test(name)) continue;
+      document.cookie = `${name}=; Max-Age=0; path=/; SameSite=Lax`;
+      document.cookie = `${name}=; Max-Age=0; path=/; domain=${window.location.hostname}; SameSite=Lax`;
+    }
+    window.location.reload();
+  };
+  return <button type="button" onClick={reset} className="mt-4 min-h-11 rounded-xl border border-[#cddbea] bg-white px-4 text-sm font-bold text-[#1168e8] hover:bg-[#f4f8fd]">Изменить настройки аналитики</button>;
 }

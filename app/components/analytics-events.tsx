@@ -1,38 +1,62 @@
 "use client";
 
-import { useEffect } from "react";
-import { trackEvent, trackOnce, trackPurchase, type AnalyticsItem } from "@/lib/analytics";
+import { useEffect, useSyncExternalStore } from "react";
+import { ANALYTICS_CONSENT_KEY, ANALYTICS_READY_EVENT, trackEvent, trackOnce, trackPurchase, type AnalyticsItem } from "@/lib/analytics";
+
+function subscribeReady(callback: () => void) {
+  window.addEventListener(ANALYTICS_READY_EVENT, callback);
+  window.addEventListener("simka-consent-change", callback);
+  return () => {
+    window.removeEventListener(ANALYTICS_READY_EVENT, callback);
+    window.removeEventListener("simka-consent-change", callback);
+  };
+}
+
+function readySnapshot() {
+  try { return window.localStorage.getItem(ANALYTICS_CONSENT_KEY) === "accepted" && window.__simkaAnalyticsInitialised === true; }
+  catch { return false; }
+}
+
+export function useAnalyticsReady() {
+  return useSyncExternalStore(subscribeReady, readySnapshot, () => false);
+}
 
 export function IdentifyAnalyticsUser({ userId }: { userId: string }) {
+  const ready = useAnalyticsReady();
   useEffect(() => {
-    if (!userId) return;
+    if (!ready || !userId) return;
     window.gtag?.("set", { user_id: userId });
-  }, [userId]);
+  }, [ready, userId]);
   return null;
 }
 
 export function SearchAnalytics({ query, results }: { query: string; results: number }) {
+  const ready = useAnalyticsReady();
   useEffect(() => {
-    if (!query) return;
-    trackEvent("search", { search_term: query.slice(0, 100), results_count: results, no_results: results === 0 });
-  }, [query, results]);
+    if (!ready || !query) return;
+    trackEvent("search", { query_length: Math.min(query.length, 100), results_count: results, no_results: results === 0 });
+  }, [query, ready, results]);
   return null;
 }
 
-export function CatalogAnalytics({ filters, items }: { filters: string; items: AnalyticsItem[] }) {
+export function CatalogAnalytics({ filters, hasSearch, items }: { filters: string; hasSearch: boolean; items: AnalyticsItem[] }) {
+  const ready = useAnalyticsReady();
   useEffect(() => {
+    if (!ready) return;
     trackEvent("view_item_list", { item_list_id: "catalog", item_list_name: "Каталог", items: items.slice(0, 100) });
-    if (filters) trackEvent("catalog_filter", { filters: filters.slice(0, 300), results_count: items.length });
-  }, [filters, items]);
+    if (filters || hasSearch) trackEvent("catalog_filter", { filters: filters.slice(0, 300), has_search: hasSearch, results_count: items.length });
+  }, [filters, hasSearch, items, ready]);
   return null;
 }
 
-export function OrderStatusAnalytics({ orderNumber, status, value, currency, items }: { orderNumber: string; status: string; value: number; currency: string; items: AnalyticsItem[] }) {
+export function OrderStatusAnalytics({ orderNumber, status, value, currency, items, serverTracked = false }: { orderNumber: string; status: string; value: number; currency: string; items: AnalyticsItem[]; serverTracked?: boolean }) {
+  const ready = useAnalyticsReady();
   useEffect(() => {
+    if (!ready) return;
     const params = { transaction_id: orderNumber, value, currency, items };
-    if (["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(status)) trackPurchase(orderNumber, params);
-    if (status === "CANCELLED") trackOnce(`cancel:${orderNumber}`, "order_cancelled", params);
-    if (status === "REFUNDED") trackOnce(`refund:${orderNumber}`, "refund", params);
-  }, [currency, items, orderNumber, status, value]);
+    if (!serverTracked && ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(status)) trackPurchase(orderNumber, params);
+    if (!serverTracked && status === "CANCELLED") trackOnce(`cancel:${orderNumber}`, "order_cancelled", params);
+    if (!serverTracked && status === "REFUNDED") trackOnce(`refund:${orderNumber}`, "refund", params);
+  }, [currency, items, orderNumber, ready, serverTracked, status, value]);
   return null;
 }

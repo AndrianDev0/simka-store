@@ -23,6 +23,13 @@ function orderNumber() {
   return `SIM-${date}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
+function analyticsClientId(request: Request) {
+  const cookie = request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith("_ga="))?.slice(4);
+  if (!cookie) return null;
+  const match = decodeURIComponent(cookie).match(/^GA\d+\.\d+\.(\d+\.\d+)$/);
+  return match?.[1] ?? null;
+}
+
 function isAllowedOrigin(request: Request, origin: string) {
   try {
     const originUrl = new URL(origin);
@@ -245,7 +252,7 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true });
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request) });
       await tx.insert(orderItems).values(itemRows);
     });
     let managerNotified = false;
