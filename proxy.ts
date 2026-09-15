@@ -13,5 +13,6 @@ export function proxy() {
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("X-Frame-Options", "DENY");
   response.headers.set("X-Permitted-Cross-Domain-Policies", "none");
+  response.headers.set("Strict-Transport-Security", "max-age=31536000");
   return response;
 }
