@@ -126,6 +126,43 @@ export const orderItems = pgTable("order_items", {
   check("order_items_delivery_cost_nonnegative", sql`${table.deliveryCost} >= 0`),
 ]);
 
+export const cryptoPayments = pgTable("crypto_payments", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull(),
+  providerPaymentId: text("provider_payment_id"),
+  status: text("status").notNull().default("CREATING"),
+  checkoutUrl: text("checkout_url"),
+  requestedAmount: integer("requested_amount").notNull(),
+  requestedCurrency: text("requested_currency").notNull(),
+  receivedAmount: integer("received_amount"),
+  receivedCurrency: text("received_currency"),
+  transactionId: text("transaction_id"),
+  paidAt: text("paid_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_crypto_payments_order_id").on(table.orderId),
+  uniqueIndex("idx_crypto_payments_provider_payment").on(table.provider, table.providerPaymentId),
+  uniqueIndex("idx_crypto_payments_provider_transaction").on(table.provider, table.transactionId),
+  index("idx_crypto_payments_status").on(table.status),
+  check("crypto_payments_requested_amount_positive", sql`${table.requestedAmount} > 0`),
+  check("crypto_payments_received_amount_nonnegative", sql`${table.receivedAmount} IS NULL OR ${table.receivedAmount} >= 0`),
+]);
+
+export const cryptoPaymentEvents = pgTable("crypto_payment_events", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  providerEventId: text("provider_event_id").notNull(),
+  cryptoPaymentId: text("crypto_payment_id").notNull().references(() => cryptoPayments.id, { onDelete: "cascade" }),
+  eventType: text("event_type").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_crypto_payment_events_provider_event").on(table.provider, table.providerEventId),
+  index("idx_crypto_payment_events_payment_id").on(table.cryptoPaymentId),
+]);
+
 export const countries = pgTable("countries", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),

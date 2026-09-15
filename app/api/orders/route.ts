@@ -1,10 +1,12 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { catalogProducts, orderItems, orders, productVariants } from "@/db/schema";
+import { catalogProducts, cryptoPayments, orderItems, orders, productVariants } from "@/db/schema";
 import { getCatalogProducts } from "@/lib/catalog-repository";
+import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } from "@/lib/crypto-payments";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { getCurrentAccount } from "@/lib/customer-auth";
+import { releaseReservedInventory } from "@/lib/order-inventory";
 
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
@@ -60,6 +62,7 @@ async function notifyManagers(order: {
   hasPendingDeliveryCost: boolean;
   currency: string;
   items: Array<{ productName: string; quantity: number }>;
+  checkoutUrl?: string;
 }) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminIds = (process.env.TELEGRAM_ADMIN_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
@@ -81,7 +84,9 @@ async function notifyManagers(order: {
     "",
     lines,
     "",
-    `Отправьте актуальные реквизиты на email ${order.customerEmail} и подтвердите оплату только после фактического поступления средств.`,
+    order.paymentMethod === "manager"
+      ? `Отправьте актуальные реквизиты на email ${order.customerEmail} и подтвердите оплату только после фактического поступления средств.`
+      : "Оплату подтвердит только защищённый webhook платёжного провайдера. Вручную подтверждать криптоплатёж нельзя.",
   ].filter(Boolean).join("\n");
   const telegramUsername = order.customerContact.match(/^@([a-zA-Z0-9_]{5,32})$/)?.[1];
   const keyboard = [
@@ -111,6 +116,7 @@ async function notifyCustomer(order: {
   hasPendingDeliveryCost: boolean;
   currency: string;
   items: Array<{ productName: string; quantity: number }>;
+  checkoutUrl?: string;
 }) {
   const amount = `${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`;
   const lines = order.items.map((item) => `• ${item.productName} × ${item.quantity}`).join("\n");
@@ -120,12 +126,14 @@ async function notifyCustomer(order: {
   const safeLines = order.items.map((item) => `<li>${escapeHtml(item.productName)} × ${item.quantity}</li>`).join("");
   const paymentText = order.paymentMethod === "manager"
     ? "Менеджер отправит актуальные реквизиты отдельным письмом на этот email. Не оплачивайте по реквизитам из посторонних сообщений."
-    : "Платёжная инструкция появится только после подключения защищённого криптопровайдера.";
+    : "Перейдите на защищённую страницу платёжного провайдера по ссылке ниже. Возврат на сайт сам по себе не подтверждает оплату — подтверждение поступит серверу от провайдера.";
+  const paymentLinkText = order.paymentMethod === "crypto" && order.checkoutUrl ? `\nСтраница оплаты: ${order.checkoutUrl}` : "";
+  const paymentLinkHtml = order.paymentMethod === "crypto" && order.checkoutUrl ? `<p><a href="${escapeHtml(order.checkoutUrl)}">Перейти к оплате</a></p>` : "";
   return sendTransactionalEmail({
     to: order.customerEmail,
     subject: `Заказ ${order.orderNumber} создан — SIMKA`,
-    text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}\n\nСохраните номер заказа для обращения в поддержку.`,
-    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p><p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
+    text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}${paymentLinkText}\n\nСохраните номер заказа для обращения в поддержку.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p>${paymentLinkHtml}<p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
   });
 }
 
@@ -141,7 +149,8 @@ export async function POST(request: Request) {
     const parsed = payloadSchema.safeParse(await request.json());
     if (!parsed.success) return Response.json({ error: "Проверьте заполненные поля", fields: parsed.error.flatten().fieldErrors }, { status: 400 });
     validatedRequestId = parsed.data.requestId;
-    if (parsed.data.paymentMethod === "crypto" && !process.env.CRYPTO_PAYMENT_PROVIDER) {
+    const cryptoConfig = getCryptoPaymentConfig();
+    if (parsed.data.paymentMethod === "crypto" && !cryptoConfig) {
       return Response.json({ error: "Криптовалютная оплата пока не подключена. Выберите оплату через менеджера." }, { status: 503 });
     }
 
@@ -149,8 +158,12 @@ export async function POST(request: Request) {
     // Keep guest checkout available, but link new orders to the signed-in
     // customer so the personal cabinet can show a private order history.
     const account = await getCurrentAccount();
-    const [existing] = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
-    if (existing) return Response.json({ order: { ...existing, managerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
+    const [existing] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
+    if (existing) {
+      const canContinueCryptoPayment = existing.paymentMethod === "crypto" && ["WAITING_PAYMENT", "PAYMENT_PENDING"].includes(existing.status);
+      const [existingPayment] = canContinueCryptoPayment ? await db.select({ checkoutUrl: cryptoPayments.checkoutUrl }).from(cryptoPayments).where(eq(cryptoPayments.orderId, existing.id)).limit(1) : [];
+      return Response.json({ order: { orderNumber: existing.orderNumber, paymentMethod: existing.paymentMethod, status: existing.status, totalAmount: existing.totalAmount, currency: existing.currency, checkoutUrl: existingPayment?.checkoutUrl ?? undefined, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
+    }
 
     const catalog = await getCatalogProducts({ requireDatabase: true });
     const productById = new Map(catalog.map((product) => [product.id, product]));
@@ -254,7 +267,24 @@ export async function POST(request: Request) {
       }
       await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request) });
       await tx.insert(orderItems).values(itemRows);
+      if (parsed.data.paymentMethod === "crypto" && cryptoConfig) {
+        await tx.insert(cryptoPayments).values({ id: crypto.randomUUID(), orderId: id, provider: cryptoConfig.provider, requestedAmount: totalAmount, requestedCurrency: currency.toUpperCase() });
+      }
     });
+    let checkoutUrl: string | undefined;
+    if (parsed.data.paymentMethod === "crypto" && cryptoConfig) {
+      let createdPayment;
+      try {
+        createdPayment = await createCryptoPayment({ config: cryptoConfig, orderId: id, orderNumber: number, amount: totalAmount, currency: currency.toUpperCase(), requestId: parsed.data.requestId, siteOrigin: getPaymentSiteOrigin() });
+      } catch (providerError) {
+        await db.update(cryptoPayments).set({ status: "CREATE_FAILED", updatedAt: new Date().toISOString() }).where(eq(cryptoPayments.orderId, id));
+        await releaseReservedInventory(id, "FAILED", ["WAITING_PAYMENT"]);
+        console.error("crypto_payment_creation_failed", { name: providerError instanceof Error ? providerError.name : "UnknownError" });
+        throw new Error("CRYPTO_PAYMENT_CREATION_FAILED");
+      }
+      checkoutUrl = createdPayment.checkoutUrl;
+      await db.update(cryptoPayments).set({ providerPaymentId: createdPayment.providerPaymentId, status: "PENDING", checkoutUrl, updatedAt: new Date().toISOString() }).where(eq(cryptoPayments.orderId, id));
+    }
     let managerNotified = false;
     let customerNotified = false;
     const notificationPayload = {
@@ -270,13 +300,14 @@ export async function POST(request: Request) {
         hasPendingDeliveryCost: [...deliveryByProduct.values()].some((option) => option.cost === null || option.regions.length > 0),
         currency,
         items: resolved.map(({ product, variant, quantity }) => ({ productName: variant ? `${product.name} · ${variant.name}` : product.name, quantity })),
+        checkoutUrl,
       };
     const [managerResult, customerResult] = await Promise.allSettled([notifyManagers(notificationPayload), notifyCustomer(notificationPayload)]);
     if (managerResult.status === "fulfilled") managerNotified = managerResult.value;
     else console.error("order_manager_notification_failed", { name: managerResult.reason instanceof Error ? managerResult.reason.name : "UnknownError" });
     if (customerResult.status === "fulfilled") customerNotified = customerResult.value.delivered;
     else console.error("order_customer_notification_failed", { name: customerResult.reason instanceof Error ? customerResult.reason.name : "UnknownError" });
-    return Response.json({ order: { orderNumber: number, status, totalAmount, currency, managerNotified, customerNotified } }, { status: 201, headers: { "Cache-Control": "no-store" } });
+    return Response.json({ order: { orderNumber: number, paymentMethod: parsed.data.paymentMethod, status, totalAmount, currency, checkoutUrl, managerNotified, customerNotified } }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const errorCode = typeof error === "object" && error !== null && "code" in error ? String(error.code) : null;
     if (errorCode === "23505" && validatedRequestId) {
@@ -297,6 +328,7 @@ export async function POST(request: Request) {
     if (error instanceof Error && error.message === "DELIVERY_OPTION_UNAVAILABLE") return Response.json({ error: "Выберите доступный способ доставки для каждой физической SIM" }, { status: 409 });
     if (error instanceof Error && error.message === "DELIVERY_CURRENCY_MISMATCH") return Response.json({ error: "Способ доставки указан в другой валюте. Оформите заказ отдельно." }, { status: 409 });
     if (error instanceof Error && error.message === "DELIVERY_REQUIRES_MANAGER") return Response.json({ error: "Эту доставку должен подтвердить менеджер. Выберите оплату через менеджера." }, { status: 409 });
+    if (error instanceof Error && error.message === "CRYPTO_PAYMENT_CREATION_FAILED") return Response.json({ error: "Платёжный провайдер временно недоступен. Заказ не оплачен." }, { status: 502 });
     console.error("order_creation_failed", { name: error instanceof Error ? error.name : "UnknownError" });
     return Response.json({ error: "Не удалось создать заказ. Попробуйте ещё раз." }, { status: 500 });
   }

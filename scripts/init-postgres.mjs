@@ -133,6 +133,38 @@ try {
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS idx_order_items_fulfillment_status ON order_items(fulfillment_status);
 
+    CREATE TABLE IF NOT EXISTS crypto_payments (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      provider_payment_id TEXT,
+      status TEXT NOT NULL DEFAULT 'CREATING',
+      checkout_url TEXT,
+      requested_amount INTEGER NOT NULL CHECK (requested_amount > 0),
+      requested_currency TEXT NOT NULL,
+      received_amount INTEGER CHECK (received_amount IS NULL OR received_amount >= 0),
+      received_currency TEXT,
+      transaction_id TEXT,
+      paid_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_payments_provider_payment ON crypto_payments(provider, provider_payment_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_payments_provider_transaction ON crypto_payments(provider, transaction_id);
+    CREATE INDEX IF NOT EXISTS idx_crypto_payments_status ON crypto_payments(status);
+
+    CREATE TABLE IF NOT EXISTS crypto_payment_events (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      provider_event_id TEXT NOT NULL,
+      crypto_payment_id TEXT NOT NULL REFERENCES crypto_payments(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_payment_events_provider_event ON crypto_payment_events(provider, provider_event_id);
+    CREATE INDEX IF NOT EXISTS idx_crypto_payment_events_payment_id ON crypto_payment_events(crypto_payment_id);
+
     CREATE TABLE IF NOT EXISTS countries (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,

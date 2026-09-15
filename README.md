@@ -40,6 +40,18 @@ npm run start:render
 
 Для отправки писем задаются `RESEND_API_KEY` и `EMAIL_FROM`.
 
+Криптовалютная оплата включается только после подключения и проверки конкретного провайдера:
+
+- `CRYPTO_PAYMENT_PROVIDER` — короткий идентификатор адаптера провайдера;
+- `CRYPTO_PAYMENT_CREATE_URL` — HTTPS endpoint адаптера для создания платежа;
+- `CRYPTO_PAYMENT_API_KEY` — серверный ключ адаптера;
+- `CRYPTO_PAYMENT_WEBHOOK_SECRET` — отдельный секрет HMAC-SHA256 для webhook длиной не менее 32 символов;
+- `NEXT_PUBLIC_CRYPTO_PAYMENT_ENABLED=true` — включает вариант оплаты в интерфейсе только после настройки остальных переменных.
+
+Для формирования доверенных `return_url` и `webhook_url` также обязателен канонический HTTPS-адрес в `NEXT_PUBLIC_SITE_URL` без пути, например `https://example.com`.
+
+Endpoint создания платежа получает JSON с `order_id`, `order_number`, `amount`, `currency`, `return_url`, `webhook_url` и должен вернуть `payment_id`, `status`, `checkout_url`. Webhook отправляется на указанный `webhook_url` с заголовками `X-Payment-Timestamp` и `X-Payment-Signature`; подпись — HMAC-SHA256 от строки `<timestamp>.<raw JSON body>`. Тело содержит `event_id`, `event_type`, `payment_id`, `order_id`, `status`, `amount`, `currency` и, для подтверждённой оплаты, `transaction_id`, `paid_at`. Возврат клиента по `return_url` никогда не меняет статус заказа.
+
 Для аналитики задаются только нужные интеграции (значения встраиваются в клиентскую сборку):
 
 - `NEXT_PUBLIC_GA_MEASUREMENT_ID` — Measurement ID Google Analytics 4 (`G-...`);
