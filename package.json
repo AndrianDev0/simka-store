@@ -16,6 +16,7 @@
     "test:email": "node --experimental-strip-types --test tests/email.test.mjs",
     "test:security": "node --experimental-strip-types --test tests/request-security.test.mjs",
     "db:restore": "node scripts/restore-postgres.mjs",
+    "db:backup": "node --experimental-strip-types scripts/backup-postgres.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
