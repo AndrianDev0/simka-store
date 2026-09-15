@@ -306,7 +306,7 @@ const analyticsStatusLabels: Record<string, string> = {
 
 async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
-  const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency };
+  const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
   const rows = normalizedDays
     ? await db.select(selection).from(orders).where(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()))
     : await db.select(selection).from(orders);
@@ -325,6 +325,12 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   for (const order of paid) revenue.set(order.currency, (revenue.get(order.currency) ?? 0) + order.totalAmount);
   const revenueLines = [...revenue].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const averageLines = [...revenue].map(([currency, amount]) => `${Math.round(amount / paid.filter((order) => order.currency === currency).length).toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
+  const sourceCounts = new Map<string, number>();
+  for (const order of paid) {
+    const source = order.analyticsSource ? `${order.analyticsSource}${order.analyticsMedium ? ` / ${order.analyticsMedium}` : ""}` : "Прямой заход / не указан";
+    sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
+  }
+  const sourceLines = [...sourceCounts].sort((left, right) => right[1] - left[1]).slice(0, 5).map(([source, count]) => `• ${source}: ${count}`).join("\n") || "• Данных об источниках пока нет";
   const statusCounts = new Map<string, number>();
   for (const order of rows) statusCounts.set(order.status, (statusCounts.get(order.status) ?? 0) + 1);
   const statusLines = [...statusCounts].sort((left, right) => right[1] - left[1]).map(([status, count]) => `• ${analyticsStatusLabels[status] ?? status}: ${count}`).join("\n") || "• Заказов пока нет";
@@ -344,6 +350,9 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     `⚠️ Ошибок: ${failed.length}`,
     `📲 Продано eSIM: ${soldEsim}`,
     `📦 Продано SIM: ${soldSim}`,
+    "",
+    "Источники оплаченных заказов:",
+    sourceLines,
     "",
     "Статусы:",
     statusLines,

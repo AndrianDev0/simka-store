@@ -17,6 +17,13 @@ const payloadSchema = z.object({
   deliveryAddress: z.string().trim().max(500).optional(),
   customerComment: z.string().trim().max(1000).default(""),
   paymentMethod: z.enum(["crypto", "manager"]),
+  analytics: z.object({
+    source: z.string().trim().max(200).optional(),
+    medium: z.string().trim().max(200).optional(),
+    campaign: z.string().trim().max(200).optional(),
+    content: z.string().trim().max(200).optional(),
+    term: z.string().trim().max(200).optional(),
+  }).optional(),
   items: z.array(z.object({ productId: z.number().int().positive(), variantId: z.number().int().positive().optional(), quantity: z.number().int().min(1).max(20) })).min(1).max(30),
   deliverySelections: z.array(z.object({ productId: z.number().int().positive(), optionId: z.string().trim().min(1).max(80) })).max(30).default([]),
 }).strict();
@@ -62,6 +69,9 @@ async function notifyManagers(order: {
   deliveryMethods: string[];
   hasPendingDeliveryCost: boolean;
   currency: string;
+  analyticsSource?: string;
+  analyticsMedium?: string;
+  analyticsCampaign?: string;
   items: Array<{ productName: string; quantity: number }>;
   checkoutUrl?: string;
 }) {
@@ -82,6 +92,7 @@ async function notifyManagers(order: {
     order.deliveryAddress ? `Адрес: ${order.deliveryAddress}` : "",
     order.deliveryMethods.length ? `Способ доставки: ${order.deliveryMethods.join(", ")}` : "",
     order.hasPendingDeliveryCost ? "Стоимость доставки ещё должен подтвердить менеджер до отправки реквизитов." : "",
+    order.analyticsSource ? `Источник: ${order.analyticsSource}${order.analyticsMedium ? ` / ${order.analyticsMedium}` : ""}${order.analyticsCampaign ? ` · ${order.analyticsCampaign}` : ""}` : "",
     "",
     lines,
     "",
@@ -269,7 +280,7 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request) });
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), analyticsSource: parsed.data.analytics?.source || null, analyticsMedium: parsed.data.analytics?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || null, analyticsContent: parsed.data.analytics?.content || null, analyticsTerm: parsed.data.analytics?.term || null });
       await tx.insert(orderItems).values(itemRows);
       if (parsed.data.paymentMethod === "crypto" && cryptoConfig) {
         await tx.insert(cryptoPayments).values({ id: crypto.randomUUID(), orderId: id, provider: cryptoConfig.provider, requestedAmount: totalAmount, requestedCurrency: currency.toUpperCase() });
@@ -303,6 +314,9 @@ export async function POST(request: Request) {
         deliveryMethods: [...deliveryByProduct.values()].map((option) => option.label),
         hasPendingDeliveryCost: [...deliveryByProduct.values()].some((option) => option.cost === null || option.regions.length > 0),
         currency,
+        analyticsSource: parsed.data.analytics?.source,
+        analyticsMedium: parsed.data.analytics?.medium,
+        analyticsCampaign: parsed.data.analytics?.campaign,
         items: resolved.map(({ product, variant, quantity }) => ({ productName: variant ? `${product.name} · ${variant.name}` : product.name, quantity })),
         checkoutUrl,
       };

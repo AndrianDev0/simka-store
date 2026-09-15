@@ -86,6 +86,11 @@ try {
       inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE,
       payment_instructions_sent_at TEXT,
       analytics_client_id TEXT,
+      analytics_source TEXT,
+      analytics_medium TEXT,
+      analytics_campaign TEXT,
+      analytics_content TEXT,
+      analytics_term TEXT,
       analytics_purchase_sent_at TEXT,
       analytics_cancellation_sent_at TEXT,
       analytics_refund_sent_at TEXT,
@@ -103,6 +108,11 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_client_id TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_source TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_medium TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_campaign TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_content TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_term TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_purchase_sent_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_cancellation_sent_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_refund_sent_at TEXT;
