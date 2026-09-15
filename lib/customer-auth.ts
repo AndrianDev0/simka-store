@@ -83,7 +83,6 @@ export async function getCurrentAccount(): Promise<CustomerAccount | null> {
     contact: customerAccounts.contact,
   }).from(customerSessions).innerJoin(customerAccounts, eq(customerSessions.accountId, customerAccounts.id)).where(and(eq(customerSessions.tokenHash, hashToken(token)), gt(customerSessions.expiresAt, new Date().toISOString()))).limit(1);
   if (!row) {
-    cookieStore.delete(CUSTOMER_SESSION_COOKIE);
     return null;
   }
   const account = { id: row.id, email: row.email, name: row.name, contact: row.contact };

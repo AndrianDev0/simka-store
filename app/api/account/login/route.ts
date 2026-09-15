@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { customerAccounts } from "@/db/schema";
 import { getDb } from "@/db";
-import { createSession, setSessionCookie, verifyPassword } from "@/lib/customer-auth";
+import { createSession, sameOrigin, setSessionCookie, verifyPassword } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 
 function redirect(path: string) {
@@ -10,6 +10,7 @@ function redirect(path: string) {
 }
 
 export async function POST(request: Request) {
+  if (!sameOrigin(request)) return new Response(null, { status: 403 });
   try {
     const form = await request.formData();
     const email = String(form.get("email") || "").trim().toLowerCase();
