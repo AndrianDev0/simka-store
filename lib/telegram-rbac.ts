@@ -136,6 +136,7 @@ export function telegramCommandPermission(command: string): TelegramPermission |
 
 export function telegramReplyPermission(replyContext: string): TelegramPermission | null {
   if (!replyContext) return null;
+  if (replyContext.startsWith("[ANALYTICS_RANGE]")) return "analytics.read";
   if (replyContext.startsWith("[FIND_ORDER]")) return "orders.read";
   if (replyContext.startsWith("[FIND_CUSTOMER]")) return "customers.read";
   if (/^\[(?:BLOCK_CUSTOMER|EDIT_CUSTOMER):/i.test(replyContext)) return "customers.write";

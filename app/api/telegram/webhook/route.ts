@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
+import { buildAnalyticsPeriodBounds, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
@@ -430,24 +431,33 @@ async function sendPartnerAnalytics(db: ReturnType<typeof getDb>, token: string,
   await sendMessage(token, chatId, ["📊 Партнёрская аналитика", "", ...(lines.length ? lines : ["Пока нет данных."]), "", "Комиссия расчётная; фактические выплаты отдельно не учитываются."].join("\n"), { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
 }
 
-function analyticsKeyboard(selectedDays: number, role: TelegramRole): InlineKeyboard {
-  const button = (label: string, days: number) => ({ text: `${selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
+function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange?: AnalyticsDateRange): InlineKeyboard {
+  const button = (label: string, days: number) => ({ text: `${!customRange && selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
   const rows: InlineKeyboard["inline_keyboard"] = [
-    [button("24 часа", 1), button("7 дней", 7), button("30 дней", 30)],
-    [button("Всё время", 0)],
-    [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
-    [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
-    [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
+    [button("24 часа", 1), button("7 дней", 7), button("14 дней", 14)],
+    [button("30 дней", 30), button("90 дней", 90), button("Год", 365)],
+    [button("Всё время", 0), { text: `${customRange ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:range" }],
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
   ];
-  if (telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }]);
+  if (customRange) {
+    const start = customRange.start.slice(0, 10);
+    const end = customRange.end.slice(0, 10);
+    rows.splice(3, 0, [{ text: "🔄 Обновить", callback_data: `analytics:range_show:${start}:${end}` }]);
+  } else {
+    rows.splice(3, 0,
+      [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
+      [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
+      [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
+    );
+  }
+  if (!customRange && telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }]);
   if (telegramRoleCan(role, "orders.read")) rows.push([{ text: "🛒 Последние заказы", callback_data: "orders:list" }]);
   rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
   return { inline_keyboard: rows };
 }
 
 async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
-  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const normalizedDays = normalizeAnalyticsDays(days);
   const selection = {
     orderNumber: orders.orderNumber,
     createdAt: orders.createdAt,
@@ -480,7 +490,7 @@ function analyticsPeriod(days: number) {
 }
 
 async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
-  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const normalizedDays = normalizeAnalyticsDays(days);
   const paidStatuses = [...paidOrderStatuses];
   const conditions = [inArray(orders.status, paidStatuses)];
   if (normalizedDays) conditions.push(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`);
@@ -490,7 +500,7 @@ async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string,
 }
 
 async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
-  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const normalizedDays = normalizeAnalyticsDays(days);
   const conditions = [inArray(orders.status, [...paidOrderStatuses])];
   if (normalizedDays) conditions.push(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`);
   const rows = await db.select({ country: countries.name, quantity: orderItems.quantity, revenue: sql<number>`${orderItems.unitPrice} * ${orderItems.quantity}`, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).innerJoin(catalogProducts, eq(orderItems.productId, catalogProducts.id)).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).where(and(...conditions));
@@ -499,7 +509,7 @@ async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string,
 }
 
 async function sendSearchAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
-  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const normalizedDays = normalizeAnalyticsDays(days);
   const boundary = normalizedDays ? new Date(Date.now() - normalizedDays * 86_400_000).toISOString() : null;
   const baseQuery = db.select({ query: searchAnalytics.query, searches: searchAnalytics.searches, noResultSearches: searchAnalytics.noResultSearches, totalResults: searchAnalytics.totalResults }).from(searchAnalytics);
   const rows = boundary ? await baseQuery.where(gte(searchAnalytics.lastSeenAt, boundary)) : await baseQuery;
@@ -589,30 +599,35 @@ async function sendUnitEconomics(db: ReturnType<typeof getDb>, token: string, ch
   ].join("\n"), { inline_keyboard: actions });
 }
 
-async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole) {
-  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const normalizedDays = bounds.days;
   const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
-  const now = Date.now();
-  const currentBoundary = normalizedDays ? new Date(now - normalizedDays * 86_400_000).toISOString() : null;
-  const previousBoundary = normalizedDays ? new Date(now - normalizedDays * 2 * 86_400_000).toISOString() : null;
   const paymentTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
-  const [rows, previousRows, paid, previousPaid, active] = await Promise.all([
-    currentBoundary
-      ? db.select(selection).from(orders).where(sql`${orders.createdAt}::timestamptz >= ${currentBoundary}::timestamptz`)
+  const [rows, previousRows, paid, previousPaid, yearAgoRows, yearAgoPaid, active] = await Promise.all([
+    bounds.start
+      ? db.select(selection).from(orders).where(and(sql`${orders.createdAt}::timestamptz >= ${bounds.start}::timestamptz`, sql`${orders.createdAt}::timestamptz <= ${bounds.end}::timestamptz`))
       : db.select(selection).from(orders),
-    currentBoundary && previousBoundary
-      ? db.select(selection).from(orders).where(and(sql`${orders.createdAt}::timestamptz >= ${previousBoundary}::timestamptz`, sql`${orders.createdAt}::timestamptz < ${currentBoundary}::timestamptz`))
+    bounds.previousStart && bounds.previousEnd
+      ? db.select(selection).from(orders).where(and(sql`${orders.createdAt}::timestamptz >= ${bounds.previousStart}::timestamptz`, sql`${orders.createdAt}::timestamptz < ${bounds.previousEnd}::timestamptz`))
       : Promise.resolve([]),
-    currentBoundary
-      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${currentBoundary}::timestamptz`))
+    bounds.start
+      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${bounds.start}::timestamptz`, sql`${paymentTime} <= ${bounds.end}::timestamptz`))
       : db.select(selection).from(orders).where(inArray(orders.status, [...paidOrderStatuses])),
-    currentBoundary && previousBoundary
-      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${previousBoundary}::timestamptz`, sql`${paymentTime} < ${currentBoundary}::timestamptz`))
+    bounds.previousStart && bounds.previousEnd
+      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${bounds.previousStart}::timestamptz`, sql`${paymentTime} < ${bounds.previousEnd}::timestamptz`))
+      : Promise.resolve([]),
+    bounds.yearAgoStart && bounds.yearAgoEnd
+      ? db.select(selection).from(orders).where(and(sql`${orders.createdAt}::timestamptz >= ${bounds.yearAgoStart}::timestamptz`, sql`${orders.createdAt}::timestamptz <= ${bounds.yearAgoEnd}::timestamptz`))
+      : Promise.resolve([]),
+    bounds.yearAgoStart && bounds.yearAgoEnd
+      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${bounds.yearAgoStart}::timestamptz`, sql`${paymentTime} <= ${bounds.yearAgoEnd}::timestamptz`))
       : Promise.resolve([]),
     db.select({ id: orders.id }).from(orders).where(inArray(orders.status, [...activeOrderStatuses])),
   ]);
   const cohortPaid = rows.filter((order) => paidOrderStatuses.has(order.status));
   const previousCohortPaid = previousRows.filter((order) => paidOrderStatuses.has(order.status));
+  const yearAgoCohortPaid = yearAgoRows.filter((order) => paidOrderStatuses.has(order.status));
   const cancelled = rows.filter((order) => order.status === "CANCELLED");
   const refunded = rows.filter((order) => order.status === "REFUNDED");
   const failed = rows.filter((order) => order.status === "FAILED");
@@ -626,6 +641,8 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   for (const order of paid) revenue.set(order.currency, (revenue.get(order.currency) ?? 0) + order.totalAmount);
   const previousRevenue = new Map<string, number>();
   for (const order of previousPaid) previousRevenue.set(order.currency, (previousRevenue.get(order.currency) ?? 0) + order.totalAmount);
+  const yearAgoRevenue = new Map<string, number>();
+  for (const order of yearAgoPaid) yearAgoRevenue.set(order.currency, (yearAgoRevenue.get(order.currency) ?? 0) + order.totalAmount);
   const revenueLines = [...revenue].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const averageLines = [...revenue].map(([currency, amount]) => `${Math.round(amount / paid.filter((order) => order.currency === currency).length).toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const ltvRows = calculateLtv(await loadPaidCustomerOrders(db));
@@ -643,10 +660,11 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   const statusCounts = new Map<string, number>();
   for (const order of rows) statusCounts.set(order.status, (statusCounts.get(order.status) ?? 0) + 1);
   const statusLines = [...statusCounts].sort((left, right) => right[1] - left[1]).map(([status, count]) => `• ${analyticsStatusLabels[status] ?? status}: ${count}`).join("\n") || "• Заказов пока нет";
-  const period = normalizedDays === 0 ? "за всё время" : normalizedDays === 1 ? "за последние 24 часа" : `за последние ${normalizedDays} дней`;
+  const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(normalizedDays);
   const conversion = percentage(cohortPaid.length, rows.length);
   const previousConversion = percentage(previousCohortPaid.length, previousRows.length);
-  const comparisonLines = normalizedDays ? [
+  const yearAgoConversion = percentage(yearAgoCohortPaid.length, yearAgoRows.length);
+  const comparisonLines = bounds.start ? [
     "",
     `📉 Сравнение с предыдущим таким же периодом:`,
     `• Заказы: ${rows.length} против ${previousRows.length} (${formatRelativeChange(rows.length, previousRows.length)})`,
@@ -656,6 +674,18 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
       const currentAmount = revenue.get(currency) ?? 0;
       const previousAmount = previousRevenue.get(currency) ?? 0;
       return `• Оборот ${currency}: ${currentAmount.toLocaleString("ru-RU")} против ${previousAmount.toLocaleString("ru-RU")} (${formatRelativeChange(currentAmount, previousAmount)})`;
+    }),
+  ] : [];
+  const yearComparisonLines = bounds.start ? [
+    "",
+    "📅 Сравнение с теми же датами прошлого года:",
+    `• Заказы: ${rows.length} против ${yearAgoRows.length} (${formatRelativeChange(rows.length, yearAgoRows.length)})`,
+    `• Оплаченные: ${paid.length} против ${yearAgoPaid.length} (${formatRelativeChange(paid.length, yearAgoPaid.length)})`,
+    `• Конверсия: ${formatPercentage(conversion)} против ${formatPercentage(yearAgoConversion)}`,
+    ...[...new Set([...revenue.keys(), ...yearAgoRevenue.keys()])].sort().map((currency) => {
+      const currentAmount = revenue.get(currency) ?? 0;
+      const yearAgoAmount = yearAgoRevenue.get(currency) ?? 0;
+      return `• Оборот ${currency}: ${currentAmount.toLocaleString("ru-RU")} против ${yearAgoAmount.toLocaleString("ru-RU")} (${formatRelativeChange(currentAmount, yearAgoAmount)})`;
     }),
   ] : [];
   const text = [
@@ -681,10 +711,11 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     "Статусы:",
     statusLines,
     ...comparisonLines,
+    ...yearComparisonLines,
     "",
     "Данные обновляются напрямую из базы магазина. Для старых оплат без точной даты используется дата заказа.",
   ].join("\n");
-  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays, role));
+  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays, role, customRange));
 }
 
 async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, orderNumber: string, role: TelegramRole) {
@@ -989,6 +1020,17 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return true; }
     await audit(db, adminId, "customer.edit", id, { field });
     await sendCustomerDetails(db, token, chatId, id, role);
+    return true;
+  }
+  if (replyContext.startsWith("[ANALYTICS_RANGE]")) {
+    const range = parseAnalyticsDateRange(text);
+    const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
+    if (!range || duration > 10 * 366 * 86_400_000) {
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:range" }], [{ text: "◀️ К аналитике", callback_data: "analytics:period:7" }]] });
+      return true;
+    }
+    await audit(db, adminId, "analytics.custom_range.view", null, { start: range.start, end: range.end });
+    await sendAnalyticsSummary(db, token, chatId, 0, role, range);
     return true;
   }
   if (replyContext.startsWith("[CREATE_MARKETING_COST]")) {
@@ -1380,6 +1422,16 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "period") {
     await sendAnalyticsSummary(db, token, chatId, Number(first), role);
+    return;
+  }
+  if (scope === "analytics" && action === "range") {
+    await sendMessage(token, chatId, "[ANALYTICS_RANGE]\nВведите начало и конец периода через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
+    return;
+  }
+  if (scope === "analytics" && action === "range_show" && first && second) {
+    const range = parseAnalyticsDateRange(`${first} | ${second}`);
+    if (!range) { await sendAnalyticsSummary(db, token, chatId, 7, role); return; }
+    await sendAnalyticsSummary(db, token, chatId, 0, role, range);
     return;
   }
   if (scope === "analytics" && action === "unit_economics") {
