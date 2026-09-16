@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, customerAccounts, customerPasswordResets, customerSessions, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
@@ -855,7 +855,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     const [recent, stale, lowStock] = await Promise.all([
       db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100),
       db.select({ id: orders.id }).from(orders).where(and(inArray(orders.status, [...activeOrderStatuses]), lt(orders.updatedAt, staleBoundary))).limit(100),
-      db.select({ id: catalogProducts.id }).from(catalogProducts).where(and(eq(catalogProducts.isPublished, true), or(eq(catalogProducts.available, false), sql`${catalogProducts.stockQuantity} IS NOT NULL AND ${catalogProducts.stockQuantity} <= 3`))).limit(100),
+      db.select({ id: catalogProducts.id }).from(catalogProducts).where(and(eq(catalogProducts.publicationStatus, "PUBLISHED"), or(eq(catalogProducts.available, false), sql`${catalogProducts.stockQuantity} IS NOT NULL AND ${catalogProducts.stockQuantity} <= 3`))).limit(100),
     ]);
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
     const email = getEmailConfigurationStatus();

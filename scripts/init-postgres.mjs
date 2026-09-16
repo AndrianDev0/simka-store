@@ -57,6 +57,19 @@ try {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_password_resets_token_hash ON customer_password_resets(token_hash);
     CREATE INDEX IF NOT EXISTS idx_customer_password_resets_account_id ON customer_password_resets(account_id);
 
+    CREATE TABLE IF NOT EXISTS privacy_consent_events (
+      id TEXT PRIMARY KEY,
+      consent_id TEXT NOT NULL,
+      account_id TEXT REFERENCES customer_accounts(id) ON DELETE SET NULL,
+      decision TEXT NOT NULL CHECK (decision IN ('accepted', 'declined', 'withdrawn')),
+      source TEXT NOT NULL CHECK (source IN ('banner', 'settings')),
+      policy_version TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_consent_id ON privacy_consent_events(consent_id);
+    CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_account_id ON privacy_consent_events(account_id);
+    CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_created_at ON privacy_consent_events(created_at);
+
     CREATE TABLE IF NOT EXISTS request_rate_limits (
       key TEXT PRIMARY KEY,
       action TEXT NOT NULL,

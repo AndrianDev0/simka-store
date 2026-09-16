@@ -64,6 +64,20 @@ export const customerPasswordResets = pgTable("customer_password_resets", {
   index("idx_customer_password_resets_account_id").on(table.accountId),
 ]);
 
+export const privacyConsentEvents = pgTable("privacy_consent_events", {
+  id: text("id").primaryKey(),
+  consentId: text("consent_id").notNull(),
+  accountId: text("account_id").references(() => customerAccounts.id, { onDelete: "set null" }),
+  decision: text("decision", { enum: ["accepted", "declined", "withdrawn"] }).notNull(),
+  source: text("source", { enum: ["banner", "settings"] }).notNull(),
+  policyVersion: text("policy_version").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_privacy_consent_events_consent_id").on(table.consentId),
+  index("idx_privacy_consent_events_account_id").on(table.accountId),
+  index("idx_privacy_consent_events_created_at").on(table.createdAt),
+]);
+
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),

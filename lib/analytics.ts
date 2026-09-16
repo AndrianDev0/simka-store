@@ -24,6 +24,8 @@ declare global {
 }
 
 export const ANALYTICS_CONSENT_KEY = "simka-analytics-consent";
+export const ANALYTICS_CONSENT_ID_KEY = "simka-analytics-consent-id";
+export const ANALYTICS_POLICY_VERSION = "2026-09-16";
 export const ANALYTICS_READY_EVENT = "simka-analytics-ready";
 
 const gaMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim() || "";

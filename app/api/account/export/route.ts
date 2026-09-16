@@ -1,6 +1,6 @@
 import { asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { cryptoPayments, customerAccounts, customerSessions, orderItems, orders } from "@/db/schema";
+import { cryptoPayments, customerAccounts, customerSessions, orderItems, orders, privacyConsentEvents } from "@/db/schema";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -76,11 +76,18 @@ export async function GET(request: Request) {
   }).from(cryptoPayments).where(inArray(cryptoPayments.orderId, orderIds)) : [];
   const sessions = await db.select({ createdAt: customerSessions.createdAt, lastUsedAt: customerSessions.lastUsedAt, expiresAt: customerSessions.expiresAt })
     .from(customerSessions).where(eq(customerSessions.accountId, account.id)).orderBy(asc(customerSessions.createdAt));
+  const consentHistory = await db.select({
+    decision: privacyConsentEvents.decision,
+    source: privacyConsentEvents.source,
+    policyVersion: privacyConsentEvents.policyVersion,
+    createdAt: privacyConsentEvents.createdAt,
+  }).from(privacyConsentEvents).where(eq(privacyConsentEvents.accountId, account.id)).orderBy(asc(privacyConsentEvents.createdAt));
 
   const payload = {
     exportedAt: new Date().toISOString(),
     profile,
     sessions,
+    consentHistory,
     orders: accountOrders.map(({ id, ...order }) => {
       const payment = payments.find((item) => item.orderId === id);
       return {

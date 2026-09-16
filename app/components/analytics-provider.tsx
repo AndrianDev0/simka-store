@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
-import { ANALYTICS_CONSENT_KEY, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
 
 type Consent = "accepted" | "declined" | null;
+type ConsentDecision = Exclude<Consent, null> | "withdrawn";
 
 function subscribeToConsent(callback: () => void) {
   window.addEventListener("storage", callback);
@@ -22,6 +23,29 @@ function consentSnapshot(): Consent {
     return stored === "accepted" || stored === "declined" ? stored : null;
   } catch {
     return "declined";
+  }
+}
+
+function getConsentId() {
+  const existing = window.localStorage.getItem(ANALYTICS_CONSENT_ID_KEY);
+  if (existing) return existing;
+  const created = crypto.randomUUID();
+  window.localStorage.setItem(ANALYTICS_CONSENT_ID_KEY, created);
+  return created;
+}
+
+function recordConsent(decision: ConsentDecision, source: "banner" | "settings") {
+  try {
+    const consentId = getConsentId();
+    void fetch("/api/privacy/consent", {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ eventId: crypto.randomUUID(), consentId, decision, source, policyVersion: ANALYTICS_POLICY_VERSION }),
+    }).catch(() => undefined);
+  } catch {
+    // Consent still applies locally if storage or the audit endpoint is unavailable.
   }
 }
 
@@ -131,6 +155,7 @@ export function AnalyticsProvider() {
 
   const choose = (next: Exclude<Consent, null>) => {
     try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { return; }
+    recordConsent(next, "banner");
     window.dispatchEvent(new Event("simka-consent-change"));
   };
 
@@ -144,9 +169,10 @@ export function AnalyticsProvider() {
 export function AnalyticsConsentReset() {
   const reset = () => {
     try {
+      if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY)) recordConsent("withdrawn", "settings");
       window.localStorage.removeItem(ANALYTICS_CONSENT_KEY);
       for (const key of Object.keys(window.localStorage)) {
-        if (key.startsWith("simka-analytics-")) window.localStorage.removeItem(key);
+        if (key.startsWith("simka-analytics-") && key !== ANALYTICS_CONSENT_ID_KEY) window.localStorage.removeItem(key);
       }
     } catch { /* Storage may be disabled. */ }
     const analyticsCookie = /^(?:_ga|_gid|_gat|_ym_|yandexuid)/;
