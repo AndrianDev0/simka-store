@@ -54,13 +54,13 @@ export function SearchAnalytics({ query, results }: { query: string; results: nu
   return null;
 }
 
-export function CatalogAnalytics({ filters, hasSearch, items }: { filters: string; hasSearch: boolean; items: AnalyticsItem[] }) {
+export function CatalogAnalytics({ filters, hasSearch, items, totalResults }: { filters: string; hasSearch: boolean; items: AnalyticsItem[]; totalResults?: number }) {
   const ready = useAnalyticsReady();
   useEffect(() => {
     if (!ready) return;
     trackEvent("view_item_list", { item_list_id: "catalog", item_list_name: "Каталог", items: items.slice(0, 100) });
-    if (filters || hasSearch) trackEvent("catalog_filter", { filters: filters.slice(0, 300), has_search: hasSearch, results_count: items.length });
-  }, [filters, hasSearch, items, ready]);
+    if (filters || hasSearch) trackEvent("catalog_filter", { filters: filters.slice(0, 300), has_search: hasSearch, results_count: totalResults ?? items.length });
+  }, [filters, hasSearch, items, ready, totalResults]);
   return null;
 }
 

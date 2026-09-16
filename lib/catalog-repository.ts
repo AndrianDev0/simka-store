@@ -1,4 +1,4 @@
-import { and, asc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   catalogProducts,
@@ -18,6 +18,7 @@ import {
   type ProductVariant,
 } from "@/lib/catalog";
 import { slugify } from "@/lib/catalog";
+import { productDisplayOffer, productIsAvailable } from "@/lib/catalog";
 
 export type CatalogProduct = Product;
 
@@ -328,6 +329,169 @@ export async function searchCatalogProducts(rawQuery: string, page = 1, pageSize
       return `${product.name} ${product.country} ${product.operator} ${product.sku} ${product.slug} ${product.shortDescription} ${variants}`.toLocaleLowerCase("ru-RU").includes(normalized);
     });
     return { items: matches.slice(offset, offset + limit), total: matches.length, limit, offset };
+  }
+}
+
+export type CatalogFilters = {
+  q?: string;
+  country?: string;
+  operator?: string;
+  category?: string;
+  type?: "eSIM" | "SIM";
+  currency?: string;
+  availability?: "available" | "unavailable";
+  data?: "small" | "medium" | "large" | "unlimited";
+  days?: number;
+  minPrice?: number;
+  maxPrice?: number;
+  sort?: "popular" | "price-asc" | "price-desc" | "days";
+};
+
+export type CatalogFacets = { countries: string[]; operators: string[]; currencies: string[] };
+
+const availableVariantSql = (productId: typeof catalogProducts.id) => sql`EXISTS (
+  SELECT 1 FROM product_variants AS v WHERE v.product_id = ${productId}
+    AND v.available = TRUE AND v.availability_status <> 'OUT_OF_STOCK'
+    AND (v.stock_quantity IS NULL OR v.stock_quantity > 0)
+)`;
+
+const displayVariantSql = (field: "price" | "currency") => sql`(
+  SELECT ${field === "price" ? sql.raw("v.price") : sql.raw("v.currency")}
+  FROM product_variants AS v WHERE v.product_id = ${catalogProducts.id}
+    AND v.available = TRUE AND v.availability_status <> 'OUT_OF_STOCK'
+    AND (v.stock_quantity IS NULL OR v.stock_quantity > 0)
+  ORDER BY CASE WHEN v.sku = ${catalogProducts.sku} THEN 0 ELSE 1 END, v.sort_order, v.id
+  LIMIT 1
+)`;
+
+const displayPriceSql = sql<number>`COALESCE(${displayVariantSql("price")}, ${catalogProducts.price})`;
+const displayCurrencySql = sql<string>`COALESCE(${displayVariantSql("currency")}, ${catalogProducts.currency})`;
+
+function visibleCatalogPredicate() {
+  return and(
+    isNull(catalogProducts.archivedAt),
+    isNull(countries.archivedAt),
+    isNull(operators.archivedAt),
+    eq(catalogProducts.publicationStatus, "PUBLISHED"),
+    eq(countries.publicationStatus, "PUBLISHED"),
+    eq(operators.publicationStatus, "PUBLISHED"),
+  );
+}
+
+function catalogFilterPredicate(filters: CatalogFilters) {
+  const predicates = [visibleCatalogPredicate()];
+  const query = normalizeCatalogSearchQuery(filters.q || "");
+  if (query) {
+    const pattern = catalogSearchPattern(query);
+    predicates.push(or(
+      ilike(catalogProducts.name, pattern), ilike(catalogProducts.sku, pattern),
+      ilike(catalogProducts.shortDescription, pattern), ilike(catalogProducts.dataVolume, pattern), ilike(countries.name, pattern),
+      ilike(operators.name, pattern),
+      sql`EXISTS (SELECT 1 FROM product_variants AS v WHERE v.product_id = ${catalogProducts.id} AND (v.name ILIKE ${pattern} OR v.sku ILIKE ${pattern} OR v.data_volume ILIKE ${pattern}))`,
+      sql`EXISTS (SELECT 1 FROM product_categories AS pc INNER JOIN categories AS c ON c.id = pc.category_id WHERE pc.product_id = ${catalogProducts.id} AND c.is_published = TRUE AND c.archived_at IS NULL AND (c.name ILIKE ${pattern} OR c.slug ILIKE ${pattern}))`,
+    ));
+  }
+  if (filters.country) predicates.push(eq(countries.name, filters.country));
+  if (filters.operator) predicates.push(eq(operators.name, filters.operator));
+  if (filters.type) predicates.push(eq(catalogProducts.simType, filters.type));
+  if (filters.currency) predicates.push(sql`${displayCurrencySql} = ${filters.currency}`);
+  const availabilitySql = sql`${catalogProducts.available} = TRUE AND ${catalogProducts.availabilityStatus} <> 'OUT_OF_STOCK' AND (${catalogProducts.stockQuantity} IS NULL OR ${catalogProducts.stockQuantity} > 0) AND (NOT EXISTS (SELECT 1 FROM product_variants AS v WHERE v.product_id = ${catalogProducts.id}) OR ${availableVariantSql(catalogProducts.id)})`;
+  if (filters.availability === "available") predicates.push(availabilitySql);
+  if (filters.availability === "unavailable") predicates.push(sql`NOT (${availabilitySql})`);
+  if (filters.data === "unlimited") predicates.push(eq(catalogProducts.isUnlimited, true));
+  if (filters.data === "small") predicates.push(sql`${catalogProducts.isUnlimited} = FALSE AND COALESCE(${catalogProducts.dataMb}, 0) <= ${5 * 1024}`);
+  if (filters.data === "medium") predicates.push(sql`${catalogProducts.isUnlimited} = FALSE AND COALESCE(${catalogProducts.dataMb}, 0) > ${5 * 1024} AND COALESCE(${catalogProducts.dataMb}, 0) <= ${20 * 1024}`);
+  if (filters.data === "large") predicates.push(sql`${catalogProducts.isUnlimited} = FALSE AND COALESCE(${catalogProducts.dataMb}, 0) > ${20 * 1024}`);
+  if (filters.days && filters.days > 0) predicates.push(sql`${catalogProducts.validityDays} <= ${filters.days}`);
+  if (filters.minPrice !== undefined) predicates.push(sql`${displayPriceSql} >= ${filters.minPrice}`);
+  if (filters.maxPrice !== undefined) predicates.push(sql`${displayPriceSql} <= ${filters.maxPrice}`);
+  if (filters.category === "esim") predicates.push(eq(catalogProducts.simType, "eSIM"));
+  else if (filters.category === "sim") predicates.push(eq(catalogProducts.simType, "SIM"));
+  else if (filters.category === "europe") predicates.push(eq(countries.region, "Европа"));
+  else if (filters.category === "asia") predicates.push(eq(countries.region, "Азия"));
+  else if (filters.category === "america") predicates.push(eq(countries.region, "Америка"));
+  else if (filters.category) predicates.push(sql`EXISTS (SELECT 1 FROM product_categories AS pc INNER JOIN categories AS c ON c.id = pc.category_id WHERE pc.product_id = ${catalogProducts.id} AND c.slug = ${filters.category} AND c.is_published = TRUE AND c.archived_at IS NULL)`);
+  return and(...predicates);
+}
+
+function filterFallbackCatalogProducts(filters: CatalogFilters) {
+  const query = normalizeCatalogSearchQuery(filters.q || "").toLocaleLowerCase("ru-RU");
+  return fallback({}, {}).filter((product) => {
+    const offer = productDisplayOffer(product);
+    const text = `${product.name} ${product.country} ${product.operator} ${product.sku} ${product.shortDescription} ${product.data} ${product.variants.map((variant) => `${variant.name} ${variant.sku} ${variant.data || ""}`).join(" ")}`.toLocaleLowerCase("ru-RU");
+    const category = filters.category;
+    const region = category === "europe" ? "Европа" : category === "asia" ? "Азия" : category === "america" ? "Америка" : null;
+    const dataMb = product.dataMb ?? 0;
+    return (!query || text.includes(query))
+      && (!filters.country || product.country === filters.country)
+      && (!filters.operator || product.operator === filters.operator)
+      && (!filters.type || product.type === filters.type)
+      && (!filters.currency || offer.currency === filters.currency)
+      && (!filters.availability || (filters.availability === "available") === productIsAvailable(product))
+      && (!filters.data || (filters.data === "unlimited" ? product.isUnlimited : !product.isUnlimited && (filters.data === "small" ? dataMb <= 5 * 1024 : filters.data === "medium" ? dataMb > 5 * 1024 && dataMb <= 20 * 1024 : dataMb > 20 * 1024)))
+      && (!filters.days || product.days <= filters.days)
+      && (filters.minPrice === undefined || offer.price >= filters.minPrice)
+      && (filters.maxPrice === undefined || offer.price <= filters.maxPrice)
+      && (!category || (category === "esim" ? product.type === "eSIM" : category === "sim" ? product.type === "SIM" : region ? product.region === region : false));
+  }).sort((left, right) => {
+    if (filters.sort === "days") return left.days - right.days || left.id - right.id;
+    if (filters.sort === "price-asc" || filters.sort === "price-desc") {
+      const leftOffer = productDisplayOffer(left); const rightOffer = productDisplayOffer(right);
+      return leftOffer.currency.localeCompare(rightOffer.currency) || (filters.sort === "price-asc" ? leftOffer.price - rightOffer.price : rightOffer.price - leftOffer.price) || left.id - right.id;
+    }
+    return Number(right.popular) - Number(left.popular) || left.id - right.id;
+  });
+}
+
+export async function queryCatalogProducts(filters: CatalogFilters, page = 1, pageSize = 24): Promise<CatalogSearchResult> {
+  const limit = Math.min(48, Math.max(1, Math.trunc(pageSize) || 24));
+  const safePage = Math.min(10_000, Math.max(1, Math.trunc(page) || 1));
+  const offset = (safePage - 1) * limit;
+  try {
+    const db = getDb();
+    const where = catalogFilterPredicate(filters);
+    const base = () => db.select({ id: catalogProducts.id }).from(catalogProducts)
+      .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
+      .innerJoin(operators, eq(catalogProducts.operatorId, operators.id));
+    const [{ total }] = await db.select({ total: sql<number>`COUNT(*)::int` }).from(catalogProducts)
+      .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
+      .innerJoin(operators, eq(catalogProducts.operatorId, operators.id)).where(where);
+    const order = filters.sort === "days" ? [asc(catalogProducts.validityDays), asc(catalogProducts.sortOrder), asc(catalogProducts.id)]
+      : filters.sort === "price-asc" ? [asc(displayCurrencySql), asc(displayPriceSql), asc(catalogProducts.id)]
+      : filters.sort === "price-desc" ? [asc(displayCurrencySql), desc(displayPriceSql), asc(catalogProducts.id)]
+      : [desc(catalogProducts.popular), asc(catalogProducts.sortOrder), asc(catalogProducts.id)];
+    const idRows = await base().where(where).orderBy(...order).limit(limit).offset(offset);
+    const loaded = await loadFromDatabase({}, { ids: idRows.map((row) => row.id) });
+    const byId = new Map(loaded.map((product) => [product.id, product]));
+    return { items: idRows.flatMap((row) => byId.get(row.id) ? [byId.get(row.id)!] : []), total: Number(total || 0), limit, offset };
+  } catch (error) {
+    warnAboutFallback(error);
+    const matches = filterFallbackCatalogProducts(filters);
+    return { items: matches.slice(offset, offset + limit), total: matches.length, limit, offset };
+  }
+}
+
+export async function getCatalogFacets(): Promise<CatalogFacets> {
+  try {
+    const db = getDb();
+    const rows = await db.selectDistinct({ country: countries.name, operator: operators.name, currency: displayCurrencySql })
+      .from(catalogProducts)
+      .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
+      .innerJoin(operators, eq(catalogProducts.operatorId, operators.id))
+      .where(visibleCatalogPredicate());
+    return {
+      countries: [...new Set(rows.map((row) => row.country))].sort((a, b) => a.localeCompare(b, "ru")),
+      operators: [...new Set(rows.map((row) => row.operator))].sort((a, b) => a.localeCompare(b, "ru")),
+      currencies: [...new Set(rows.map((row) => row.currency))].sort(),
+    };
+  } catch (error) {
+    warnAboutFallback(error);
+    const products = fallback({}, {});
+    return {
+      countries: [...new Set(products.map((product) => product.country))].sort((a, b) => a.localeCompare(b, "ru")),
+      operators: [...new Set(products.map((product) => product.operator))].sort((a, b) => a.localeCompare(b, "ru")),
+      currencies: [...new Set(products.map((product) => productDisplayOffer(product).currency))].sort(),
+    };
   }
 }
 

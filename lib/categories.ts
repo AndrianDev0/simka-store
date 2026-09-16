@@ -22,6 +22,19 @@ export type PublicCategory = {
   productIds: number[];
 };
 
+/** Lightweight options for filters; avoids loading every product/category link. */
+export async function getPublicCategoryOptions(): Promise<Array<Pick<PublicCategory, "id" | "slug" | "name">>> {
+  try {
+    return await getDb().select({ id: categories.id, slug: categories.slug, name: categories.name })
+      .from(categories)
+      .where(and(eq(categories.isPublished, true), isNull(categories.archivedAt)))
+      .orderBy(asc(categories.sortOrder), asc(categories.name));
+  } catch (error) {
+    console.warn("public_category_options_unavailable", error instanceof Error ? error.name : "UnknownError");
+    return [];
+  }
+}
+
 /**
  * Reads categories created by an administrator. A missing database is treated
  * as an empty result so the static storefront remains usable in previews.
