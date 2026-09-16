@@ -10,6 +10,7 @@ import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from 
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
+import { isIgnoredOperationalPath } from "@/lib/operational-event-shape";
 import { formatSalesByCurrency } from "@/lib/sales-analytics";
 import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
@@ -343,7 +344,7 @@ async function sendSearchAnalytics(db: ReturnType<typeof getDb>, token: string, 
 async function sendOperationalErrors(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, hours: number) {
   const normalizedHours = hours === 168 ? 168 : 24;
   const boundary = new Date(Date.now() - normalizedHours * 60 * 60 * 1000).toISOString();
-  const rows = await db.select({
+  const rows = (await db.select({
     kind: operationalEvents.kind,
     severity: operationalEvents.severity,
     area: operationalEvents.area,
@@ -351,7 +352,9 @@ async function sendOperationalErrors(db: ReturnType<typeof getDb>, token: string
     code: operationalEvents.code,
     count: operationalEvents.count,
     lastSeenAt: operationalEvents.lastSeenAt,
-  }).from(operationalEvents).where(gte(operationalEvents.lastSeenAt, boundary)).orderBy(desc(operationalEvents.lastSeenAt)).limit(20);
+  }).from(operationalEvents).where(gte(operationalEvents.lastSeenAt, boundary)).orderBy(desc(operationalEvents.lastSeenAt)).limit(100))
+    .filter((row) => !isIgnoredOperationalPath(row.path))
+    .slice(0, 20);
   const total = rows.reduce((sum, row) => sum + row.count, 0);
   const critical = rows.filter((row) => row.severity === "critical").reduce((sum, row) => sum + row.count, 0);
   const lines = rows.map((row, index) => [
@@ -1001,11 +1004,12 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100),
       db.select({ id: orders.id }).from(orders).where(and(inArray(orders.status, [...activeOrderStatuses]), lt(orders.updatedAt, staleBoundary))).limit(100),
       db.select({ id: catalogProducts.id }).from(catalogProducts).where(and(eq(catalogProducts.publicationStatus, "PUBLISHED"), or(eq(catalogProducts.available, false), sql`${catalogProducts.stockQuantity} IS NOT NULL AND ${catalogProducts.stockQuantity} <= 3`))).limit(100),
-      db.select({ total: sql<number>`COALESCE(SUM(${operationalEvents.count}), 0)::int` }).from(operationalEvents).where(gte(operationalEvents.lastSeenAt, staleBoundary)),
+      db.select({ path: operationalEvents.path, count: operationalEvents.count }).from(operationalEvents).where(gte(operationalEvents.lastSeenAt, staleBoundary)),
     ]);
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
     const email = getEmailConfigurationStatus();
-    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nТехнических ошибок за 24 часа: ${Number(errorTotals[0]?.total || 0)}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "status" }], [{ text: "⚠️ Открыть ошибки", callback_data: "errors:period:24" }], [{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    const visibleErrorTotal = errorTotals.filter((row) => !isIgnoredOperationalPath(row.path)).reduce((sum, row) => sum + row.count, 0);
+    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nТехнических ошибок за 24 часа: ${visibleErrorTotal}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "status" }], [{ text: "⚠️ Открыть ошибки", callback_data: "errors:period:24" }], [{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
     return;
   }
   if (scope === "analytics" && action === "period") {

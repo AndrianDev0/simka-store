@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeOperationalEvent } from "../lib/operational-event-shape.ts";
+import { isIgnoredOperationalPath, normalizeOperationalEvent } from "../lib/operational-event-shape.ts";
 
 test("operational telemetry strips query data and unsafe codes", () => {
   const normalized = normalizeOperationalEvent({
@@ -26,4 +26,12 @@ test("operational telemetry uses bounded safe defaults", () => {
   assert.equal(normalized.area, "unknown");
   assert.equal(normalized.path, "/");
   assert.equal(normalized.code, "unknown");
+});
+
+test("operational telemetry ignores monitoring probes and placeholder catalog routes", () => {
+  assert.equal(isIgnoredOperationalPath("/__monitoring-qa-v2/check"), true);
+  assert.equal(isIgnoredOperationalPath("/__monitoring_qa"), true);
+  assert.equal(isIgnoredOperationalPath("/product/slug"), true);
+  assert.equal(isIgnoredOperationalPath("/category/slug/"), true);
+  assert.equal(isIgnoredOperationalPath("/product/japan-20gb-30days"), false);
 });

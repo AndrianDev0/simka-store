@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { operationalEvents } from "@/db/schema";
-import { normalizeOperationalEvent, type NormalizedOperationalEvent, type OperationalEvent } from "@/lib/operational-event-shape";
+import { isIgnoredOperationalPath, normalizeOperationalEvent, type NormalizedOperationalEvent, type OperationalEvent } from "@/lib/operational-event-shape";
 
 async function notifyCriticalEvent(event: NormalizedOperationalEvent, occurredAt: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -31,6 +31,7 @@ export async function recordOperationalEvent(event: OperationalEvent) {
   const now = new Date().toISOString();
   const day = now.slice(0, 10);
   const normalized = normalizeOperationalEvent(event);
+  if (isIgnoredOperationalPath(normalized.path)) return;
   const { kind, area, path, code } = normalized;
   const id = createHash("sha256").update(`${day}|${kind}|${event.severity}|${area}|${path}|${code}`).digest("hex");
   try {

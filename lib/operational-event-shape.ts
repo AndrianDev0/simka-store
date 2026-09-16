@@ -27,3 +27,9 @@ export function normalizeOperationalEvent(event: OperationalEvent): NormalizedOp
     code: safeToken(event.code, "unknown", 128),
   };
 }
+
+export function isIgnoredOperationalPath(value: string | undefined) {
+  const path = safePath(value).toLowerCase().replace(/\/+$/, "");
+  return /^\/__monitoring(?:[-_/]|$)/.test(path)
+    || /^\/(?:product|category|country)\/slug$/.test(path);
+}
