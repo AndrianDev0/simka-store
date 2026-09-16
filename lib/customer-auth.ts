@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, eq, gt } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
@@ -6,10 +6,10 @@ import { customerAccounts, customerPasswordResets, customerSessions } from "@/db
 import { getDb } from "@/db";
 import { sameRequestOrigin } from "@/lib/request-security";
 
+export { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPassword } from "@/lib/passwords";
+
 export const CUSTOMER_SESSION_COOKIE = "simka_customer_session";
 export const CUSTOMER_SESSION_MAX_AGE = 60 * 60 * 24 * 30;
-const PASSWORD_ITERATIONS = 120_000;
-const encoder = new TextEncoder();
 
 export type CustomerAccount = {
   id: string;
@@ -26,32 +26,8 @@ export function hashToken(token: string) {
   return createHash("sha256").update(token).digest("base64url");
 }
 
-async function derivePassword(password: string, salt: string) {
-  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: encoder.encode(salt), iterations: PASSWORD_ITERATIONS, hash: "SHA-256" }, key, 256);
-  return base64Url(new Uint8Array(bits));
-}
-
-export async function hashPassword(password: string) {
-  const salt = base64Url(randomBytes(16));
-  return `v1.${salt}.${await derivePassword(password, salt)}`;
-}
-
-export async function verifyPassword(password: string, storedHash: string) {
-  const [version, salt, expected] = storedHash.split(".");
-  if (version !== "v1" || !salt || !expected) return false;
-  const actual = await derivePassword(password, salt);
-  const expectedBytes = Buffer.from(expected, "base64url");
-  const actualBytes = Buffer.from(actual, "base64url");
-  return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
-}
-
 export function newOpaqueToken() {
   return base64Url(randomBytes(32));
-}
-
-export function validatePassword(password: string) {
-  return password.length >= 8 && password.length <= 200;
 }
 
 export function sameOrigin(request: Request) {
