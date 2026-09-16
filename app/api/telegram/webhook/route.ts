@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
+import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { releaseReservedInventory } from "@/lib/order-inventory";
@@ -72,11 +73,11 @@ async function sendMessage(token: string, chatId: number, text: string, replyMar
   if (!response.ok) throw new Error("TELEGRAM_SEND_FAILED");
 }
 
-async function sendDocument(token: string, chatId: number, data: Buffer, filename: string, caption: string) {
+async function sendDocument(token: string, chatId: number, data: Buffer, filename: string, caption: string, mimeType = "application/json") {
   const form = new FormData();
   form.set("chat_id", String(chatId));
   form.set("caption", caption);
-  form.set("document", new Blob([new Uint8Array(data)], { type: "application/json" }), filename);
+  form.set("document", new Blob([new Uint8Array(data)], { type: mimeType }), filename);
   const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error("TELEGRAM_DOCUMENT_SEND_FAILED");
 }
@@ -258,9 +259,35 @@ function analyticsKeyboard(selectedDays: number): InlineKeyboard {
     [button("Всё время", 0)],
     [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
     [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
+    [{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }],
     [{ text: "🛒 Последние заказы", callback_data: "orders:list" }],
     [{ text: "◀️ В меню", callback_data: "menu" }],
   ] };
+}
+
+async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
+  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const selection = {
+    orderNumber: orders.orderNumber,
+    createdAt: orders.createdAt,
+    status: orders.status,
+    paymentMethod: orders.paymentMethod,
+    subtotalAmount: orders.subtotalAmount,
+    deliveryAmount: orders.deliveryAmount,
+    totalAmount: orders.totalAmount,
+    currency: orders.currency,
+    source: orders.analyticsSource,
+    medium: orders.analyticsMedium,
+    campaign: orders.analyticsCampaign,
+  };
+  const rows = normalizedDays
+    ? await db.select(selection).from(orders).where(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString())).orderBy(desc(orders.createdAt)).limit(5_000)
+    : await db.select(selection).from(orders).orderBy(desc(orders.createdAt)).limit(5_000);
+  const header = ["order_number", "created_at_utc", "status", "payment_method", "subtotal", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
+  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.status, row.paymentMethod, row.subtotalAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
+  const suffix = normalizedDays ? `${normalizedDays}d` : "all";
+  await sendDocument(token, chatId, Buffer.from(`\uFEFF${csv}`, "utf8"), `simka-orders-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`, `Обезличенный отчёт SIMKA ${analyticsPeriod(normalizedDays)} · строк: ${rows.length}${rows.length === 5_000 ? " (показаны последние 5000)" : ""}.`, "text/csv; charset=utf-8");
+  await audit(db, adminId, "analytics.export", null, { days: normalizedDays, rows: rows.length, format: "csv" });
 }
 
 function analyticsPeriod(days: number) {
@@ -945,6 +972,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "countries") {
     await sendCountryAnalytics(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "analytics" && action === "csv") {
+    await sendAnalyticsCsv(db, token, chatId, adminId, Number(first));
     return;
   }
   if (scope === "errors" && action === "period") {
