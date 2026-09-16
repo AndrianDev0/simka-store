@@ -49,9 +49,6 @@ html.dark { color-scheme: dark; }
 body { margin: 0; background: var(--background); color: var(--foreground); font-family: "Segoe UI", Inter, Arial, sans-serif; transition: background-color var(--motion-base) ease, color var(--motion-base) ease; }
 button, a, input, select, textarea { transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease; }
 ::selection { background: color-mix(in srgb, var(--primary) 32%, transparent); color: var(--foreground); }
-.sim-grid { background-image: linear-gradient(rgba(17,104,232,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(17,104,232,.055) 1px, transparent 1px); background-size: 34px 34px; mask-image: linear-gradient(to right, transparent, #000 22%, #000 88%, transparent); }
-.dark .sim-grid { background-image: linear-gradient(rgba(88,166,255,.09) 1px, transparent 1px), linear-gradient(90deg, rgba(88,166,255,.09) 1px, transparent 1px); }
-
 .theme-logo {
   background: linear-gradient(135deg, var(--gradient-a), var(--gradient-b) 58%, var(--gradient-c));
   box-shadow: 0 8px 24px color-mix(in srgb, var(--gradient-a) 34%, transparent);
@@ -146,5 +143,4 @@ button, a, input, select, textarea { transition: color var(--motion-fast) ease, 
   0%, 100% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
 }
-@media (max-width: 640px) { .sim-grid { background-size: 26px 26px; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
