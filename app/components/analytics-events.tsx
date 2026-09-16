@@ -17,8 +17,17 @@ function readySnapshot() {
   catch { return false; }
 }
 
+function consentSnapshot() {
+  try { return window.localStorage.getItem(ANALYTICS_CONSENT_KEY) === "accepted"; }
+  catch { return false; }
+}
+
 export function useAnalyticsReady() {
   return useSyncExternalStore(subscribeReady, readySnapshot, () => false);
+}
+
+function useAnalyticsConsent() {
+  return useSyncExternalStore(subscribeReady, consentSnapshot, () => false);
 }
 
 export function IdentifyAnalyticsUser({ userId }: { userId: string }) {
@@ -32,12 +41,16 @@ export function IdentifyAnalyticsUser({ userId }: { userId: string }) {
 
 export function SearchAnalytics({ query, results }: { query: string; results: number }) {
   const ready = useAnalyticsReady();
+  const consent = useAnalyticsConsent();
   useEffect(() => {
     if (!ready || !query) return;
     trackEvent("search", { query_length: Math.min(query.length, 100), results_count: results, no_results: results === 0 });
+  }, [query, ready, results]);
+  useEffect(() => {
+    if (!consent || !query) return;
     const consentId = window.localStorage.getItem(ANALYTICS_CONSENT_ID_KEY);
     if (consentId) void fetch("/api/analytics/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ consentId, query, results }), keepalive: true });
-  }, [query, ready, results]);
+  }, [consent, query, results]);
   return null;
 }
 

@@ -10,6 +10,7 @@ import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from 
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
+import { formatSalesByCurrency } from "@/lib/sales-analytics";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
@@ -301,16 +302,8 @@ async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string,
   const paidStatuses = [...paidOrderStatuses];
   const conditions = [inArray(orders.status, paidStatuses)];
   if (normalizedDays) conditions.push(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()));
-  const rows = await db.select({ productName: orderItems.productName, sku: orderItems.sku, quantity: orderItems.quantity, unitPrice: orderItems.unitPrice }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).where(and(...conditions));
-  const groups = new Map<string, { quantity: number; revenue: number }>();
-  for (const row of rows) {
-    const key = row.sku || row.productName;
-    const current = groups.get(key) || { quantity: 0, revenue: 0 };
-    current.quantity += row.quantity;
-    current.revenue += row.unitPrice * row.quantity;
-    groups.set(key, current);
-  }
-  const lines = [...groups.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15).map(([key, value], index) => `${index + 1}. ${key} · ${value.quantity} шт. · ${value.revenue.toLocaleString("ru-RU")} (валюты могут отличаться)`).join("\n") || "Оплаченных товаров пока нет.";
+  const rows = await db.select({ productName: orderItems.productName, sku: orderItems.sku, quantity: orderItems.quantity, unitPrice: orderItems.unitPrice, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).where(and(...conditions));
+  const lines = formatSalesByCurrency(rows.map((row) => ({ label: row.sku || row.productName, currency: row.currency, quantity: row.quantity, revenue: row.unitPrice * row.quantity })), "Оплаченных товаров пока нет.");
   await sendMessage(token, chatId, `📦 Продажи по товарам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 
@@ -318,15 +311,8 @@ async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string,
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
   const conditions = [inArray(orders.status, [...paidOrderStatuses])];
   if (normalizedDays) conditions.push(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()));
-  const rows = await db.select({ country: countries.name, quantity: orderItems.quantity, revenue: sql<number>`${orderItems.unitPrice} * ${orderItems.quantity}` }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).innerJoin(catalogProducts, eq(orderItems.productId, catalogProducts.id)).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).where(and(...conditions));
-  const groups = new Map<string, { quantity: number; revenue: number }>();
-  for (const row of rows) {
-    const current = groups.get(row.country) || { quantity: 0, revenue: 0 };
-    current.quantity += row.quantity;
-    current.revenue += Number(row.revenue) || 0;
-    groups.set(row.country, current);
-  }
-  const lines = [...groups.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15).map(([country, value], index) => `${index + 1}. ${country} · ${value.quantity} шт. · ${value.revenue.toLocaleString("ru-RU")} (валюты могут отличаться)`).join("\n") || "Оплаченных продаж по странам пока нет.";
+  const rows = await db.select({ country: countries.name, quantity: orderItems.quantity, revenue: sql<number>`${orderItems.unitPrice} * ${orderItems.quantity}`, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).innerJoin(catalogProducts, eq(orderItems.productId, catalogProducts.id)).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).where(and(...conditions));
+  const lines = formatSalesByCurrency(rows.map((row) => ({ label: row.country, currency: row.currency, quantity: row.quantity, revenue: Number(row.revenue) || 0 })), "Оплаченных продаж по странам пока нет.");
   await sendMessage(token, chatId, `🌍 Продажи по странам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 

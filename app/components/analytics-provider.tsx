@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
 import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
@@ -35,16 +35,17 @@ function getConsentId() {
   return created;
 }
 
-function recordConsent(decision: ConsentDecision, source: "banner" | "settings") {
+async function recordConsent(decision: ConsentDecision, source: "banner" | "settings") {
   try {
     const consentId = getConsentId();
-    void fetch("/api/privacy/consent", {
+    await fetch("/api/privacy/consent", {
       method: "POST",
       credentials: "same-origin",
       keepalive: true,
+      signal: AbortSignal.timeout(5_000),
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ eventId: crypto.randomUUID(), consentId, decision, source, policyVersion: ANALYTICS_POLICY_VERSION }),
-    }).catch(() => undefined);
+    });
   } catch {
     // Consent still applies locally if storage or the audit endpoint is unavailable.
   }
@@ -97,6 +98,7 @@ function initialisePlausible(domain: string) {
 export function AnalyticsProvider() {
   const pathname = usePathname();
   const consent = useSyncExternalStore(subscribeToConsent, consentSnapshot, () => "declined");
+  const choosingConsent = useRef(false);
 
   useReportWebVitals(useCallback((metric) => {
     trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: Math.round(metric.value) });
@@ -165,10 +167,13 @@ export function AnalyticsProvider() {
     };
   }, [consent]);
 
-  const choose = (next: Exclude<Consent, null>) => {
-    try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { return; }
-    recordConsent(next, "banner");
+  const choose = async (next: Exclude<Consent, null>) => {
+    if (choosingConsent.current) return;
+    choosingConsent.current = true;
+    await recordConsent(next, "banner");
+    try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { choosingConsent.current = false; return; }
     window.dispatchEvent(new Event("simka-consent-change"));
+    choosingConsent.current = false;
   };
 
   if (consent !== null) return null;
@@ -181,7 +186,7 @@ export function AnalyticsProvider() {
 export function AnalyticsConsentReset() {
   const reset = () => {
     try {
-      if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY)) recordConsent("withdrawn", "settings");
+      if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY)) void recordConsent("withdrawn", "settings");
       window.localStorage.removeItem(ANALYTICS_CONSENT_KEY);
       for (const key of Object.keys(window.localStorage)) {
         if (key.startsWith("simka-analytics-") && key !== ANALYTICS_CONSENT_ID_KEY) window.localStorage.removeItem(key);
