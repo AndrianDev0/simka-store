@@ -137,7 +137,7 @@ export async function POST(request: Request, context: { params: Promise<{ provid
   const result = await db.transaction(async (tx) => {
     const [inserted] = await tx.insert(cryptoPaymentEvents).values(eventRecord).onConflictDoNothing().returning({ id: cryptoPaymentEvents.id });
     if (!inserted) return { duplicate: true, changed: false, reviewRequired: false };
-    const [updated] = await tx.update(orders).set({ status: "PAID", updatedAt: now }).where(and(eq(orders.id, order.id), inArray(orders.status, ["WAITING_PAYMENT", "PAYMENT_PENDING"]))).returning({ id: orders.id });
+    const [updated] = await tx.update(orders).set({ status: "PAID", paidAt, updatedAt: now }).where(and(eq(orders.id, order.id), inArray(orders.status, ["WAITING_PAYMENT", "PAYMENT_PENDING"]))).returning({ id: orders.id });
     const paymentStatus = updated || order.status === "PAID" ? "PAID" : "REVIEW_REQUIRED";
     await tx.update(cryptoPayments).set({ providerPaymentId: event.payment_id, status: paymentStatus, receivedAmount: event.amount, receivedCurrency: event.currency.toUpperCase(), transactionId: event.transaction_id, paidAt, updatedAt: now }).where(eq(cryptoPayments.id, payment.id));
     return { duplicate: false, changed: Boolean(updated), reviewRequired: paymentStatus === "REVIEW_REQUIRED" };

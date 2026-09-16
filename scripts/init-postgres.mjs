@@ -141,6 +141,7 @@ try {
       currency TEXT NOT NULL DEFAULT 'RUB',
       inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE,
       payment_instructions_sent_at TEXT,
+      paid_at TEXT,
       analytics_client_id TEXT,
       analytics_source TEXT,
       analytics_medium TEXT,
@@ -163,6 +164,7 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_client_id TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_source TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_medium TEXT;
@@ -174,6 +176,7 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_refund_sent_at TEXT;
     CREATE INDEX IF NOT EXISTS idx_orders_customer_account_id ON orders(customer_account_id);
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_orders_paid_at ON orders(paid_at);
 
     -- Statuses intentionally remain text so the workflow can be extended without
     -- a destructive migration or a production restart race.
@@ -445,6 +448,20 @@ try {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);
+
+    -- Recover payment timestamps where historic evidence exists. Older orders
+    -- without a payment event remain NULL rather than claiming a guessed time.
+    WITH recovered AS (
+      SELECT o.id, COALESCE(
+        (SELECT cp.paid_at FROM crypto_payments AS cp WHERE cp.order_id = o.id AND cp.paid_at IS NOT NULL LIMIT 1),
+        (SELECT a.created_at FROM admin_audit_log AS a WHERE a.entity_type = 'order' AND a.entity_id = o.id AND a.action IN ('order.paid_confirm', 'order.payment_confirmed') ORDER BY a.created_at ASC LIMIT 1),
+        o.analytics_purchase_sent_at
+      ) AS recovered_paid_at
+      FROM orders AS o
+      WHERE o.paid_at IS NULL AND o.status IN ('PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED')
+    )
+    UPDATE orders AS o SET paid_at = recovered.recovered_paid_at
+    FROM recovered WHERE o.id = recovered.id AND recovered.recovered_paid_at IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS store_settings (
       key TEXT PRIMARY KEY,

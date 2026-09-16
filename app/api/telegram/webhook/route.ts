@@ -274,6 +274,7 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
     orderNumber: orders.orderNumber,
     createdAt: orders.createdAt,
     status: orders.status,
+    paidAt: orders.paidAt,
     paymentMethod: orders.paymentMethod,
     subtotalAmount: orders.subtotalAmount,
     deliveryAmount: orders.deliveryAmount,
@@ -284,10 +285,10 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
     campaign: orders.analyticsCampaign,
   };
   const rows = normalizedDays
-    ? await db.select(selection).from(orders).where(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString())).orderBy(desc(orders.createdAt)).limit(5_000)
+    ? await db.select(selection).from(orders).where(sql`${orders.createdAt}::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`).orderBy(desc(orders.createdAt)).limit(5_000)
     : await db.select(selection).from(orders).orderBy(desc(orders.createdAt)).limit(5_000);
-  const header = ["order_number", "created_at_utc", "status", "payment_method", "subtotal", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
-  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.status, row.paymentMethod, row.subtotalAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
+  const header = ["order_number", "created_at_utc", "paid_at_utc", "status", "payment_method", "subtotal", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
+  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
   const suffix = normalizedDays ? `${normalizedDays}d` : "all";
   await sendDocument(token, chatId, Buffer.from(`\uFEFF${csv}`, "utf8"), `simka-orders-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`, `Обезличенный отчёт SIMKA ${analyticsPeriod(normalizedDays)} · строк: ${rows.length}${rows.length === 5_000 ? " (показаны последние 5000)" : ""}.`, "text/csv; charset=utf-8");
   await audit(db, adminId, "analytics.export", null, { days: normalizedDays, rows: rows.length, format: "csv" });
@@ -301,7 +302,7 @@ async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string,
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
   const paidStatuses = [...paidOrderStatuses];
   const conditions = [inArray(orders.status, paidStatuses)];
-  if (normalizedDays) conditions.push(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()));
+  if (normalizedDays) conditions.push(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`);
   const rows = await db.select({ productName: orderItems.productName, sku: orderItems.sku, quantity: orderItems.quantity, unitPrice: orderItems.unitPrice, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).where(and(...conditions));
   const lines = formatSalesByCurrency(rows.map((row) => ({ label: row.sku || row.productName, currency: row.currency, quantity: row.quantity, revenue: row.unitPrice * row.quantity })), "Оплаченных товаров пока нет.");
   await sendMessage(token, chatId, `📦 Продажи по товарам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
@@ -310,7 +311,7 @@ async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string,
 async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
   const conditions = [inArray(orders.status, [...paidOrderStatuses])];
-  if (normalizedDays) conditions.push(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()));
+  if (normalizedDays) conditions.push(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`);
   const rows = await db.select({ country: countries.name, quantity: orderItems.quantity, revenue: sql<number>`${orderItems.unitPrice} * ${orderItems.quantity}`, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).innerJoin(catalogProducts, eq(orderItems.productId, catalogProducts.id)).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).where(and(...conditions));
   const lines = formatSalesByCurrency(rows.map((row) => ({ label: row.country, currency: row.currency, quantity: row.quantity, revenue: Number(row.revenue) || 0 })), "Оплаченных продаж по странам пока нет.");
   await sendMessage(token, chatId, `🌍 Продажи по странам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
@@ -376,17 +377,24 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   const now = Date.now();
   const currentBoundary = normalizedDays ? new Date(now - normalizedDays * 86_400_000).toISOString() : null;
   const previousBoundary = normalizedDays ? new Date(now - normalizedDays * 2 * 86_400_000).toISOString() : null;
-  const [rows, previousRows, active] = await Promise.all([
+  const paymentTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
+  const [rows, previousRows, paid, previousPaid, active] = await Promise.all([
     currentBoundary
-      ? db.select(selection).from(orders).where(gte(orders.createdAt, currentBoundary))
+      ? db.select(selection).from(orders).where(sql`${orders.createdAt}::timestamptz >= ${currentBoundary}::timestamptz`)
       : db.select(selection).from(orders),
     currentBoundary && previousBoundary
-      ? db.select(selection).from(orders).where(and(gte(orders.createdAt, previousBoundary), lt(orders.createdAt, currentBoundary)))
+      ? db.select(selection).from(orders).where(and(sql`${orders.createdAt}::timestamptz >= ${previousBoundary}::timestamptz`, sql`${orders.createdAt}::timestamptz < ${currentBoundary}::timestamptz`))
+      : Promise.resolve([]),
+    currentBoundary
+      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${currentBoundary}::timestamptz`))
+      : db.select(selection).from(orders).where(inArray(orders.status, [...paidOrderStatuses])),
+    currentBoundary && previousBoundary
+      ? db.select(selection).from(orders).where(and(inArray(orders.status, [...paidOrderStatuses]), sql`${paymentTime} >= ${previousBoundary}::timestamptz`, sql`${paymentTime} < ${currentBoundary}::timestamptz`))
       : Promise.resolve([]),
     db.select({ id: orders.id }).from(orders).where(inArray(orders.status, [...activeOrderStatuses])),
   ]);
-  const paid = rows.filter((order) => paidOrderStatuses.has(order.status));
-  const previousPaid = previousRows.filter((order) => paidOrderStatuses.has(order.status));
+  const cohortPaid = rows.filter((order) => paidOrderStatuses.has(order.status));
+  const previousCohortPaid = previousRows.filter((order) => paidOrderStatuses.has(order.status));
   const cancelled = rows.filter((order) => order.status === "CANCELLED");
   const refunded = rows.filter((order) => order.status === "REFUNDED");
   const failed = rows.filter((order) => order.status === "FAILED");
@@ -412,8 +420,8 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   for (const order of rows) statusCounts.set(order.status, (statusCounts.get(order.status) ?? 0) + 1);
   const statusLines = [...statusCounts].sort((left, right) => right[1] - left[1]).map(([status, count]) => `• ${analyticsStatusLabels[status] ?? status}: ${count}`).join("\n") || "• Заказов пока нет";
   const period = normalizedDays === 0 ? "за всё время" : normalizedDays === 1 ? "за последние 24 часа" : `за последние ${normalizedDays} дней`;
-  const conversion = percentage(paid.length, rows.length);
-  const previousConversion = percentage(previousPaid.length, previousRows.length);
+  const conversion = percentage(cohortPaid.length, rows.length);
+  const previousConversion = percentage(previousCohortPaid.length, previousRows.length);
   const comparisonLines = normalizedDays ? [
     "",
     `📉 Сравнение с предыдущим таким же периодом:`,
@@ -430,10 +438,10 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     `📈 Аналитика SIMKA ${period}`,
     "",
     `🛒 Заказов создано: ${rows.length}`,
-    `✅ Оплаченных: ${paid.length}`,
+    `✅ Оплачено за период: ${paid.length}`,
     `💰 Оборот: ${revenueLines}`,
     `🧾 Средний оплаченный заказ: ${averageLines}`,
-    `📊 Конверсия заказ → оплата: ${formatPercentage(conversion)}`,
+    `📊 Конверсия созданных заказов → оплата: ${formatPercentage(conversion)}`,
     `⚙️ Активных сейчас: ${active.length}`,
     `❌ Отменено: ${cancelled.length}`,
     `↩️ Возвратов: ${refunded.length}`,
@@ -448,7 +456,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     statusLines,
     ...comparisonLines,
     "",
-    "Данные обновляются напрямую из базы магазина.",
+    "Данные обновляются напрямую из базы магазина. Для старых оплат без точной даты используется дата заказа.",
   ].join("\n");
   await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays));
 }
@@ -511,6 +519,7 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
     order.customerComment ? `Комментарий: ${order.customerComment}` : "",
     `Оплата: ${order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта"}`,
     order.paymentInstructionsSentAt ? `Реквизиты отправлены: ${order.paymentInstructionsSentAt}` : "",
+    order.paidAt ? `Оплата подтверждена: ${order.paidAt}` : "",
     `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     "",
     lines,
@@ -1367,7 +1376,8 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       await sendMessage(token, chatId, `Переход недоступен для статуса ${order.status}.`);
       return;
     }
-    const changed = await db.update(orders).set({ status: transition.to, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, order.id), eq(orders.status, transition.from))).returning({ id: orders.id });
+    const changedAt = new Date().toISOString();
+    const changed = await db.update(orders).set({ status: transition.to, ...(transition.to === "PAID" ? { paidAt: changedAt } : {}), updatedAt: changedAt }).where(and(eq(orders.id, order.id), eq(orders.status, transition.from))).returning({ id: orders.id });
     if (!changed[0]) { await sendMessage(token, chatId, "Статус заказа уже изменился. Откройте его заново.", orderBackKeyboard(order.orderNumber)); return; }
     if (action === "deliver") await db.update(orderItems).set({ fulfillmentStatus: "DELIVERED", fulfilledAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(and(eq(orderItems.orderId, order.id), eq(orderItems.simType, "SIM")));
     if (action === "complete") await db.update(orderItems).set({ fulfillmentStatus: "COMPLETED", updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
@@ -1575,7 +1585,9 @@ export async function POST(request: Request) {
           if (pendingCost[0]) {
             await sendMessage(token, chatId, "Сначала укажите стоимость доставки всех физических SIM через карточку заказа.", orderBackKeyboard(order.orderNumber));
           } else {
-            await db.update(orders).set({ status: "PAID", updatedAt: new Date().toISOString() }).where(eq(orders.id, order.id));
+            const paidAt = new Date().toISOString();
+            const [changed] = await db.update(orders).set({ status: "PAID", paidAt, updatedAt: paidAt }).where(and(eq(orders.id, order.id), eq(orders.status, "WAITING_FOR_MANAGER"))).returning({ id: orders.id });
+            if (!changed) { await sendMessage(token, chatId, "Статус заказа уже изменился. Откройте его заново.", orderBackKeyboard(order.orderNumber)); return; }
             const customerEmailDelivered = (await sendOrderStatusEmail(order, "PAID")).delivered;
             await reportOrderAnalytics(order.id, "PAID");
             await audit(db, from.id, "order.payment_confirmed", order.id, { orderNumber: order.orderNumber, method: "manager", customerEmailDelivered });

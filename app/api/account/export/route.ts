@@ -44,6 +44,7 @@ export async function GET(request: Request) {
     totalAmount: orders.totalAmount,
     currency: orders.currency,
     createdAt: orders.createdAt,
+    paidAt: orders.paidAt,
     updatedAt: orders.updatedAt,
   }).from(orders).where(eq(orders.customerAccountId, account.id)).orderBy(asc(orders.createdAt));
   const orderIds = accountOrders.map((order) => order.id);
