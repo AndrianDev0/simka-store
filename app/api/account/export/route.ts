@@ -1,6 +1,6 @@
 import { asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db";
-import { cryptoPayments, customerAccounts, customerSessions, orderItems, orders, privacyConsentEvents } from "@/db/schema";
+import { analyticsEvents, analyticsSessions, analyticsVisitors, cryptoPayments, customerAccounts, customerSessions, orderItems, orders, privacyConsentEvents } from "@/db/schema";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -87,12 +87,23 @@ export async function GET(request: Request) {
     policyVersion: privacyConsentEvents.policyVersion,
     createdAt: privacyConsentEvents.createdAt,
   }).from(privacyConsentEvents).where(eq(privacyConsentEvents.accountId, account.id)).orderBy(asc(privacyConsentEvents.createdAt));
+  const analyticsVisitorRows = await db.select().from(analyticsVisitors).where(eq(analyticsVisitors.accountId, account.id)).orderBy(asc(analyticsVisitors.firstSeenAt));
+  const analyticsClientIds = analyticsVisitorRows.map((visitor) => visitor.clientId);
+  const analyticsSessionRows = analyticsClientIds.length
+    ? await db.select().from(analyticsSessions).where(inArray(analyticsSessions.clientId, analyticsClientIds)).orderBy(asc(analyticsSessions.startedAt))
+    : [];
+  const analyticsEventRows = await db.select({
+    id: analyticsEvents.id, sessionId: analyticsEvents.sessionId, clientId: analyticsEvents.clientId,
+    name: analyticsEvents.name, path: analyticsEvents.path, params: analyticsEvents.params,
+    occurredAt: analyticsEvents.occurredAt,
+  }).from(analyticsEvents).where(eq(analyticsEvents.accountId, account.id)).orderBy(asc(analyticsEvents.occurredAt));
 
   const payload = {
     exportedAt: new Date().toISOString(),
     profile,
     sessions,
     consentHistory,
+    analytics: { visitors: analyticsVisitorRows, sessions: analyticsSessionRows, events: analyticsEventRows },
     orders: accountOrders.map(({ id, ...order }) => {
       const payment = payments.find((item) => item.orderId === id);
       return {

@@ -138,6 +138,7 @@ export function telegramReplyPermission(replyContext: string): TelegramPermissio
   if (!replyContext) return null;
   if (replyContext.startsWith("[ANALYTICS_RANGE]")) return "analytics.read";
   if (replyContext.startsWith("[ANALYTICS_REVENUE_RANGE]")) return "analytics.read";
+  if (replyContext.startsWith("[ANALYTICS_TRAFFIC_RANGE]")) return "analytics.read";
   if (replyContext.startsWith("[FIND_ORDER]")) return "orders.read";
   if (replyContext.startsWith("[FIND_CUSTOMER]")) return "customers.read";
   if (/^\[(?:BLOCK_CUSTOMER|EDIT_CUSTOMER):/i.test(replyContext)) return "customers.write";

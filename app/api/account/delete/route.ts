@@ -1,7 +1,7 @@
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
-import { customerAccounts, orderItems, orders } from "@/db/schema";
+import { analyticsEvents, analyticsVisitors, customerAccounts, orderItems, orders } from "@/db/schema";
 import { clearSessionCookie, getCurrentAccount, sameOrigin, verifyPassword } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
@@ -54,9 +54,12 @@ export async function POST(request: Request) {
           deliveryAddress: null,
           customerComment: "",
           analyticsClientId: null,
+          firstPartyClientId: null,
           updatedAt: now,
         }).where(eq(orders.customerAccountId, account.id));
       }
+      await tx.delete(analyticsEvents).where(eq(analyticsEvents.accountId, account.id));
+      await tx.delete(analyticsVisitors).where(eq(analyticsVisitors.accountId, account.id));
       await tx.delete(customerAccounts).where(eq(customerAccounts.id, account.id));
     });
   } catch (error) {

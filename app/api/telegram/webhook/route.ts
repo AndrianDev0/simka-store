@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
+import { adminAuditLog, analyticsEvents, analyticsSessions, analyticsVisitors, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
@@ -442,6 +442,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [button("Всё время", 0), { text: `${customRange && !calendarMode ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:range" }],
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
     [{ text: "💰 Выручка и прибыль", callback_data: `analytics:revenue:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
+    [{ text: "👥 Трафик и воронка", callback_data: `analytics:traffic:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
   ];
   if (customRange) {
@@ -662,6 +663,95 @@ async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string,
     "Расходы на рекламу распределяются пропорционально дням пересечения кампании с периодом.",
     "Себестоимость возвратов считается понесённым расходом. Комиссия платёжного провайдера появится после выбора и подключения сервиса.",
   ].join("\n"), revenueKeyboard(bounds.days, customRange));
+}
+
+function trafficKeyboard(days: number, customRange?: AnalyticsDateRange): InlineKeyboard {
+  const button = (label: string, value: number) => ({ text: `${!customRange && days === value ? "✅ " : ""}${label}`, callback_data: `analytics:traffic:${value}` });
+  return { inline_keyboard: [
+    [button("7 дней", 7), button("14 дней", 14), button("30 дней", 30)],
+    [button("90 дней", 90), button("Год", 365), button("Всё время", 0)],
+    [{ text: `${customRange ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:traffic_range" }],
+    [{ text: "🔄 Обновить", callback_data: customRange ? `analytics:traffic:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:traffic:${days}` }],
+    [{ text: "📈 Общая аналитика", callback_data: `analytics:period:${days || 30}` }, { text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+}
+
+function compactAnalyticsLabel(value: string | null, maximum = 64) {
+  const normalized = (value || "").replace(/\s+/g, " ").trim();
+  return normalized.length > maximum ? `${normalized.slice(0, maximum - 1)}…` : normalized;
+}
+
+async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const sessionTime = sql`${analyticsSessions.startedAt}::timestamptz`;
+  const eventTime = sql`${analyticsEvents.occurredAt}::timestamptz`;
+  const orderCreatedTime = sql`${orders.createdAt}::timestamptz`;
+  const orderPaidTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
+  const sessionConditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
+  const eventConditions = [sql`${eventTime} <= ${bounds.end}::timestamptz`];
+  const createdOrderConditions = [sql`${orderCreatedTime} <= ${bounds.end}::timestamptz`, sql`${orders.firstPartyClientId} IS NOT NULL`];
+  const paidOrderConditions = [sql`${orderPaidTime} <= ${bounds.end}::timestamptz`, sql`${orders.firstPartyClientId} IS NOT NULL`, inArray(orders.status, [...paidOrderStatuses])];
+  if (bounds.start) {
+    sessionConditions.push(sql`${sessionTime} >= ${bounds.start}::timestamptz`);
+    eventConditions.push(sql`${eventTime} >= ${bounds.start}::timestamptz`);
+    createdOrderConditions.push(sql`${orderCreatedTime} >= ${bounds.start}::timestamptz`);
+    paidOrderConditions.push(sql`${orderPaidTime} >= ${bounds.start}::timestamptz`);
+  }
+  const newUserExpression = bounds.start
+    ? sql<number>`COUNT(DISTINCT CASE WHEN ${analyticsVisitors.firstSeenAt}::timestamptz >= ${bounds.start}::timestamptz THEN ${analyticsSessions.clientId} END)::int`
+    : sql<number>`COUNT(DISTINCT CASE WHEN ${analyticsVisitors.sessionsCount} <= 1 THEN ${analyticsSessions.clientId} END)::int`;
+  const realtimeBoundary = new Date(Date.now() - 5 * 60_000).toISOString();
+  const funnelNames = ["view_item", "add_to_cart", "begin_checkout"];
+  const [summaryRows, sourceRows, deviceRows, exitRows, funnelRows, createdOrderRows, paidOrderRows, realtimeRows, recentEvents] = await Promise.all([
+    db.select({
+      users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int`,
+      newUsers: newUserExpression, pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
+      averageDepth: sql<number>`COALESCE(AVG(${analyticsSessions.pageViews}), 0)::float`,
+      averageSeconds: sql<number>`COALESCE(AVG(GREATEST(0, LEAST(86400, EXTRACT(EPOCH FROM (${analyticsSessions.lastSeenAt}::timestamptz - ${analyticsSessions.startedAt}::timestamptz)))), 0)::float`,
+      bounces: sql<number>`COUNT(*) FILTER (WHERE ${analyticsSessions.pageViews} <= 1)::int`,
+    }).from(analyticsSessions).innerJoin(analyticsVisitors, eq(analyticsSessions.clientId, analyticsVisitors.clientId)).where(and(...sessionConditions)),
+    db.select({ source: analyticsSessions.source, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.source).orderBy(desc(sql`COUNT(*)`)).limit(8),
+    db.select({ device: analyticsSessions.deviceType, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.deviceType).orderBy(desc(sql`COUNT(*)`)),
+    db.select({ path: analyticsSessions.exitPath, exits: sql<number>`COUNT(*)::int`, averageSeconds: sql<number>`COALESCE(AVG(GREATEST(0, LEAST(86400, EXTRACT(EPOCH FROM (${analyticsSessions.lastSeenAt}::timestamptz - ${analyticsSessions.startedAt}::timestamptz)))), 0)::float` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.exitPath).orderBy(desc(sql`COUNT(*)`)).limit(8),
+    db.select({ name: analyticsEvents.name, users: sql<number>`COUNT(DISTINCT ${analyticsEvents.clientId})::int` }).from(analyticsEvents).where(and(...eventConditions, inArray(analyticsEvents.name, funnelNames))).groupBy(analyticsEvents.name),
+    db.select({ users: sql<number>`COUNT(DISTINCT ${orders.firstPartyClientId})::int`, orders: sql<number>`COUNT(*)::int` }).from(orders).where(and(...createdOrderConditions)),
+    db.select({ users: sql<number>`COUNT(DISTINCT ${orders.firstPartyClientId})::int`, orders: sql<number>`COUNT(*)::int` }).from(orders).where(and(...paidOrderConditions)),
+    db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`),
+    db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
+  ]);
+  const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
+  const returningUsers = Math.max(0, Number(summary.users) - Number(summary.newUsers));
+  const bounceRate = Number(summary.sessions) ? Number(summary.bounces) / Number(summary.sessions) * 100 : 0;
+  const funnel = new Map(funnelRows.map((row) => [row.name, Number(row.users)]));
+  const stages = [
+    ["Посещение", Number(summary.users)], ["Товар", funnel.get("view_item") ?? 0], ["Корзина", funnel.get("add_to_cart") ?? 0],
+    ["Checkout", funnel.get("begin_checkout") ?? 0], ["Заказ", Number(createdOrderRows[0]?.users ?? 0)], ["Оплата", Number(paidOrderRows[0]?.users ?? 0)],
+  ] as const;
+  const funnelLines = stages.map(([label, value], index) => {
+    const previous = index ? stages[index - 1][1] : value;
+    const stepConversion = previous ? value / previous * 100 : 0;
+    const totalConversion = stages[0][1] ? value / stages[0][1] * 100 : 0;
+    return `${index + 1}. ${label}: ${value}${index ? ` · шаг ${stepConversion.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% · от визита ${totalConversion.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%` : ""}`;
+  }).join("\n");
+  const sourceLines = sourceRows.map((row) => `• ${compactAnalyticsLabel(row.source || "direct", 48)}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
+  const deviceLines = deviceRows.map((row) => `• ${row.device}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
+  const exitLines = exitRows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.exits} выходов · ср. ${Math.round(Number(row.averageSeconds))} сек.`).join("\n") || "• Данных пока нет";
+  const recentLines = recentEvents.map((row) => `• ${row.name} · ${compactAnalyticsLabel(row.path)} · ${new Date(row.occurredAt).toLocaleTimeString("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" })} UTC`).join("\n") || "• Событий пока нет";
+  const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
+  await sendMessage(token, chatId, [
+    `👥 Трафик и воронка ${period}`, "",
+    `Пользователи: ${summary.users} · новые: ${summary.newUsers} · возвращающиеся: ${returningUsers}`,
+    `Сессии: ${summary.sessions} · просмотры: ${summary.pageViews}`,
+    `Глубина: ${Number(summary.averageDepth).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} стр./сессию`,
+    `Средняя сессия: ${Math.round(Number(summary.averageSeconds))} сек. · отказы: ${bounceRate.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`,
+    `Онлайн за 5 минут: ${realtimeRows[0]?.users ?? 0} польз. · ${realtimeRows[0]?.sessions ?? 0} сесс.`,
+    "", "Воронка по уникальным пользователям:", funnelLines,
+    "", "Источники:", sourceLines,
+    "", "Устройства:", deviceLines,
+    "", "Основные страницы выхода:", exitLines,
+    "", "Последние события:", recentLines,
+    "", "Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
+  ].join("\n"), trafficKeyboard(bounds.days, customRange));
 }
 
 function retentionCell(row: RetentionRow, days: (typeof RETENTION_DAYS)[number]) {
@@ -1130,6 +1220,17 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await sendRevenueAnalytics(db, token, chatId, 0, range);
     return true;
   }
+  if (replyContext.startsWith("[ANALYTICS_TRAFFIC_RANGE]")) {
+    const range = parseAnalyticsDateRange(text);
+    const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
+    if (!range || duration > 10 * 366 * 86_400_000) {
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:traffic_range" }], [{ text: "◀️ К отчёту", callback_data: "analytics:traffic:30" }]] });
+      return true;
+    }
+    await audit(db, adminId, "analytics.traffic_custom_range.view", null, { start: range.start, end: range.end });
+    await sendTrafficAnalytics(db, token, chatId, 0, range);
+    return true;
+  }
   if (replyContext.startsWith("[CREATE_MARKETING_COST]")) {
     const parts = text.split("|").map((part) => part.trim());
     const [source, rawCampaign, rawAmount, rawCurrency, rawStart, rawEnd] = parts;
@@ -1549,6 +1650,18 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "revenue_range") {
     await sendMessage(token, chatId, "[ANALYTICS_REVENUE_RANGE]\nВведите начало и конец финансового периода через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
+    return;
+  }
+  if (scope === "analytics" && action === "traffic" && first) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first) && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendTrafficAnalytics(db, token, chatId, 0, range); return; }
+    }
+    await sendTrafficAnalytics(db, token, chatId, Number(first), undefined);
+    return;
+  }
+  if (scope === "analytics" && action === "traffic_range") {
+    await sendMessage(token, chatId, "[ANALYTICS_TRAFFIC_RANGE]\nВведите начало и конец периода трафика через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
     return;
   }
   if (scope === "analytics" && action === "retention") {

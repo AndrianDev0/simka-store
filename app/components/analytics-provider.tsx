@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
-import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
 import { reportTechnicalEvent } from "@/lib/client-telemetry";
 
 type Consent = "accepted" | "declined" | null;
@@ -20,6 +20,7 @@ function subscribeToConsent(callback: () => void) {
 
 function consentSnapshot(): Consent {
   try {
+    if (window.localStorage.getItem(ANALYTICS_CONSENT_VERSION_KEY) !== ANALYTICS_POLICY_VERSION) return null;
     const stored = window.localStorage.getItem(ANALYTICS_CONSENT_KEY);
     return stored === "accepted" || stored === "declined" ? stored : null;
   } catch {
@@ -130,6 +131,12 @@ export function AnalyticsProvider() {
   }, [consent, pathname]);
 
   useEffect(() => {
+    if (consent !== "accepted" || !pathname) return;
+    const startedAt = Date.now();
+    return () => { trackEvent("page_exit", { duration_ms: Math.min(Date.now() - startedAt, 24 * 60 * 60_000) }); };
+  }, [consent, pathname]);
+
+  useEffect(() => {
     if (consent !== "accepted") return;
     const url = new URL(window.location.href);
     const partnerId = url.searchParams.get("partner") || url.searchParams.get("ref") || url.searchParams.get("partner_id");
@@ -194,7 +201,10 @@ export function AnalyticsProvider() {
     if (choosingConsent.current) return;
     choosingConsent.current = true;
     await recordConsent(next, "banner");
-    try { window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next); } catch { choosingConsent.current = false; return; }
+    try {
+      window.localStorage.setItem(ANALYTICS_CONSENT_KEY, next);
+      window.localStorage.setItem(ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION);
+    } catch { choosingConsent.current = false; return; }
     window.dispatchEvent(new Event("simka-consent-change"));
     choosingConsent.current = false;
   };
@@ -215,6 +225,7 @@ export function AnalyticsConsentReset() {
         if (key.startsWith("simka-analytics-") && key !== ANALYTICS_CONSENT_ID_KEY) window.localStorage.removeItem(key);
       }
     } catch { /* Storage may be disabled. */ }
+    try { window.sessionStorage.removeItem("simka-analytics-session"); } catch { /* Storage may be disabled. */ }
     const analyticsCookie = /^(?:_ga|_gid|_gat|_ym_|yandexuid)/;
     for (const cookie of document.cookie.split(";")) {
       const name = cookie.split("=", 1)[0]?.trim();

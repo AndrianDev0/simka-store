@@ -8,7 +8,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { ThemeToggle } from "@/app/components/theme-toggle";
 import { CountryFlag } from "@/app/components/country-flag";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { trackEvent, trackOnce, type AnalyticsItem } from "@/lib/analytics";
+import { getAnalyticsClientId, trackEvent, trackOnce, type AnalyticsItem } from "@/lib/analytics";
 import { parseStoredCart, serializeCart } from "@/lib/cart-storage";
 import { productDisplayOffer, productIsAvailable, variantIsAvailable, type Product, type ProductVariant } from "@/lib/catalog";
 import type { PublicCategory } from "@/lib/categories";
@@ -222,7 +222,7 @@ function Checkout({items,total,currency,customer,onBack,onOrder}:{items:CartLine
     trackEvent("add_payment_info",{payment_type:String(form.get("paymentMethod")||"manager"),currency,value:finalTotal,items:items.map((line)=>analyticsItem(line))});
     try{
       const query=typeof window!=="undefined"?new URLSearchParams(window.location.search):null;
-      const analytics=query?{source:query.get("utm_source")||undefined,medium:query.get("utm_medium")||undefined,campaign:query.get("utm_campaign")||undefined,content:query.get("utm_content")||undefined,term:query.get("utm_term")||undefined}:undefined;
+      const analytics={clientId:getAnalyticsClientId()||undefined,source:query?.get("utm_source")||undefined,medium:query?.get("utm_medium")||undefined,campaign:query?.get("utm_campaign")||undefined,content:query?.get("utm_content")||undefined,term:query?.get("utm_term")||undefined};
       const response=await fetch("/api/orders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({requestId:requestId.current,customerName:form.get("customerName"),customerEmail:form.get("customerEmail"),customerContact:form.get("customerContact"),deliveryAddress:form.get("deliveryAddress")||undefined,customerComment:form.get("customerComment"),paymentMethod:form.get("paymentMethod"),promoCode:appliedPromo?.code,analytics,items:items.map(line=>({productId:line.product.id,variantId:line.variant?.id,quantity:line.quantity})),deliverySelections:physicalProducts.map(product=>({productId:product.id,optionId:deliveryChoices[product.id]}))})});
       const data=await response.json() as {error?:string;order?:{orderNumber?:string;paymentMethod?:"crypto"|"manager";checkoutUrl?:string;managerNotified?:boolean;customerNotified?:boolean;totalAmount?:number;currency?:string;promoCode?:string;discountAmount?:number}};
       if(!response.ok||!data.order?.orderNumber)throw new Error(data.error||"Не удалось создать заказ");

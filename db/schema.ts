@@ -14,6 +14,7 @@ import {
 
 type JsonScalar = string | number | boolean | null;
 type JsonObject = Record<string, JsonScalar>;
+type AnalyticsParamsJson = Record<string, JsonScalar | Array<Record<string, JsonScalar>>>;
 type CountryFaqItem = { question: string; answer: string };
 type DeliveryOption = {
   id: string;
@@ -78,6 +79,76 @@ export const privacyConsentEvents = pgTable("privacy_consent_events", {
   index("idx_privacy_consent_events_consent_id").on(table.consentId),
   index("idx_privacy_consent_events_account_id").on(table.accountId),
   index("idx_privacy_consent_events_created_at").on(table.createdAt),
+]);
+
+export const analyticsVisitors = pgTable("analytics_visitors", {
+  clientId: text("client_id").primaryKey(),
+  accountId: text("account_id").references(() => customerAccounts.id, { onDelete: "cascade" }),
+  firstSource: text("first_source"),
+  firstMedium: text("first_medium"),
+  firstCampaign: text("first_campaign"),
+  firstReferrerHost: text("first_referrer_host"),
+  firstSeenAt: text("first_seen_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  sessionsCount: integer("sessions_count").notNull().default(0),
+}, (table) => [
+  index("idx_analytics_visitors_account_id").on(table.accountId),
+  index("idx_analytics_visitors_last_seen_at").on(table.lastSeenAt),
+  check("analytics_visitors_sessions_nonnegative", sql`${table.sessionsCount} >= 0`),
+]);
+
+export const analyticsSessions = pgTable("analytics_sessions", {
+  id: text("id").primaryKey(),
+  clientId: text("client_id").notNull().references(() => analyticsVisitors.clientId, { onDelete: "cascade" }),
+  entryPath: text("entry_path").notNull(),
+  exitPath: text("exit_path").notNull(),
+  source: text("source"),
+  medium: text("medium"),
+  campaign: text("campaign"),
+  content: text("content"),
+  term: text("term"),
+  referrerHost: text("referrer_host"),
+  deviceType: text("device_type").notNull(),
+  operatingSystem: text("operating_system").notNull(),
+  browser: text("browser").notNull(),
+  countryCode: text("country_code"),
+  region: text("region"),
+  city: text("city"),
+  language: text("language"),
+  timezone: text("timezone"),
+  screenWidth: integer("screen_width"),
+  screenHeight: integer("screen_height"),
+  viewportWidth: integer("viewport_width"),
+  viewportHeight: integer("viewport_height"),
+  pixelRatio: integer("pixel_ratio_x100"),
+  connectionType: text("connection_type"),
+  pageViews: integer("page_views").notNull().default(0),
+  eventCount: integer("event_count").notNull().default(0),
+  startedAt: text("started_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+}, (table) => [
+  index("idx_analytics_sessions_client_started").on(table.clientId, table.startedAt),
+  index("idx_analytics_sessions_last_seen_at").on(table.lastSeenAt),
+  index("idx_analytics_sessions_source_started").on(table.source, table.startedAt),
+  check("analytics_sessions_counts_nonnegative", sql`${table.pageViews} >= 0 AND ${table.eventCount} >= 0`),
+]);
+
+export const analyticsEvents = pgTable("analytics_events", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => analyticsSessions.id, { onDelete: "cascade" }),
+  clientId: text("client_id").notNull().references(() => analyticsVisitors.clientId, { onDelete: "cascade" }),
+  accountId: text("account_id").references(() => customerAccounts.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  path: text("path").notNull(),
+  params: jsonb("params").$type<AnalyticsParamsJson>().notNull().default(sql`'{}'::jsonb`),
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_analytics_events_session_time").on(table.sessionId, table.occurredAt),
+  index("idx_analytics_events_client_time").on(table.clientId, table.occurredAt),
+  index("idx_analytics_events_account_time").on(table.accountId, table.occurredAt),
+  index("idx_analytics_events_name_time").on(table.name, table.occurredAt),
+  index("idx_analytics_events_path_time").on(table.path, table.occurredAt),
 ]);
 
 export const promoCodes = pgTable("promo_codes", {
@@ -171,6 +242,7 @@ export const orders = pgTable("orders", {
   analyticsCampaign: text("analytics_campaign"),
   analyticsContent: text("analytics_content"),
   analyticsTerm: text("analytics_term"),
+  firstPartyClientId: text("first_party_client_id"),
   analyticsPurchaseSentAt: text("analytics_purchase_sent_at"),
   analyticsCancellationSentAt: text("analytics_cancellation_sent_at"),
   analyticsRefundSentAt: text("analytics_refund_sent_at"),
@@ -184,6 +256,7 @@ export const orders = pgTable("orders", {
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
   index("idx_orders_paid_at").on(table.paidAt),
   index("idx_orders_partner_code").on(table.partnerCode),
+  index("idx_orders_first_party_client_id").on(table.firstPartyClientId),
   check("orders_subtotal_amount_nonnegative", sql`${table.subtotalAmount} >= 0`),
   check("orders_discount_amount_nonnegative", sql`${table.discountAmount} >= 0`),
   check("orders_discount_not_above_subtotal", sql`${table.discountAmount} <= ${table.subtotalAmount}`),

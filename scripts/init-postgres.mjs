@@ -81,6 +81,75 @@ try {
     CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_account_id ON privacy_consent_events(account_id);
     CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_created_at ON privacy_consent_events(created_at);
 
+    CREATE TABLE IF NOT EXISTS analytics_visitors (
+      client_id TEXT PRIMARY KEY,
+      account_id TEXT REFERENCES customer_accounts(id) ON DELETE CASCADE,
+      first_source TEXT,
+      first_medium TEXT,
+      first_campaign TEXT,
+      first_referrer_host TEXT,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      sessions_count INTEGER NOT NULL DEFAULT 0 CHECK (sessions_count >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS idx_analytics_visitors_account_id ON analytics_visitors(account_id);
+    CREATE INDEX IF NOT EXISTS idx_analytics_visitors_last_seen_at ON analytics_visitors(last_seen_at);
+
+    CREATE TABLE IF NOT EXISTS analytics_sessions (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL REFERENCES analytics_visitors(client_id) ON DELETE CASCADE,
+      entry_path TEXT NOT NULL,
+      exit_path TEXT NOT NULL,
+      source TEXT,
+      medium TEXT,
+      campaign TEXT,
+      content TEXT,
+      term TEXT,
+      referrer_host TEXT,
+      device_type TEXT NOT NULL,
+      operating_system TEXT NOT NULL,
+      browser TEXT NOT NULL,
+      country_code TEXT,
+      region TEXT,
+      city TEXT,
+      language TEXT,
+      timezone TEXT,
+      screen_width INTEGER,
+      screen_height INTEGER,
+      viewport_width INTEGER,
+      viewport_height INTEGER,
+      pixel_ratio_x100 INTEGER,
+      connection_type TEXT,
+      page_views INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      CONSTRAINT analytics_sessions_counts_nonnegative CHECK (page_views >= 0 AND event_count >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS idx_analytics_sessions_client_started ON analytics_sessions(client_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_sessions_last_seen_at ON analytics_sessions(last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_sessions_source_started ON analytics_sessions(source, started_at);
+
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES analytics_sessions(id) ON DELETE CASCADE,
+      client_id TEXT NOT NULL REFERENCES analytics_visitors(client_id) ON DELETE CASCADE,
+      account_id TEXT REFERENCES customer_accounts(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL,
+      params JSONB NOT NULL DEFAULT '{}'::jsonb,
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_session_time ON analytics_events(session_id, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_client_time ON analytics_events(client_id, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_account_time ON analytics_events(account_id, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_name_time ON analytics_events(name, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_path_time ON analytics_events(path, occurred_at);
+    DELETE FROM analytics_events WHERE created_at::timestamptz < NOW() - INTERVAL '400 days';
+    DELETE FROM analytics_sessions WHERE last_seen_at::timestamptz < NOW() - INTERVAL '400 days';
+    DELETE FROM analytics_visitors WHERE last_seen_at::timestamptz < NOW() - INTERVAL '400 days';
+
     CREATE TABLE IF NOT EXISTS promo_codes (
       id TEXT PRIMARY KEY,
       code TEXT NOT NULL,
@@ -207,6 +276,7 @@ try {
       analytics_campaign TEXT,
       analytics_content TEXT,
       analytics_term TEXT,
+      first_party_client_id TEXT,
       analytics_purchase_sent_at TEXT,
       analytics_cancellation_sent_at TEXT,
       analytics_refund_sent_at TEXT,
@@ -233,6 +303,7 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_campaign TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_content TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_term TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS first_party_client_id TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_purchase_sent_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_cancellation_sent_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_refund_sent_at TEXT;
@@ -240,6 +311,7 @@ try {
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_orders_paid_at ON orders(paid_at);
     CREATE INDEX IF NOT EXISTS idx_orders_partner_code ON orders(partner_code);
+    CREATE INDEX IF NOT EXISTS idx_orders_first_party_client_id ON orders(first_party_client_id);
 
     -- Statuses intentionally remain text so the workflow can be extended without
     -- a destructive migration or a production restart race.
