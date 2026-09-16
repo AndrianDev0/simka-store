@@ -9,7 +9,6 @@ const payloadSchema = z.object({
   kind: z.enum(["page_error", "page_not_found", "window_error", "unhandled_rejection"]),
   area: z.enum(["page", "window"]),
   path: z.string().trim().startsWith("/").max(500),
-  code: z.string().trim().regex(/^[a-zA-Z0-9_.:-]+$/).max(128).optional(),
 }).strict();
 
 export async function POST(request: Request) {
@@ -26,7 +25,7 @@ export async function POST(request: Request) {
     severity: parsed.data.kind === "page_not_found" ? "warning" : "error",
     area: parsed.data.area,
     path: parsed.data.path,
-    code: parsed.data.code,
+    code: parsed.data.kind,
   });
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 }

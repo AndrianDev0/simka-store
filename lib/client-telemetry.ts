@@ -1,7 +1,6 @@
 type ClientTechnicalEvent = {
   kind: "page_error" | "page_not_found" | "window_error" | "unhandled_rejection";
   area: "page" | "window";
-  code?: string;
 };
 
 export function reportTechnicalEvent(event: ClientTechnicalEvent) {

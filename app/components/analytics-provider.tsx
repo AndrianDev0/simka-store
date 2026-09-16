@@ -103,8 +103,8 @@ export function AnalyticsProvider() {
   }, []));
 
   useEffect(() => {
-    const onError = () => reportTechnicalEvent({ kind: "window_error", area: "window", code: "window_error" });
-    const onUnhandledRejection = () => reportTechnicalEvent({ kind: "unhandled_rejection", area: "window", code: "unhandled_rejection" });
+    const onError = () => reportTechnicalEvent({ kind: "window_error", area: "window" });
+    const onUnhandledRejection = () => reportTechnicalEvent({ kind: "unhandled_rejection", area: "window" });
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
     return () => {
