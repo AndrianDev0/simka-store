@@ -6,7 +6,7 @@ import { customerAccounts, customerPasswordResets, customerSessions } from "@/db
 import { getDb } from "@/db";
 import { sameRequestOrigin } from "@/lib/request-security";
 
-export { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPassword } from "@/lib/passwords";
+export { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPassword, verifyPasswordWithFallback } from "@/lib/passwords";
 
 export const CUSTOMER_SESSION_COOKIE = "simka_customer_session";
 export const CUSTOMER_SESSION_MAX_AGE = 60 * 60 * 24 * 30;

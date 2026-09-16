@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { customerAccounts } from "@/db/schema";
 import { getDb } from "@/db";
-import { createSession, hashPassword, passwordHashNeedsUpgrade, sameOrigin, setSessionCookie, verifyPassword } from "@/lib/customer-auth";
+import { createSession, hashPassword, passwordHashNeedsUpgrade, sameOrigin, setSessionCookie, verifyPasswordWithFallback } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
@@ -28,7 +28,8 @@ export async function POST(request: Request) {
     const returnTo = String(form.get("returnTo") || "/account");
     const safeReturn = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/account";
     const [account] = await getDb().select({ id: customerAccounts.id, passwordHash: customerAccounts.passwordHash, isBlocked: customerAccounts.isBlocked }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1);
-    if (!account || account.isBlocked || !(await verifyPassword(password, account.passwordHash))) return redirect(`/account/login?error=Неверный%20email%20или%20пароль&returnTo=${encodeURIComponent(safeReturn)}`);
+    const passwordAccepted = await verifyPasswordWithFallback(password, account && !account.isBlocked ? account.passwordHash : undefined);
+    if (!account || account.isBlocked || !passwordAccepted) return redirect(`/account/login?error=Неверный%20email%20или%20пароль&returnTo=${encodeURIComponent(safeReturn)}`);
     if (passwordHashNeedsUpgrade(account.passwordHash)) {
       await getDb().update(customerAccounts).set({ passwordHash: await hashPassword(password) }).where(eq(customerAccounts.id, account.id));
     }

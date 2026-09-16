@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { pbkdf2Sync } from "node:crypto";
 import test from "node:test";
-import { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPassword } from "../lib/passwords.ts";
+import { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPassword, verifyPasswordWithFallback } from "../lib/passwords.ts";
 
 test("new passwords use the hardened v2 scheme", async () => {
   const password = "correct horse battery staple";
@@ -34,4 +34,8 @@ test("new and reset passwords require at least 12 characters", () => {
   assert.equal(validatePassword("123456789012"), true);
   assert.equal(validatePassword("x".repeat(200)), true);
   assert.equal(validatePassword("x".repeat(201)), false);
+});
+
+test("unknown-account verification always fails through the timing pad", async () => {
+  assert.equal(await verifyPasswordWithFallback("not-a-real-customer-password"), false);
 });

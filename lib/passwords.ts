@@ -6,6 +6,9 @@ const PASSWORD_ITERATIONS: Readonly<Record<string, number>> = {
   v1: 120_000,
   v2: 600_000,
 };
+// A non-customer hash keeps unknown/blocked-account logins on the same
+// computational path without exposing whether an email exists.
+const LOGIN_TIMING_PAD_HASH = "v2.c2lta2EtbG9naW4tdGltaW5nLXBhZA.GNFwFdygTrcEeTCZghe4xT6S70E_qOYiY9DH4mSGStg";
 
 function base64Url(value: Uint8Array) {
   return Buffer.from(value).toString("base64url");
@@ -36,6 +39,11 @@ export async function verifyPassword(password: string, storedHash: string) {
   if (expectedBytes.length !== 32) return false;
   const actualBytes = await derivePassword(password, salt, iterations);
   return timingSafeEqual(expectedBytes, actualBytes);
+}
+
+export async function verifyPasswordWithFallback(password: string, storedHash?: string) {
+  const verified = await verifyPassword(password, storedHash || LOGIN_TIMING_PAD_HASH);
+  return Boolean(storedHash) && verified;
 }
 
 export function passwordHashNeedsUpgrade(storedHash: string) {
