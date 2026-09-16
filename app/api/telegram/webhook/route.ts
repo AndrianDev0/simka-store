@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
@@ -299,6 +299,7 @@ async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string,
 
 const paidOrderStatuses = new Set(["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"]);
 const activeOrderStatuses = new Set(["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING", "SHIPPED", "DELIVERED"]);
+const terminalOrderStatuses = ["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"];
 const analyticsStatusLabels: Record<string, string> = {
   NEW: "Новые", WAITING_FOR_MANAGER: "Ждут менеджера", WAITING_PAYMENT: "Ждут оплаты", PAYMENT_PENDING: "Платёж проверяется",
   PAID: "Оплачены", PROCESSING: "Выполняются", SHIPPED: "Отправлены", DELIVERED: "Доставлены", COMPLETED: "Завершены",
@@ -1016,15 +1017,44 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "customer" && action === "delete_prompt" && first) {
-    await sendMessage(token, chatId, "Удалить аккаунт, пароль, сбросы и все сессии? Заказы сохранятся по требованиям учёта, но отвяжутся от личного кабинета.", { inline_keyboard: [[{ text: "🗑 Да, удалить аккаунт", callback_data: `customer:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `customer:view:${first}` }]] });
+    await sendMessage(token, chatId, "Удалить аккаунт, пароль, сбросы и все сессии? Действие доступно только после завершения или отмены активных заказов. Завершённые заказы сохранятся по требованиям учёта в обезличенном виде.", { inline_keyboard: [[{ text: "🗑 Да, удалить аккаунт", callback_data: `customer:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `customer:view:${first}` }]] });
     return;
   }
   if (scope === "customer" && action === "delete_confirm" && first) {
     const [customer] = await db.select({ email: customerAccounts.email }).from(customerAccounts).where(eq(customerAccounts.id, first)).limit(1);
     if (!customer) { await sendMessage(token, chatId, "Аккаунт уже удалён.", { inline_keyboard: [[{ text: "◀️ К клиентам", callback_data: "customers:list" }]] }); return; }
+    const [activeOrder] = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.customerAccountId, first), notInArray(orders.status, terminalOrderStatuses))).limit(1);
+    if (activeOrder) {
+      await sendMessage(token, chatId, "Удаление заблокировано: у клиента есть активный заказ. Сначала завершите или отмените его.", { inline_keyboard: [[{ text: "◀️ К клиенту", callback_data: `customer:view:${first}` }]] });
+      return;
+    }
+    const ownedOrders = await db.select({ id: orders.id }).from(orders).where(eq(orders.customerAccountId, first));
+    const orderIds = ownedOrders.map((order) => order.id);
+    const now = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      if (orderIds.length) {
+        await tx.update(orderItems).set({
+          activationCodeEncrypted: null,
+          fulfillmentInstructions: null,
+          trackingNumber: null,
+          trackingUrl: null,
+          updatedAt: now,
+        }).where(inArray(orderItems.orderId, orderIds));
+        await tx.update(orders).set({
+          customerAccountId: null,
+          customerName: "Удалённый клиент",
+          customerEmail: `deleted-${crypto.randomUUID()}@invalid.local`,
+          customerContact: "",
+          deliveryAddress: null,
+          customerComment: "",
+          analyticsClientId: null,
+          updatedAt: now,
+        }).where(eq(orders.customerAccountId, first));
+      }
+      await tx.delete(customerAccounts).where(eq(customerAccounts.id, first));
+    });
     await audit(db, adminId, "customer.delete", first, { emailHash: createHash("sha256").update(customer.email).digest("hex") });
-    await db.delete(customerAccounts).where(eq(customerAccounts.id, first));
-    await sendMessage(token, chatId, "Аккаунт клиента удалён. История заказов сохранена и отвязана от кабинета.", { inline_keyboard: [[{ text: "◀️ К клиентам", callback_data: "customers:list" }]] });
+    await sendMessage(token, chatId, "Аккаунт клиента удалён. Персональные данные и данные выдачи очищены, история завершённых заказов сохранена в обезличенном виде.", { inline_keyboard: [[{ text: "◀️ К клиентам", callback_data: "customers:list" }]] });
     return;
   }
   if (scope === "order" && action === "view" && first) {

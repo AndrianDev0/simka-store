@@ -80,6 +80,12 @@ try {
     );
     CREATE INDEX IF NOT EXISTS idx_request_rate_limits_updated_at ON request_rate_limits(updated_at);
 
+    -- Expired authentication artifacts are not useful business records. Cleanup
+    -- on every deploy keeps their retention bounded without a separate cron job.
+    DELETE FROM customer_sessions WHERE expires_at::timestamptz < NOW();
+    DELETE FROM customer_password_resets WHERE expires_at::timestamptz < NOW();
+    DELETE FROM request_rate_limits WHERE updated_at::timestamptz < NOW() - INTERVAL '7 days';
+
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,
