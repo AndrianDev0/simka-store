@@ -17,6 +17,16 @@ import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
+import {
+  resolveTelegramRole,
+  telegramCallbackPermission,
+  telegramCommandPermission,
+  telegramReplyPermission,
+  telegramRoleCan,
+  telegramRoleLabels,
+  type TelegramPermission,
+  type TelegramRole,
+} from "@/lib/telegram-rbac";
 
 const updateSchema = z.object({
   update_id: z.number().int(),
@@ -39,6 +49,7 @@ type BotEnvironment = {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_ADMIN_IDS?: string;
+  TELEGRAM_ADMIN_ROLES?: string;
 };
 
 async function reportOrderAnalytics(orderId: string, status: "PAID" | "CANCELLED" | "REFUNDED") {
@@ -110,30 +121,58 @@ async function deleteSensitiveMessage(token: string, chatId: number, messageId: 
   }
 }
 
-function mainKeyboard(): InlineKeyboard {
-  return { inline_keyboard: [
-    [{ text: "📦 Товары", callback_data: "products:list" }, { text: "📂 Категории", callback_data: "categories:list" }],
-    [{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }],
-    [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
-    [{ text: "👥 Клиенты", callback_data: "customers:list" }, { text: "✉️ Почта", callback_data: "settings:email" }],
-    [{ text: "📈 Аналитика", callback_data: "analytics:period:7" }, { text: "📊 Статус", callback_data: "status" }],
-    [{ text: "⚠️ Ошибки", callback_data: "errors:period:24" }, { text: "📋 Журнал действий", callback_data: "audit:list:0" }],
-    [{ text: "🗄 Резервная копия", callback_data: "backup:prompt" }],
-  ] };
+function mainKeyboard(role: TelegramRole): InlineKeyboard {
+  const rows: InlineKeyboard["inline_keyboard"] = [];
+  if (telegramRoleCan(role, "catalog.read")) {
+    rows.push([{ text: "📦 Товары", callback_data: "products:list" }, { text: "📂 Категории", callback_data: "categories:list" }]);
+    rows.push([{ text: "🌍 Страны", callback_data: "countries:list" }, { text: "📡 Операторы", callback_data: "operators:list" }]);
+  }
+  const operations: InlineButton[] = [];
+  if (telegramRoleCan(role, "orders.read")) operations.push({ text: "🛒 Заказы", callback_data: "orders:list" });
+  if (telegramRoleCan(role, "settings.read")) operations.push({ text: "💳 Реквизиты", callback_data: "settings:payment" });
+  if (operations.length) rows.push(operations);
+  const peopleAndEmail: InlineButton[] = [];
+  if (telegramRoleCan(role, "customers.read")) peopleAndEmail.push({ text: "👥 Клиенты", callback_data: "customers:list" });
+  if (telegramRoleCan(role, "settings.read")) peopleAndEmail.push({ text: "✉️ Почта", callback_data: "settings:email" });
+  if (peopleAndEmail.length) rows.push(peopleAndEmail);
+  const insights: InlineButton[] = [];
+  if (telegramRoleCan(role, "analytics.read")) insights.push({ text: "📈 Аналитика", callback_data: "analytics:period:7" });
+  if (telegramRoleCan(role, "operations.read")) insights.push({ text: "📊 Статус", callback_data: "status" });
+  if (insights.length) rows.push(insights);
+  const control: InlineButton[] = [];
+  if (telegramRoleCan(role, "operations.read")) control.push({ text: "⚠️ Ошибки", callback_data: "errors:period:24" });
+  if (telegramRoleCan(role, "audit.read")) control.push({ text: "📋 Журнал действий", callback_data: "audit:list:0" });
+  if (control.length) rows.push(control);
+  if (telegramRoleCan(role, "backup.create")) rows.push([{ text: "🗄 Резервная копия", callback_data: "backup:prompt" }]);
+  return { inline_keyboard: rows };
 }
 
-function persistentKeyboard(): ReplyKeyboard {
+function persistentKeyboard(role: TelegramRole): ReplyKeyboard {
+  const rows: ReplyKeyboard["keyboard"] = [];
+  if (telegramRoleCan(role, "catalog.read")) {
+    rows.push([{ text: "📦 Товары" }, { text: "📂 Категории" }]);
+    rows.push([{ text: "🌍 Страны" }, { text: "📡 Операторы" }]);
+  }
+  const operations: Array<{ text: string }> = [];
+  if (telegramRoleCan(role, "orders.read")) operations.push({ text: "🛒 Заказы" });
+  if (telegramRoleCan(role, "settings.read")) operations.push({ text: "💳 Реквизиты" });
+  if (operations.length) rows.push(operations);
+  const peopleAndEmail: Array<{ text: string }> = [];
+  if (telegramRoleCan(role, "customers.read")) peopleAndEmail.push({ text: "👥 Клиенты" });
+  if (telegramRoleCan(role, "settings.read")) peopleAndEmail.push({ text: "✉️ Почта" });
+  if (peopleAndEmail.length) rows.push(peopleAndEmail);
+  const insights: Array<{ text: string }> = [];
+  if (telegramRoleCan(role, "analytics.read")) insights.push({ text: "📈 Аналитика" });
+  if (telegramRoleCan(role, "operations.read")) insights.push({ text: "📊 Статус магазина" });
+  if (insights.length) rows.push(insights);
+  const control: Array<{ text: string }> = [];
+  if (telegramRoleCan(role, "operations.read")) control.push({ text: "⚠️ Ошибки" });
+  if (telegramRoleCan(role, "audit.read")) control.push({ text: "📋 Журнал действий" });
+  if (control.length) rows.push(control);
+  if (telegramRoleCan(role, "backup.create")) rows.push([{ text: "🗄 Резервная копия" }]);
+  rows.push([{ text: "🏠 Меню" }]);
   return {
-    keyboard: [
-      [{ text: "📦 Товары" }, { text: "📂 Категории" }],
-      [{ text: "🌍 Страны" }, { text: "📡 Операторы" }],
-      [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
-      [{ text: "👥 Клиенты" }, { text: "✉️ Почта" }],
-      [{ text: "📈 Аналитика" }, { text: "📊 Статус магазина" }],
-      [{ text: "⚠️ Ошибки" }, { text: "📋 Журнал действий" }],
-      [{ text: "🗄 Резервная копия" }],
-      [{ text: "🏠 Меню" }],
-    ],
+    keyboard: rows,
     resize_keyboard: true,
     is_persistent: true,
   };
@@ -156,9 +195,9 @@ const adminButtonCommands: Record<string, string> = {
   "🏠 Меню": "/start",
 };
 
-async function sendAdminMenu(token: string, chatId: number) {
-  await sendMessage(token, chatId, "Панель управления SIMKA", persistentKeyboard());
-  await sendMessage(token, chatId, "Выберите раздел:", mainKeyboard());
+async function sendAdminMenu(token: string, chatId: number, role: TelegramRole) {
+  await sendMessage(token, chatId, `Панель управления SIMKA\nРоль: ${telegramRoleLabels[role]}`, persistentKeyboard(role));
+  await sendMessage(token, chatId, "Выберите доступный раздел:", mainKeyboard(role));
 }
 
 function isEncryptionConfigError(error: unknown) {
@@ -226,7 +265,7 @@ async function sendCustomersPage(db: ReturnType<typeof getDb>, token: string, ch
   await sendMessage(token, chatId, `Клиенты · страница ${page + 1}\n\n${lines}`, keyboard);
 }
 
-async function sendCustomerDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, customerId: string) {
+async function sendCustomerDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, customerId: string, role: TelegramRole) {
   const [customer] = await db.select({ id: customerAccounts.id, name: customerAccounts.name, email: customerAccounts.email, contact: customerAccounts.contact, isBlocked: customerAccounts.isBlocked, blockedAt: customerAccounts.blockedAt, createdAt: customerAccounts.createdAt }).from(customerAccounts).where(eq(customerAccounts.id, customerId)).limit(1);
   if (!customer) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return; }
   const [customerOrders, sessions] = await Promise.all([
@@ -234,41 +273,49 @@ async function sendCustomerDetails(db: ReturnType<typeof getDb>, token: string, 
     db.select({ id: customerSessions.id }).from(customerSessions).where(eq(customerSessions.accountId, customer.id)),
   ]);
   const orderLines = customerOrders.length ? customerOrders.map((order) => `• ${order.orderNumber} · ${order.status} · ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`).join("\n") : "• Заказов нет";
+  const actions: InlineKeyboard["inline_keyboard"] = [];
+  if (telegramRoleCan(role, "customers.write")) {
+    actions.push(customer.isBlocked
+      ? [{ text: "✅ Разблокировать", callback_data: `customer:unblock:${customer.id}` }]
+      : [{ text: "⛔ Заблокировать", callback_data: `customer:block_prompt:${customer.id}` }]);
+    actions.push([{ text: "🚪 Завершить все сессии", callback_data: `customer:logout_prompt:${customer.id}` }]);
+    actions.push([{ text: "✏️ Изменить имя", callback_data: `customer:edit:${customer.id}:name` }, { text: "✏️ Изменить контакт", callback_data: `customer:edit:${customer.id}:contact` }]);
+    actions.push([{ text: "✏️ Изменить email", callback_data: `customer:edit:${customer.id}:email` }]);
+  }
+  if (telegramRoleCan(role, "customers.export")) actions.push([{ text: "📤 Экспорт данных", callback_data: `customer:export:${customer.id}` }]);
+  if (telegramRoleCan(role, "customers.delete")) actions.push([{ text: "🗑 Удалить аккаунт", callback_data: `customer:delete_prompt:${customer.id}` }]);
+  actions.push([{ text: "◀️ К клиентам", callback_data: "customers:list" }]);
+  const privateAccountLines = role === "support"
+    ? []
+    : [
+        `Активных/сохранённых сессий: ${sessions.length}`,
+        `Регистрация: ${customer.createdAt}`,
+      ];
   await sendMessage(token, chatId, [
     `👤 ${customer.name}`,
     `Email: ${customer.email}`,
     `Контакт: ${customer.contact || "не указан"}`,
     `Статус: ${customer.isBlocked ? `ЗАБЛОКИРОВАН${customer.blockedAt ? ` (${customer.blockedAt})` : ""}` : "активен"}`,
-    `Активных/сохранённых сессий: ${sessions.length}`,
-    `Регистрация: ${customer.createdAt}`,
+    ...privateAccountLines,
     "",
     "Последние заказы:",
     orderLines,
-  ].join("\n"), { inline_keyboard: [
-    customer.isBlocked
-      ? [{ text: "✅ Разблокировать", callback_data: `customer:unblock:${customer.id}` }]
-      : [{ text: "⛔ Заблокировать", callback_data: `customer:block_prompt:${customer.id}` }],
-    [{ text: "🚪 Завершить все сессии", callback_data: `customer:logout_prompt:${customer.id}` }],
-    [{ text: "📤 Экспорт данных", callback_data: `customer:export:${customer.id}` }],
-    [{ text: "✏️ Изменить имя", callback_data: `customer:edit:${customer.id}:name` }, { text: "✏️ Изменить контакт", callback_data: `customer:edit:${customer.id}:contact` }],
-    [{ text: "✏️ Изменить email", callback_data: `customer:edit:${customer.id}:email` }],
-    [{ text: "🗑 Удалить аккаунт", callback_data: `customer:delete_prompt:${customer.id}` }],
-    [{ text: "◀️ К клиентам", callback_data: "customers:list" }],
-  ] });
+  ].join("\n"), { inline_keyboard: actions });
 }
 
-function analyticsKeyboard(selectedDays: number): InlineKeyboard {
+function analyticsKeyboard(selectedDays: number, role: TelegramRole): InlineKeyboard {
   const button = (label: string, days: number) => ({ text: `${selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
-  return { inline_keyboard: [
+  const rows: InlineKeyboard["inline_keyboard"] = [
     [button("24 часа", 1), button("7 дней", 7), button("30 дней", 30)],
     [button("Всё время", 0)],
     [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
     [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
     [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
-    [{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }],
-    [{ text: "🛒 Последние заказы", callback_data: "orders:list" }],
-    [{ text: "◀️ В меню", callback_data: "menu" }],
-  ] };
+  ];
+  if (telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }]);
+  if (telegramRoleCan(role, "orders.read")) rows.push([{ text: "🛒 Последние заказы", callback_data: "orders:list" }]);
+  rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
+  return { inline_keyboard: rows };
 }
 
 async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
@@ -376,7 +423,7 @@ const analyticsStatusLabels: Record<string, string> = {
   CANCELLED: "Отменены", REFUNDED: "Возвраты", FAILED: "Ошибки",
 };
 
-async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
+async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole) {
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
   const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
   const now = Date.now();
@@ -463,10 +510,10 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     "",
     "Данные обновляются напрямую из базы магазина. Для старых оплат без точной даты используется дата заказа.",
   ].join("\n");
-  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays));
+  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays, role));
 }
 
-async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, orderNumber: string) {
+async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, orderNumber: string, role: TelegramRole) {
   const [order] = await db.select().from(orders).where(eq(orders.orderNumber, orderNumber)).limit(1);
   if (!order) {
     await sendMessage(token, chatId, "Заказ не найден.", backKeyboard());
@@ -486,21 +533,22 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
   ].filter(Boolean).join("\n")).join("\n");
   const actions: Array<Array<InlineButton>> = [];
   const pendingDeliveryCosts = items.filter((item) => item.simType === "SIM" && !item.deliveryCostConfirmed);
-  if (order.status === "WAITING_FOR_MANAGER") {
+  const canWrite = telegramRoleCan(role, "orders.write");
+  if (canWrite && order.status === "WAITING_FOR_MANAGER") {
     for (const item of pendingDeliveryCosts) actions.push([{ text: `💵 Стоимость доставки · ${item.productName.slice(0, 28)}`, callback_data: `fulfill:cost:${item.id.slice(0, 12)}` }]);
   }
-  if (order.paymentMethod === "manager" && order.status === "WAITING_FOR_MANAGER" && pendingDeliveryCosts.length === 0) {
+  if (canWrite && order.paymentMethod === "manager" && order.status === "WAITING_FOR_MANAGER" && pendingDeliveryCosts.length === 0) {
     actions.push([{ text: order.paymentInstructionsSentAt ? "📧 Повторить реквизиты" : "📧 Отправить реквизиты", callback_data: `order:requisites_prompt:${order.orderNumber}` }]);
     if (order.paymentInstructionsSentAt) actions.push([{ text: "✅ Подтвердить получение оплаты", callback_data: `order:paid_prompt:${order.orderNumber}` }]);
   }
-  if (order.status === "PAID") actions.push([{ text: "⚙️ Начать выполнение", callback_data: `order:process:${order.orderNumber}` }]);
-  if (order.status === "PROCESSING") {
+  if (canWrite && order.status === "PAID") actions.push([{ text: "⚙️ Начать выполнение", callback_data: `order:process:${order.orderNumber}` }]);
+  if (canWrite && order.status === "PROCESSING") {
     for (const item of items) {
       if (item.simType === "eSIM" && item.fulfillmentStatus === "PENDING") actions.push([{ text: `📲 Выдать eSIM · ${item.productName.slice(0, 30)}`, callback_data: `fulfill:esim:${item.id.slice(0, 12)}` }]);
       if (item.simType === "SIM" && item.fulfillmentStatus === "PENDING") actions.push([{ text: `📦 Указать отправку · ${item.productName.slice(0, 28)}`, callback_data: `fulfill:ship:${item.id.slice(0, 12)}` }]);
     }
   }
-  if (!["CANCELLED", "REFUNDED", "FAILED"].includes(order.status)) {
+  if (canWrite && !["CANCELLED", "REFUNDED", "FAILED"].includes(order.status)) {
     for (const item of items.filter((entry) => entry.simType === "eSIM" && ["READY", "SENT"].includes(entry.fulfillmentStatus) && entry.hasActivationCode)) {
       actions.push([{ text: `📧 Повторить eSIM-письмо · ${item.productName.slice(0, 23)}`, callback_data: `fulfill:resend:${item.id.slice(0, 12)}` }]);
     }
@@ -508,11 +556,11 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
       actions.push([{ text: `📧 Повторить трек-письмо · ${item.productName.slice(0, 24)}`, callback_data: `fulfill:shipmail:${item.id.slice(0, 12)}` }]);
     }
   }
-  if (order.status === "SHIPPED") actions.push([{ text: "🚚 Отметить доставленным", callback_data: `order:deliver:${order.orderNumber}` }]);
-  if (order.status === "DELIVERED") actions.push([{ text: "✅ Завершить заказ", callback_data: `order:complete:${order.orderNumber}` }]);
-  if (["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"].includes(order.status)) actions.push([{ text: "❌ Отменить заказ", callback_data: `order:cancel_prompt:${order.orderNumber}` }]);
-  if (["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) actions.push([{ text: "⚠️ Закрыть с ошибкой", callback_data: `order:fail_prompt:${order.orderNumber}` }]);
-  if (["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(order.status)) actions.push([{ text: "↩️ Отметить возврат", callback_data: `order:refund_prompt:${order.orderNumber}` }]);
+  if (canWrite && order.status === "SHIPPED") actions.push([{ text: "🚚 Отметить доставленным", callback_data: `order:deliver:${order.orderNumber}` }]);
+  if (canWrite && order.status === "DELIVERED") actions.push([{ text: "✅ Завершить заказ", callback_data: `order:complete:${order.orderNumber}` }]);
+  if (canWrite && ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"].includes(order.status)) actions.push([{ text: "❌ Отменить заказ", callback_data: `order:cancel_prompt:${order.orderNumber}` }]);
+  if (canWrite && ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) actions.push([{ text: "⚠️ Закрыть с ошибкой", callback_data: `order:fail_prompt:${order.orderNumber}` }]);
+  if (canWrite && ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(order.status)) actions.push([{ text: "↩️ Отметить возврат", callback_data: `order:refund_prompt:${order.orderNumber}` }]);
   actions.push([{ text: "◀️ К заказам", callback_data: "orders:list" }]);
   const text = [
     `🛒 ${order.orderNumber}`,
@@ -706,7 +754,7 @@ async function syncOrderFulfillmentStatus(db: ReturnType<typeof getDb>, orderId:
   await db.update(orders).set({ status: next, updatedAt: new Date().toISOString() }).where(and(eq(orders.id, orderId), eq(orders.status, "PROCESSING")));
 }
 
-async function handleFulfillmentReply(token: string, chatId: number, adminId: number, messageId: number, text: string, replyContext: string) {
+async function handleFulfillmentReply(token: string, chatId: number, adminId: number, messageId: number, text: string, replyContext: string, role: TelegramRole) {
   const db = getDb();
   if (replyContext.startsWith("[FIND_ORDER]")) {
     const orderNumber = text.trim().toUpperCase();
@@ -715,7 +763,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
       return true;
     }
     await audit(db, adminId, "order.search", null, { orderNumber });
-    await sendOrderDetails(db, token, chatId, orderNumber);
+    await sendOrderDetails(db, token, chatId, orderNumber, role);
     return true;
   }
   if (replyContext.startsWith("[FIND_CUSTOMER]")) {
@@ -728,7 +776,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const [customer] = await db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1);
     await audit(db, adminId, "customer.search", customer?.id ?? null, { found: Boolean(customer) });
     if (!customer) { await sendMessage(token, chatId, "Клиент с таким email не найден.", { inline_keyboard: [[{ text: "🔎 Искать ещё", callback_data: "customers:search" }], [{ text: "◀️ К клиентам", callback_data: "customers:list" }]] }); return true; }
-    await sendCustomerDetails(db, token, chatId, customer.id);
+    await sendCustomerDetails(db, token, chatId, customer.id, role);
     return true;
   }
   const blockCustomerReply = replyContext.match(/^\[BLOCK_CUSTOMER:([0-9a-f-]{36})\]/i);
@@ -742,7 +790,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await db.delete(customerPasswordResets).where(eq(customerPasswordResets.accountId, changed.id));
     await audit(db, adminId, "customer.block", changed.id, { sessionsRevoked: sessions.length, reason });
     await sendMessage(token, chatId, `Клиент заблокирован. Завершено сессий: ${sessions.length}.`);
-    await sendCustomerDetails(db, token, chatId, changed.id);
+    await sendCustomerDetails(db, token, chatId, changed.id, role);
     return true;
   }
   const editCustomerReply = replyContext.match(/^\[EDIT_CUSTOMER:([0-9a-f-]{36}):(name|contact|email)\]/i);
@@ -762,7 +810,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const [changed] = await db.update(customerAccounts).set(update).where(eq(customerAccounts.id, id)).returning({ id: customerAccounts.id });
     if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return true; }
     await audit(db, adminId, "customer.edit", id, { field });
-    await sendCustomerDetails(db, token, chatId, id);
+    await sendCustomerDetails(db, token, chatId, id, role);
     return true;
   }
   if (replyContext.startsWith("[TEST_EMAIL]")) {
@@ -827,7 +875,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     if (!totals.pending) delivered = (await sendDeliveryQuoteEmail(item, totals)).delivered;
     await audit(db, adminId, "order.delivery_cost", item.orderId, { itemId: item.itemId, cost, currency: totals.currency, customerEmailDelivered: delivered });
     await sendMessage(token, chatId, `Стоимость доставки сохранена: ${cost.toLocaleString("ru-RU")} ${totals.currency}.${totals.pending ? " В заказе ещё есть доставка без цены." : delivered ? " Клиенту отправлена итоговая сумма." : " Автоматическое письмо не доставлено — сообщите итог клиенту вручную."}`);
-    await sendOrderDetails(db, token, chatId, item.orderNumber);
+    await sendOrderDetails(db, token, chatId, item.orderNumber, role);
     return true;
   }
 
@@ -862,7 +910,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await syncOrderFulfillmentStatus(db, item.orderId);
     await audit(db, adminId, "order.esim_delivery", item.orderId, { itemId: item.itemId, delivered });
     await sendMessage(token, chatId, delivered ? "eSIM зашифрована, сохранена и отправлена клиенту по email." : "eSIM зашифрована и сохранена, но письмо не доставлено. После настройки почты нажмите «Повторить eSIM-письмо». ");
-    await sendOrderDetails(db, token, chatId, item.orderNumber);
+    await sendOrderDetails(db, token, chatId, item.orderNumber, role);
     return true;
   }
 
@@ -880,7 +928,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await syncOrderFulfillmentStatus(db, item.orderId);
     await audit(db, adminId, "order.shipment", item.orderId, { itemId: item.itemId, trackingNumber, customerEmailDelivered: delivered });
     await sendMessage(token, chatId, delivered ? "Отправка и трек-номер сохранены. Клиенту отправлено письмо." : "Отправка и трек-номер сохранены, но письмо клиенту не доставлено — сообщите трек вручную.");
-    await sendOrderDetails(db, token, chatId, item.orderNumber);
+    await sendOrderDetails(db, token, chatId, item.orderNumber, role);
     return true;
   }
   return false;
@@ -993,11 +1041,11 @@ async function createsCategoryCycle(db: ReturnType<typeof getDb>, childId: strin
   return false;
 }
 
-async function handleCallback(token: string, chatId: number, adminId: number, data: string) {
+async function handleCallback(token: string, chatId: number, adminId: number, data: string, role: TelegramRole) {
   const db = getDb();
   const [scope, action, first, second] = data.split(":");
   if (data === "menu") {
-    await sendAdminMenu(token, chatId);
+    await sendAdminMenu(token, chatId, role);
     return;
   }
   if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
@@ -1012,11 +1060,19 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
     const email = getEmailConfigurationStatus();
     const visibleErrorTotal = errorTotals.filter((row) => !isIgnoredOperationalPath(row.path)).reduce((sum, row) => sum + row.count, 0);
-    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nТехнических ошибок за 24 часа: ${visibleErrorTotal}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "status" }], [{ text: "⚠️ Открыть ошибки", callback_data: "errors:period:24" }], [{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    const statusActions: InlineKeyboard["inline_keyboard"] = [
+      [{ text: "🔄 Обновить", callback_data: "status" }],
+      [{ text: "⚠️ Открыть ошибки", callback_data: "errors:period:24" }],
+    ];
+    if (telegramRoleCan(role, "settings.read")) {
+      statusActions.push([{ text: "✉️ Проверить почту", callback_data: "settings:email" }]);
+    }
+    statusActions.push([{ text: "◀️ В меню", callback_data: "menu" }]);
+    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nТехнических ошибок за 24 часа: ${visibleErrorTotal}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: statusActions });
     return;
   }
   if (scope === "analytics" && action === "period") {
-    await sendAnalyticsSummary(db, token, chatId, Number(first));
+    await sendAnalyticsSummary(db, token, chatId, Number(first), role);
     return;
   }
   if (scope === "analytics" && action === "products") {
@@ -1095,7 +1151,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "customer" && action === "view" && first) {
-    await sendCustomerDetails(db, token, chatId, first);
+    await sendCustomerDetails(db, token, chatId, first, role);
     return;
   }
   if (scope === "customer" && action === "block_prompt" && first) {
@@ -1111,7 +1167,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     const [changed] = await db.update(customerAccounts).set({ isBlocked: false, blockedAt: null, blockedReason: null, updatedAt: new Date().toISOString() }).where(eq(customerAccounts.id, first)).returning({ id: customerAccounts.id });
     if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return; }
     await audit(db, adminId, "customer.unblock", changed.id);
-    await sendCustomerDetails(db, token, chatId, changed.id);
+    await sendCustomerDetails(db, token, chatId, changed.id, role);
     return;
   }
   if (scope === "customer" && action === "logout_prompt" && first) {
@@ -1122,7 +1178,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     const revoked = await db.delete(customerSessions).where(eq(customerSessions.accountId, first)).returning({ id: customerSessions.id });
     await audit(db, adminId, "customer.sessions_revoke", first, { sessionsRevoked: revoked.length });
     await sendMessage(token, chatId, `Завершено сессий: ${revoked.length}.`);
-    await sendCustomerDetails(db, token, chatId, first);
+    await sendCustomerDetails(db, token, chatId, first, role);
     return;
   }
   if (scope === "customer" && action === "export" && first) {
@@ -1178,7 +1234,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "order" && action === "view" && first) {
-    await sendOrderDetails(db, token, chatId, first);
+    await sendOrderDetails(db, token, chatId, first, role);
     return;
   }
   if (scope === "order" && action === "requisites_prompt" && first) {
@@ -1201,7 +1257,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     if (delivered) await db.update(orders).set({ paymentInstructionsSentAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(orders.id, order.id));
     await audit(db, adminId, "order.payment_requisites", order.id, { delivered });
     await sendMessage(token, chatId, delivered ? "Реквизиты и итоговая сумма отправлены клиенту по email." : "Письмо не доставлено. Проверьте RESEND_API_KEY и EMAIL_FROM; реквизиты остаются сохранены на backend.");
-    await sendOrderDetails(db, token, chatId, order.orderNumber);
+    await sendOrderDetails(db, token, chatId, order.orderNumber, role);
     return;
   }
   if (scope === "fulfill" && ["cost", "esim", "resend", "ship", "shipmail"].includes(action) && first) {
@@ -1225,7 +1281,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       await syncOrderFulfillmentStatus(db, item.orderId);
       await audit(db, adminId, "order.esim_resend", item.orderId, { itemId: item.itemId, delivered });
       await sendMessage(token, chatId, delivered ? "eSIM повторно отправлена клиенту." : "Письмо снова не доставлено. Проверьте RESEND_API_KEY и EMAIL_FROM.");
-      await sendOrderDetails(db, token, chatId, item.orderNumber);
+      await sendOrderDetails(db, token, chatId, item.orderNumber, role);
       return;
     }
     if (action === "ship") {
@@ -1238,7 +1294,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       const delivered = (await sendShippingEmail(item, `shipment-resend/${item.itemId}/${Date.now()}`)).delivered;
       await audit(db, adminId, "order.shipment_resend", item.orderId, { itemId: item.itemId, delivered });
       await sendMessage(token, chatId, delivered ? "Трек-номер повторно отправлен клиенту." : "Письмо не доставлено. Проверьте почтовые настройки.");
-      await sendOrderDetails(db, token, chatId, item.orderNumber);
+      await sendOrderDetails(db, token, chatId, item.orderNumber, role);
       return;
     }
   }
@@ -1335,7 +1391,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     const customerEmailDelivered = (await sendOrderStatusEmail(order, "FAILED")).delivered;
     await audit(db, adminId, "order.fail", order.id, { from: order.status, to: "FAILED", customerEmailDelivered });
     await sendMessage(token, chatId, `Заказ ${order.orderNumber} закрыт со статусом FAILED. Резерв товара возвращён.${customerEmailDelivered ? " Клиент уведомлён по email." : " Письмо клиенту не доставлено."}`);
-    await sendOrderDetails(db, token, chatId, order.orderNumber);
+    await sendOrderDetails(db, token, chatId, order.orderNumber, role);
     return;
   }
   if (scope === "order" && action === "refund_prompt" && first) {
@@ -1356,7 +1412,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await reportOrderAnalytics(order.id, "REFUNDED");
     await audit(db, adminId, "order.refund", order.id, { from: order.status, to: "REFUNDED", customerEmailDelivered, inventoryRestocked: false });
     await sendMessage(token, chatId, `Заказ ${order.orderNumber} отмечен как REFUNDED.${customerEmailDelivered ? " Клиент уведомлён по email." : " Письмо клиенту не доставлено."}\nОстаток автоматически не увеличен: возвращённый товар нужно проверить вручную.`);
-    await sendOrderDetails(db, token, chatId, order.orderNumber);
+    await sendOrderDetails(db, token, chatId, order.orderNumber, role);
     return;
   }
   if (scope === "order" && ["paid_confirm", "process", "deliver", "complete"].includes(action) && first) {
@@ -1393,7 +1449,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     const customerEmailDelivered = (await sendOrderStatusEmail(order, transition.to)).delivered;
     if (transition.to === "PAID") await reportOrderAnalytics(order.id, "PAID");
     await audit(db, adminId, `order.${action}`, order.id, { orderNumber: order.orderNumber, from: transition.from, to: transition.to, customerEmailDelivered });
-    await sendOrderDetails(db, token, chatId, order.orderNumber);
+    await sendOrderDetails(db, token, chatId, order.orderNumber, role);
     return;
   }
   if (scope === "categories" && action === "list") {
@@ -1493,6 +1549,13 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
 }
 
+async function denyTelegramAccess(token: string, chatId: number, adminId: number, role: TelegramRole, permission: TelegramPermission, target: string) {
+  await Promise.allSettled([
+    audit(getDb(), adminId, "access.denied", null, { role, permission, target: target.slice(0, 128) }),
+    sendMessage(token, chatId, `Доступ закрыт.\nВаша роль: ${telegramRoleLabels[role]}\nДля этого действия нужны другие права.`, backKeyboard()),
+  ]);
+}
+
 export async function POST(request: Request) {
   const botEnv = process.env as BotEnvironment;
   const secret = botEnv.TELEGRAM_WEBHOOK_SECRET;
@@ -1514,19 +1577,31 @@ export async function POST(request: Request) {
     const from = message?.from ?? callback?.from;
     const chatId = message?.chat.id ?? callback?.message?.chat.id;
     if (!from || chatId === undefined) return Response.json({ ok: true });
-    const allowedIds = new Set((botEnv.TELEGRAM_ADMIN_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean));
-    if (!allowedIds.has(String(from.id))) return Response.json({ ok: true });
+    const role = resolveTelegramRole(from.id, botEnv.TELEGRAM_ADMIN_IDS, botEnv.TELEGRAM_ADMIN_ROLES);
+    if (!role) return Response.json({ ok: true });
 
     if (callback) {
       await answerCallback(token, callback.id);
-      if (callback.data) await handleCallback(token, chatId, from.id, callback.data);
+      if (callback.data) {
+        const permission = telegramCallbackPermission(callback.data);
+        if (permission && !telegramRoleCan(role, permission)) {
+          await denyTelegramAccess(token, chatId, from.id, role, permission, callback.data);
+          return Response.json({ ok: true });
+        }
+        await handleCallback(token, chatId, from.id, callback.data, role);
+      }
       return Response.json({ ok: true });
     }
 
     let { text = "" } = message!;
     const replyContext = message?.reply_to_message?.text ?? "";
-    if (await handleFulfillmentReply(token, chatId, from.id, message!.message_id, text, replyContext)) return Response.json({ ok: true });
-    if (await handleCatalogAdminMessage({ token, chatId, adminId: from.id }, text, replyContext)) return Response.json({ ok: true });
+    const replyPermission = telegramReplyPermission(replyContext);
+    if (replyPermission && !telegramRoleCan(role, replyPermission)) {
+      await denyTelegramAccess(token, chatId, from.id, role, replyPermission, replyContext);
+      return Response.json({ ok: true });
+    }
+    if (await handleFulfillmentReply(token, chatId, from.id, message!.message_id, text, replyContext, role)) return Response.json({ ok: true });
+    if (telegramRoleCan(role, "catalog.write") && await handleCatalogAdminMessage({ token, chatId, adminId: from.id }, text, replyContext)) return Response.json({ ok: true });
     if (replyContext.startsWith("[CREATE_CATEGORY]")) {
       text = `/category_create ${text}`;
     } else {
@@ -1551,12 +1626,17 @@ export async function POST(request: Request) {
     }
 
     const command = text.trim().split(/\s+/)[0].toLowerCase().split("@")[0];
+    const commandPermission = telegramCommandPermission(command);
+    if (commandPermission && !telegramRoleCan(role, commandPermission)) {
+      await denyTelegramAccess(token, chatId, from.id, role, commandPermission, command);
+      return Response.json({ ok: true });
+    }
     if (command === "/start" || command === "/help") {
-      await sendAdminMenu(token, chatId);
+      await sendAdminMenu(token, chatId, role);
     } else if (command === "/payment_requisites") {
-      await handleCallback(token, chatId, from.id, "settings:payment");
+      await handleCallback(token, chatId, from.id, "settings:payment", role);
     } else if (command === "/email") {
-      await handleCallback(token, chatId, from.id, "settings:email");
+      await handleCallback(token, chatId, from.id, "settings:email", role);
     } else if (command === "/products") {
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "products:list");
     } else if (command === "/countries") {
@@ -1564,15 +1644,15 @@ export async function POST(request: Request) {
     } else if (command === "/operators") {
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "operators:list");
     } else if (command === "/status") {
-      await handleCallback(token, chatId, from.id, "status");
+      await handleCallback(token, chatId, from.id, "status", role);
     } else if (command === "/backup") {
-      await handleCallback(token, chatId, from.id, "backup:prompt");
+      await handleCallback(token, chatId, from.id, "backup:prompt", role);
     } else if (command === "/audit") {
       await sendAuditPage(getDb(), token, chatId, from.id);
     } else if (command === "/errors") {
       await sendOperationalErrors(getDb(), token, chatId, from.id, 24);
     } else if (command === "/analytics") {
-      await sendAnalyticsSummary(getDb(), token, chatId, 7);
+      await sendAnalyticsSummary(getDb(), token, chatId, 7, role);
     } else if (command === "/customers") {
       await sendCustomersPage(getDb(), token, chatId);
     } else if (command === "/orders") {
@@ -1611,7 +1691,7 @@ export async function POST(request: Request) {
       const db = getDb();
       const list = await db.select({ name: categories.name, slug: categories.slug, isPublished: categories.isPublished, noindex: categories.noindex, archivedAt: categories.archivedAt, sortOrder: categories.sortOrder }).from(categories).orderBy(categories.sortOrder, categories.name);
       const lines = list.length ? list.map((category) => `${category.sortOrder}. ${category.name} (${category.slug}) · ${category.archivedAt ? "ARCHIVED" : category.isPublished ? "PUBLISHED" : "DRAFT"} · ${category.noindex ? "NOINDEX" : "INDEX"}`).join("\n") : "Категорий пока нет.";
-      await sendMessage(token, chatId, `Категории:\n\n${lines}`, mainKeyboard());
+      await sendMessage(token, chatId, `Категории:\n\n${lines}`, mainKeyboard(role));
     } else if (command === "/category_create") {
       const parts = text.slice(command.length).trim().split("|").map((part) => part.trim());
       const [slug, name, description = ""] = parts;
