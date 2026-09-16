@@ -39,7 +39,7 @@ export async function getPublicCategoryOptions(): Promise<Array<Pick<PublicCateg
  * Reads categories created by an administrator. A missing database is treated
  * as an empty result so the static storefront remains usable in previews.
  */
-export async function getPublicCategories(): Promise<PublicCategory[]> {
+export async function getPublicCategories({ strict = false }: { strict?: boolean } = {}): Promise<PublicCategory[]> {
   try {
     const db = getDb();
     const rows = await db.select({
@@ -84,6 +84,7 @@ export async function getPublicCategories(): Promise<PublicCategory[]> {
     }));
   } catch (error) {
     console.warn("public_categories_unavailable", error instanceof Error ? error.message : "unknown error");
+    if (strict) throw error;
     return [];
   }
 }

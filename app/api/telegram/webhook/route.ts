@@ -11,6 +11,7 @@ import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfil
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
 import { formatSalesByCurrency } from "@/lib/sales-analytics";
+import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
@@ -919,7 +920,7 @@ function categoryKeyboard(list: Array<{ id: string; name: string }>): InlineKeyb
   return { inline_keyboard: rows };
 }
 
-function categoryActionKeyboard(category: { id: string; isPublished: boolean; noindex: boolean; archivedAt: string | null }, productIds: Set<number>, products: Array<{ id: number; name: string }>): InlineKeyboard {
+function categoryActionKeyboard(category: { id: string; slug: string; isPublished: boolean; noindex: boolean; archivedAt: string | null }, productIds: Set<number>, products: Array<{ id: number; name: string }>): InlineKeyboard {
   const productButtons = products.slice(0, 80).map((product) => ({
     text: `${productIds.has(product.id) ? "✅ Снять" : "➕ Назначить"} ${product.id} · ${product.name.slice(0, 28)}`,
     callback_data: `ca:${category.id.slice(0, 12)}:${product.id}`,
@@ -927,6 +928,7 @@ function categoryActionKeyboard(category: { id: string; isPublished: boolean; no
   const productRows: Array<Array<InlineButton>> = [];
   for (let index = 0; index < productButtons.length; index += 2) productRows.push(productButtons.slice(index, index + 2));
   return { inline_keyboard: [
+    ...(category.isPublished && !category.archivedAt ? [[{ text: "🌐 Открыть на сайте", url: `${SITE_ORIGIN}/category/${encodeURIComponent(category.slug)}` }]] : []),
     [{ text: category.isPublished ? "⏸ Снять с публикации" : "▶️ Опубликовать", callback_data: `category:publish:${category.id}` }],
     [{ text: category.noindex ? "🔓 Разрешить индексацию" : "🔒 Закрыть индексацию", callback_data: `category:index:${category.id}` }],
     [{ text: category.archivedAt ? "♻️ Восстановить" : "📦 Архивировать", callback_data: `category:${category.archivedAt ? "restore" : "archive"}:${category.id}` }],
@@ -1456,7 +1458,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (scope === "category" && ["publish", "index", "archive", "restore", "delete_confirm", "assign", "unassign"].includes(action) && first) {
     const [category] = await db.select({ id: categories.id, slug: categories.slug, name: categories.name, isPublished: categories.isPublished, noindex: categories.noindex, archivedAt: categories.archivedAt }).from(categories).where(eq(categories.id, first)).limit(1);
     if (!category) { await sendMessage(token, chatId, "Категория не найдена.", backKeyboard()); return; }
-    if (action === "publish") await db.update(categories).set({ isPublished: !category.isPublished, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
+    if (action === "publish") {
+      if (category.archivedAt) { await sendMessage(token, chatId, "Сначала восстановите категорию из архива.", { inline_keyboard: [[{ text: "◀️ К категории", callback_data: `category:view:${first}` }]] }); return; }
+      await db.update(categories).set({ isPublished: !category.isPublished, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
+    }
     if (action === "index") await db.update(categories).set({ noindex: !category.noindex, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
     if (action === "archive" || action === "restore") await db.update(categories).set({ archivedAt: action === "archive" ? new Date().toISOString() : null, isPublished: action === "archive" ? false : category.isPublished, updatedAt: new Date().toISOString() }).where(eq(categories.id, first));
     if (action === "delete_confirm") {
