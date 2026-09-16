@@ -132,6 +132,16 @@ export const partnerClicks = pgTable("partner_clicks", {
   check("partner_clicks_count_positive", sql`${table.clickCount} > 0`),
 ]);
 
+export const marketingCosts = pgTable("marketing_costs", {
+  id: text("id").primaryKey(), source: text("source").notNull(), campaign: text("campaign"), amount: integer("amount").notNull(),
+  currency: text("currency").notNull().default("RUB"), startsAt: text("starts_at").notNull(), endsAt: text("ends_at").notNull(),
+  createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_marketing_costs_period").on(table.startsAt, table.endsAt),
+  index("idx_marketing_costs_source_campaign").on(table.source, table.campaign),
+  check("marketing_costs_amount_positive", sql`${table.amount} > 0`),
+]);
+
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),

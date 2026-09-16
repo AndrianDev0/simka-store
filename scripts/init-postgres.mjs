@@ -126,6 +126,14 @@ try {
     CREATE INDEX IF NOT EXISTS idx_partner_clicks_last_seen_at ON partner_clicks(last_seen_at);
     DELETE FROM partner_clicks WHERE last_seen_at::timestamptz < NOW() - INTERVAL '365 days';
 
+    CREATE TABLE IF NOT EXISTS marketing_costs (
+      id TEXT PRIMARY KEY, source TEXT NOT NULL, campaign TEXT, amount INTEGER NOT NULL CHECK (amount > 0),
+      currency TEXT NOT NULL DEFAULT 'RUB', starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
+      created_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_marketing_costs_period ON marketing_costs(starts_at, ends_at);
+    CREATE INDEX IF NOT EXISTS idx_marketing_costs_source_campaign ON marketing_costs(source, campaign);
+
     CREATE TABLE IF NOT EXISTS request_rate_limits (
       key TEXT PRIMARY KEY,
       action TEXT NOT NULL,

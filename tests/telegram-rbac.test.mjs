@@ -33,6 +33,8 @@ test("role matrix separates analytics, sales, support and privileged operations"
   assert.equal(telegramRoleCan("analyst", "promocodes.write"), false);
   assert.equal(telegramRoleCan("marketing", "promocodes.write"), true);
   assert.equal(telegramRoleCan("marketing", "partners.write"), true);
+  assert.equal(telegramRoleCan("marketing", "marketing_costs.write"), true);
+  assert.equal(telegramRoleCan("analyst", "marketing_costs.write"), false);
   assert.equal(telegramRoleCan("analyst", "partners.read"), true);
   assert.equal(telegramRoleCan("analyst", "partners.write"), false);
   assert.equal(telegramRoleCan("sales", "orders.write"), true);
@@ -50,10 +52,12 @@ test("callbacks, commands and forced replies are classified before execution", (
   assert.equal(telegramCallbackPermission("promocodes:toggle:id"), "promocodes.write");
   assert.equal(telegramCallbackPermission("partners:toggle:id"), "partners.write");
   assert.equal(telegramCallbackPermission("partners:analytics"), "partners.read");
+  assert.equal(telegramCallbackPermission("analytics:cost_create"), "marketing_costs.write");
   assert.equal(telegramCommandPermission("/category_delete"), "catalog.write");
   assert.equal(telegramCommandPermission("/orders"), "orders.read");
   assert.equal(telegramReplyPermission("[FULFILL_ESIM:00000000-0000-4000-8000-000000000000]"), "orders.write");
   assert.equal(telegramReplyPermission("[EDIT_CUSTOMER:00000000-0000-4000-8000-000000000000:email]"), "customers.write");
   assert.equal(telegramReplyPermission("[CREATE_PROMO]"), "promocodes.write");
   assert.equal(telegramReplyPermission("[CREATE_PARTNER]"), "partners.write");
+  assert.equal(telegramReplyPermission("[CREATE_MARKETING_COST]"), "marketing_costs.write");
 });

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
@@ -18,6 +18,7 @@ import { formatSalesByCurrency } from "@/lib/sales-analytics";
 import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
+import { calculateCampaignCac, calculateLtv } from "@/lib/unit-economics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
 import {
   resolveTelegramRole,
@@ -437,6 +438,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole): InlineKeyb
     [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
     [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
     [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
+    [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
   ];
   if (telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }]);
   if (telegramRoleCan(role, "orders.read")) rows.push([{ text: "🛒 Последние заказы", callback_data: "orders:list" }]);
@@ -552,6 +554,41 @@ const analyticsStatusLabels: Record<string, string> = {
   CANCELLED: "Отменены", REFUNDED: "Возвраты", FAILED: "Ошибки",
 };
 
+async function loadPaidCustomerOrders(db: ReturnType<typeof getDb>) {
+  const rows = await db.select({
+    customerAccountId: orders.customerAccountId, customerEmail: orders.customerEmail, totalAmount: orders.totalAmount,
+    currency: orders.currency, source: orders.analyticsSource, campaign: orders.analyticsCampaign,
+    paidAt: orders.paidAt, createdAt: orders.createdAt,
+  }).from(orders).where(inArray(orders.status, [...paidOrderStatuses]));
+  return rows.map((order) => ({
+    customerKey: order.customerAccountId ? `account:${order.customerAccountId}` : `email:${order.customerEmail.trim().toLowerCase()}`,
+    totalAmount: order.totalAmount, currency: order.currency, source: order.source, campaign: order.campaign,
+    paidAt: order.paidAt || order.createdAt,
+  }));
+}
+
+async function sendUnitEconomics(db: ReturnType<typeof getDb>, token: string, chatId: number, role: TelegramRole) {
+  const [paidCustomerOrders, costs] = await Promise.all([
+    loadPaidCustomerOrders(db),
+    db.select().from(marketingCosts).orderBy(desc(marketingCosts.startsAt)).limit(30),
+  ]);
+  const ltv = calculateLtv(paidCustomerOrders);
+  const cacRows = calculateCampaignCac(paidCustomerOrders, costs);
+  const ltvLines = ltv.length ? ltv.map((row) => `• ${row.currency}: ${row.ltv.toLocaleString("ru-RU")} · ${row.customers} покупателей · ${row.orders} заказов`).join("\n") : "• Пока нет оплаченных заказов";
+  const cacLines = cacRows.length ? cacRows.map((row) => `• ${row.source}${row.campaign ? ` / ${row.campaign}` : ""}: расходы ${row.amount.toLocaleString("ru-RU")} ${row.currency} · новых покупателей ${row.acquiredCustomers} · CAC ${row.cac === null ? "нет продаж" : `${row.cac.toLocaleString("ru-RU")} ${row.currency}`}`).join("\n") : "• Добавьте расходы на рекламу, чтобы рассчитать CAC";
+  const actions: InlineKeyboard["inline_keyboard"] = [];
+  if (telegramRoleCan(role, "marketing_costs.write")) {
+    actions.push([{ text: "➕ Добавить расходы", callback_data: "analytics:cost_create" }]);
+    for (const row of costs.slice(0, 8)) actions.push([{ text: `🗑 ${row.source}${row.campaign ? ` / ${row.campaign}` : ""} · ${row.amount} ${row.currency}`, callback_data: `analytics:cost_del_ask:${row.id}` }]);
+  }
+  actions.push([{ text: "📈 Общая аналитика", callback_data: "analytics:period:7" }, { text: "◀️ В меню", callback_data: "menu" }]);
+  await sendMessage(token, chatId, [
+    "💸 LTV и CAC", "", "LTV — оплаченный оборот за всё время на одного уникального покупателя:", ltvLines,
+    "", "CAC — рекламные расходы на новых покупателей, чья первая оплата пришлась на период кампании:", cacLines,
+    "", "Валюты не смешиваются. Возвраты исключены из оплаченной выборки.",
+  ].join("\n"), { inline_keyboard: actions });
+}
+
 async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole) {
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
   const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
@@ -591,6 +628,8 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   for (const order of previousPaid) previousRevenue.set(order.currency, (previousRevenue.get(order.currency) ?? 0) + order.totalAmount);
   const revenueLines = [...revenue].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const averageLines = [...revenue].map(([currency, amount]) => `${Math.round(amount / paid.filter((order) => order.currency === currency).length).toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
+  const ltvRows = calculateLtv(await loadPaidCustomerOrders(db));
+  const ltvLines = ltvRows.map((row) => `${row.ltv.toLocaleString("ru-RU")} ${row.currency}`).join(" + ") || "нет данных";
   const promoPaid = paid.filter((order) => order.promoCode);
   const promoDiscounts = new Map<string, number>();
   for (const order of promoPaid) promoDiscounts.set(order.currency, (promoDiscounts.get(order.currency) ?? 0) + order.discountAmount);
@@ -626,6 +665,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     `✅ Оплачено за период: ${paid.length}`,
     `💰 Оборот: ${revenueLines}`,
     `🧾 Средний оплаченный заказ: ${averageLines}`,
+    `♾ LTV покупателя: ${ltvLines}`,
     `🎟 Оплачено с промокодом: ${promoPaid.length} · скидки ${promoDiscountLines}`,
     `📊 Конверсия созданных заказов → оплата: ${formatPercentage(conversion)}`,
     `⚙️ Активных сейчас: ${active.length}`,
@@ -949,6 +989,23 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return true; }
     await audit(db, adminId, "customer.edit", id, { field });
     await sendCustomerDetails(db, token, chatId, id, role);
+    return true;
+  }
+  if (replyContext.startsWith("[CREATE_MARKETING_COST]")) {
+    const parts = text.split("|").map((part) => part.trim());
+    const [source, rawCampaign, rawAmount, rawCurrency, rawStart, rawEnd] = parts;
+    const amount = Number(rawAmount);
+    const currency = rawCurrency?.toUpperCase();
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const startsAt = datePattern.test(rawStart || "") ? `${rawStart}T00:00:00.000Z` : "";
+    const endsAt = datePattern.test(rawEnd || "") ? `${rawEnd}T23:59:59.999Z` : "";
+    if (parts.length !== 6 || !source || source.length > 100 || (rawCampaign !== "-" && rawCampaign.length > 150) || !Number.isInteger(amount) || amount <= 0 || !/^[A-Z]{3,8}$/.test(currency || "") || !startsAt || !endsAt || startsAt > endsAt) {
+      await sendMessage(token, chatId, "Проверьте формат:\nисточник | кампания или - | сумма целым числом | валюта | начало YYYY-MM-DD | конец YYYY-MM-DD", { inline_keyboard: [[{ text: "◀️ К LTV и CAC", callback_data: "analytics:unit_economics" }]] });
+      return true;
+    }
+    const [created] = await db.insert(marketingCosts).values({ id: crypto.randomUUID(), source: source.toLowerCase(), campaign: rawCampaign === "-" ? null : rawCampaign.toLowerCase(), amount, currency, startsAt, endsAt, createdBy: String(adminId) }).returning({ id: marketingCosts.id });
+    await audit(db, adminId, "marketing_cost.create", created.id, { source, campaign: rawCampaign, amount, currency, startsAt, endsAt });
+    await sendUnitEconomics(db, token, chatId, role);
     return true;
   }
   if (replyContext.startsWith("[CREATE_PARTNER]")) {
@@ -1323,6 +1380,26 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "period") {
     await sendAnalyticsSummary(db, token, chatId, Number(first), role);
+    return;
+  }
+  if (scope === "analytics" && action === "unit_economics") {
+    await sendUnitEconomics(db, token, chatId, role);
+    return;
+  }
+  if (scope === "analytics" && action === "cost_create") {
+    await sendMessage(token, chatId, "[CREATE_MARKETING_COST]\nВведите через |:\nисточник | кампания или - | сумма | валюта | начало | конец\n\nПример:\ntelegram | september_launch | 50000 | RUB | 2026-09-01 | 2026-09-30", { force_reply: true, selective: true, input_field_placeholder: "telegram | campaign | 50000 | RUB | 2026-09-01 | 2026-09-30" });
+    return;
+  }
+  if (scope === "analytics" && action === "cost_del_ask" && first) {
+    const [cost] = await db.select().from(marketingCosts).where(eq(marketingCosts.id, first)).limit(1);
+    if (!cost) { await sendUnitEconomics(db, token, chatId, role); return; }
+    await sendMessage(token, chatId, `Удалить расходы ${cost.source}${cost.campaign ? ` / ${cost.campaign}` : ""} · ${cost.amount.toLocaleString("ru-RU")} ${cost.currency}? После удаления CAC будет пересчитан.`, { inline_keyboard: [[{ text: "🗑 Да, удалить", callback_data: `analytics:cost_del:${cost.id}` }], [{ text: "Отмена", callback_data: "analytics:unit_economics" }]] });
+    return;
+  }
+  if (scope === "analytics" && action === "cost_del" && first) {
+    const deleted = await db.delete(marketingCosts).where(eq(marketingCosts.id, first)).returning({ id: marketingCosts.id, source: marketingCosts.source });
+    if (deleted[0]) await audit(db, adminId, "marketing_cost.delete", deleted[0].id, { source: deleted[0].source });
+    await sendUnitEconomics(db, token, chatId, role);
     return;
   }
   if (scope === "analytics" && action === "products") {
