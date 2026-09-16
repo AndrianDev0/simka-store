@@ -110,7 +110,7 @@ function mainKeyboard(): InlineKeyboard {
     [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
     [{ text: "👥 Клиенты", callback_data: "customers:list" }, { text: "✉️ Почта", callback_data: "settings:email" }],
     [{ text: "📈 Аналитика", callback_data: "analytics:period:7" }, { text: "📊 Статус", callback_data: "status" }],
-    [{ text: "🗄 Резервная копия", callback_data: "backup:prompt" }],
+    [{ text: "📋 Журнал действий", callback_data: "audit:list:0" }, { text: "🗄 Резервная копия", callback_data: "backup:prompt" }],
   ] };
 }
 
@@ -122,7 +122,7 @@ function persistentKeyboard(): ReplyKeyboard {
       [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
       [{ text: "👥 Клиенты" }, { text: "✉️ Почта" }],
       [{ text: "📈 Аналитика" }, { text: "📊 Статус магазина" }],
-      [{ text: "🗄 Резервная копия" }],
+      [{ text: "📋 Журнал действий" }, { text: "🗄 Резервная копия" }],
       [{ text: "🏠 Меню" }],
     ],
     resize_keyboard: true,
@@ -140,6 +140,7 @@ const adminButtonCommands: Record<string, string> = {
   "💳 Реквизиты": "/payment_requisites",
   "📈 Аналитика": "/analytics",
   "📊 Статус магазина": "/status",
+  "📋 Журнал действий": "/audit",
   "🗄 Резервная копия": "/backup",
   "✉️ Почта": "/email",
   "🏠 Меню": "/start",
@@ -436,6 +437,49 @@ async function audit(db: ReturnType<typeof getDb>, adminId: number, action: stri
     entityId,
     metadata: JSON.stringify(metadata),
   });
+}
+
+function auditMetadataSummary(value: string) {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const text = Object.entries(parsed).map(([key, item]) => {
+      const rendered = typeof item === "string" ? item : JSON.stringify(item);
+      return `${key}=${rendered}`;
+    }).join(", ").replace(/[\r\n]+/g, " ");
+    return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+  } catch {
+    return "";
+  }
+}
+
+async function sendAuditPage(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, requestedPage = 0) {
+  const pageSize = 8;
+  const [{ total }] = await db.select({ total: sql<number>`count(*)::int` }).from(adminAuditLog);
+  const pageCount = Math.max(1, Math.ceil(Number(total) / pageSize));
+  const page = Math.min(Math.max(0, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 0), pageCount - 1);
+  const entries = await db.select({
+    adminTelegramId: adminAuditLog.adminTelegramId,
+    action: adminAuditLog.action,
+    entityType: adminAuditLog.entityType,
+    entityId: adminAuditLog.entityId,
+    metadata: adminAuditLog.metadata,
+    createdAt: adminAuditLog.createdAt,
+  }).from(adminAuditLog).orderBy(desc(adminAuditLog.createdAt)).limit(pageSize).offset(page * pageSize);
+  const lines = entries.map((entry, index) => {
+    const metadata = auditMetadataSummary(entry.metadata);
+    return [
+      `${page * pageSize + index + 1}. ${entry.createdAt} UTC`,
+      `Админ ${entry.adminTelegramId} · ${entry.action}`,
+      entry.entityId ? `${entry.entityType}: ${entry.entityId}` : entry.entityType,
+      metadata || "",
+    ].filter(Boolean).join("\n");
+  }).join("\n\n") || "Журнал пока пуст.";
+  const navigation: Array<InlineButton> = [];
+  if (page > 0) navigation.push({ text: "⬅️", callback_data: `audit:list:${page - 1}` });
+  navigation.push({ text: `${page + 1}/${pageCount}`, callback_data: `audit:list:${page}` });
+  if (page + 1 < pageCount) navigation.push({ text: "➡️", callback_data: `audit:list:${page + 1}` });
+  await sendMessage(token, chatId, `📋 Журнал действий\nВсего записей: ${Number(total)}\n\n${lines}`, { inline_keyboard: [navigation, [{ text: "🔄 Обновить", callback_data: `audit:list:${page}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+  await audit(db, adminId, "audit.view", null, { page });
 }
 
 async function resolveOrderItem(db: ReturnType<typeof getDb>, prefix: string) {
@@ -872,6 +916,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "countries") {
     await sendCountryAnalytics(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "audit" && action === "list") {
+    await sendAuditPage(db, token, chatId, adminId, Number(first || 0));
     return;
   }
   if (scope === "backup" && action === "prompt") {
@@ -1365,6 +1413,8 @@ export async function POST(request: Request) {
       await handleCallback(token, chatId, from.id, "status");
     } else if (command === "/backup") {
       await handleCallback(token, chatId, from.id, "backup:prompt");
+    } else if (command === "/audit") {
+      await sendAuditPage(getDb(), token, chatId, from.id);
     } else if (command === "/analytics") {
       await sendAnalyticsSummary(getDb(), token, chatId, 7);
     } else if (command === "/customers") {
