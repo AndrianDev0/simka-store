@@ -247,7 +247,7 @@ async function listProducts(db: Db, token: string, chatId: number) {
 async function showProduct(db: Db, token: string, chatId: number, productId: number) {
   const [product] = await db.select({
     id: catalogProducts.id, name: catalogProducts.name, sku: catalogProducts.sku, slug: catalogProducts.slug, countryId: catalogProducts.countryId,
-    operatorId: catalogProducts.operatorId, country: countries.name, operator: operators.name, simType: catalogProducts.simType, price: catalogProducts.price,
+    operatorId: catalogProducts.operatorId, country: countries.name, operator: operators.name, simType: catalogProducts.simType, price: catalogProducts.price, unitCost: catalogProducts.unitCost,
     currency: catalogProducts.currency, dataVolume: catalogProducts.dataVolume, validityDays: catalogProducts.validityDays, available: catalogProducts.available,
     availabilityStatus: catalogProducts.availabilityStatus, stockQuantity: catalogProducts.stockQuantity, publicationStatus: catalogProducts.publicationStatus,
     archivedAt: catalogProducts.archivedAt, shortDescription: catalogProducts.shortDescription, esimType: catalogProducts.esimType,
@@ -261,7 +261,7 @@ async function showProduct(db: Db, token: string, chatId: number, productId: num
   ]);
   await sendMessage(token, chatId, [
     `📦 ${product.name}`, `ID: ${product.id} · SKU: ${product.sku}`, `Slug: ${product.slug}`, `${product.country} · ${product.operator} · ${product.simType}`,
-    `Цена: ${product.price.toLocaleString("ru-RU")} ${product.currency}`, `Интернет: ${product.dataVolume} · ${product.validityDays} дней`,
+    `Цена: ${product.price.toLocaleString("ru-RU")} ${product.currency} · Себестоимость: ${product.unitCost === null ? "не задана" : `${product.unitCost.toLocaleString("ru-RU")} ${product.currency}`}`, `Интернет: ${product.dataVolume} · ${product.validityDays} дней`,
     `Статус: ${product.publicationStatus} · ${product.available ? product.availabilityStatus : "НЕДОСТУПЕН"}`, `Остаток: ${product.stockQuantity ?? "без ограничения"}`,
     product.simType === "eSIM" ? `eSIM: ${product.esimType || "тип не задан"} · получение: ${product.esimDeliveryMethod || "не задано"}` : `Доставка: ${product.deliveryOptions.length} вариант(а)`,
     `Варианты: ${variantRows.length} · Изображения: ${imageRows.length} · Категории: ${categoryRows.length}`, "", clip(product.shortDescription),
@@ -305,7 +305,7 @@ async function showDeliveryOption(db: Db, token: string, chatId: number, product
 
 const productFields = {
   n: ["Название", "name"], sk: ["SKU", "sku"], sl: ["Slug", "slug"], co: ["ID страны", "countryId"], op: ["ID оператора", "operatorId"], ty: ["Тип SIM", "simType"],
-  pr: ["Цена", "price"], old: ["Старая цена", "oldPrice"], cur: ["Валюта", "currency"], sh: ["Краткое описание", "shortDescription"],
+  pr: ["Цена", "price"], cost: ["Себестоимость", "unitCost"], old: ["Старая цена", "oldPrice"], cur: ["Валюта", "currency"], sh: ["Краткое описание", "shortDescription"],
   full: ["Полное описание", "fullDescription"], ch: ["Характеристики JSON", "characteristics"], vd: ["Срок, дней", "validityDays"], dv: ["Объём интернета", "dataVolume"],
   dm: ["Интернет, МБ", "dataMb"], un: ["Безлимит", "isUnlimited"], hc: ["Есть звонки", "hasCalls"], cd: ["Условия звонков", "callsDetails"],
   hs: ["Есть SMS", "hasSms"], sm: ["Условия SMS", "smsDetails"], rt: ["Роуминг", "roamingTerms"], at: ["Активация", "activationTerms"],
@@ -345,7 +345,7 @@ async function productPublicationGaps(db: Db, product: typeof catalogProducts.$i
 }
 
 const variantFields = {
-  n: ["Название", "name"], sk: ["SKU", "sku"], sl: ["Slug", "slug"], pr: ["Цена", "price"], cur: ["Валюта", "currency"],
+  n: ["Название", "name"], sk: ["SKU", "sku"], sl: ["Slug", "slug"], pr: ["Цена", "price"], cost: ["Себестоимость", "unitCost"], cur: ["Валюта", "currency"],
   dv: ["Объём интернета", "dataVolume"], vd: ["Срок, дней", "validityDays"], ch: ["Характеристики JSON", "characteristics"], qty: ["Остаток", "stockQuantity"], so: ["Порядок", "sortOrder"],
 } as const;
 
@@ -362,7 +362,7 @@ async function listVariants(db: Db, token: string, chatId: number, productId: nu
 async function showVariant(db: Db, token: string, chatId: number, variantId: number) {
   const [variant] = await db.select().from(productVariants).where(eq(productVariants.id, variantId)).limit(1);
   if (!variant) { await sendMessage(token, chatId, "Вариант не найден.", back("products:list")); return; }
-  await sendMessage(token, chatId, [`🧩 ${variant.name}`, `ID: ${variant.id} · SKU: ${variant.sku}`, `Slug: ${variant.slug}`, `Цена: ${variant.price.toLocaleString("ru-RU")} ${variant.currency}`, `Интернет: ${variant.dataVolume || "—"} · Срок: ${variant.validityDays ?? "—"}`, `Наличие: ${variant.available ? variant.availabilityStatus : "НЕДОСТУПЕН"} · Остаток: ${variant.stockQuantity ?? "без ограничения"}`].join("\n"), { inline_keyboard: [
+  await sendMessage(token, chatId, [`🧩 ${variant.name}`, `ID: ${variant.id} · SKU: ${variant.sku}`, `Slug: ${variant.slug}`, `Цена: ${variant.price.toLocaleString("ru-RU")} ${variant.currency}`, `Себестоимость: ${variant.unitCost === null ? "не задана" : `${variant.unitCost.toLocaleString("ru-RU")} ${variant.currency}`}`, `Интернет: ${variant.dataVolume || "—"} · Срок: ${variant.validityDays ?? "—"}`, `Наличие: ${variant.available ? variant.availabilityStatus : "НЕДОСТУПЕН"} · Остаток: ${variant.stockQuantity ?? "без ограничения"}`].join("\n"), { inline_keyboard: [
     [{ text: variant.available ? "⛔ Снять с наличия" : "✅ Отметить в наличии", callback_data: `variant:availability:${variant.id}` }],
     [{ text: "✏️ Изменить", callback_data: `variant:edit:${variant.id}` }],
     [{ text: "🗑 Удалить", callback_data: `variant:delete_prompt:${variant.id}` }],
@@ -535,7 +535,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     const [copy] = await db.transaction(async (tx) => {
       const inserted = await tx.insert(catalogProducts).values({
         name: `${source.name} (копия)`.slice(0, 220), sku: `${source.sku}-${suffix}`.slice(0, 120), slug: `${source.slug}-${suffix}`.slice(0, 160), countryId: source.countryId, operatorId: source.operatorId,
-        simType: source.simType, price: source.price, oldPrice: source.oldPrice, currency: source.currency, shortDescription: source.shortDescription, fullDescription: source.fullDescription,
+        simType: source.simType, price: source.price, oldPrice: source.oldPrice, unitCost: source.unitCost, currency: source.currency, shortDescription: source.shortDescription, fullDescription: source.fullDescription,
         characteristics: source.characteristics, validityDays: source.validityDays, dataVolume: source.dataVolume, dataMb: source.dataMb, isUnlimited: source.isUnlimited, hasCalls: source.hasCalls,
         callsDetails: source.callsDetails, hasSms: source.hasSms, smsDetails: source.smsDetails, roamingTerms: source.roamingTerms, activationTerms: source.activationTerms, compatibility: source.compatibility,
         instructions: source.instructions, esimType: source.esimType, esimDeliveryMethod: source.esimDeliveryMethod, deliveryOptions: source.deliveryOptions, popular: false, tone: source.tone,
@@ -543,7 +543,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
         h1: source.h1, seoText: source.seoText, canonicalUrl: null, ogTitle: source.ogTitle, ogDescription: source.ogDescription, ogImage: source.ogImage, sortOrder: source.sortOrder,
       }).returning({ id: catalogProducts.id });
       const variants = await tx.select().from(productVariants).where(eq(productVariants.productId, id));
-      for (const variant of variants) await tx.insert(productVariants).values({ productId: inserted[0].id, name: variant.name, sku: `${variant.sku}-${suffix}`.slice(0, 120), slug: `${variant.slug}-${suffix}`.slice(0, 160), price: variant.price, currency: variant.currency, dataVolume: variant.dataVolume, validityDays: variant.validityDays, characteristics: variant.characteristics, available: false, availabilityStatus: "OUT_OF_STOCK", stockQuantity: variant.stockQuantity, sortOrder: variant.sortOrder });
+      for (const variant of variants) await tx.insert(productVariants).values({ productId: inserted[0].id, name: variant.name, sku: `${variant.sku}-${suffix}`.slice(0, 120), slug: `${variant.slug}-${suffix}`.slice(0, 160), price: variant.price, unitCost: variant.unitCost, currency: variant.currency, dataVolume: variant.dataVolume, validityDays: variant.validityDays, characteristics: variant.characteristics, available: false, availabilityStatus: "OUT_OF_STOCK", stockQuantity: variant.stockQuantity, sortOrder: variant.sortOrder });
       const images = await tx.select().from(productImages).where(eq(productImages.productId, id));
       for (const image of images) await tx.insert(productImages).values({ productId: inserted[0].id, url: image.url, alt: image.alt, sortOrder: image.sortOrder, isPrimary: image.isPrimary });
       const links = await tx.select().from(productCategories).where(eq(productCategories.productId, id));
@@ -771,8 +771,8 @@ async function updateProductFromReply(context: HandlerContext, id: number, code:
   if (key === "slug" && (!slugPattern.test(String(value)) || String(value).length > 160)) throw new Error("INVALID_PRODUCT_SLUG");
   if (key === "currency") { value = raw.trim().toUpperCase(); if (!currencyPattern.test(String(value))) throw new Error("INVALID_CURRENCY"); }
   if (key === "simType" && !["eSIM", "SIM"].includes(String(value))) throw new Error("INVALID_SIM_TYPE");
-  if (["price", "oldPrice", "dataMb", "stockQuantity", "sortOrder"].includes(key)) {
-    const nullable = ["oldPrice", "dataMb", "stockQuantity"].includes(key);
+  if (["price", "oldPrice", "unitCost", "dataMb", "stockQuantity", "sortOrder"].includes(key)) {
+    const nullable = ["oldPrice", "unitCost", "dataMb", "stockQuantity"].includes(key);
     value = raw.trim() === "-" && nullable ? null : parseInteger(raw, 0, 100000000);
     if (value === null && !(nullable && raw.trim() === "-")) throw new Error("INVALID_INTEGER");
   }
@@ -813,8 +813,8 @@ async function updateVariantFromReply(context: HandlerContext, id: number, code:
   if (["name", "sku", "slug", "price", "currency"].includes(key) && value === null) throw new Error("REQUIRED_VALUE");
   if (key === "slug" && !slugPattern.test(String(value))) throw new Error("INVALID_SLUG");
   if (key === "currency") { value = raw.trim().toUpperCase(); if (!currencyPattern.test(String(value))) throw new Error("INVALID_CURRENCY"); }
-  if (["price", "stockQuantity", "sortOrder"].includes(key)) {
-    const nullable = key === "stockQuantity";
+  if (["price", "unitCost", "stockQuantity", "sortOrder"].includes(key)) {
+    const nullable = key === "stockQuantity" || key === "unitCost";
     value = raw.trim() === "-" && nullable ? null : parseInteger(raw, 0, 100000000);
     if (value === null && !(nullable && raw.trim() === "-")) throw new Error("INVALID_INTEGER");
   }

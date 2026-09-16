@@ -254,6 +254,7 @@ try {
       product_name TEXT NOT NULL,
       sim_type TEXT NOT NULL CHECK (sim_type IN ('eSIM', 'SIM')),
       unit_price INTEGER NOT NULL,
+      unit_cost INTEGER CHECK (unit_cost IS NULL OR unit_cost >= 0),
       quantity INTEGER NOT NULL,
       line_total INTEGER NOT NULL,
       fulfillment_status TEXT NOT NULL DEFAULT 'PENDING',
@@ -268,6 +269,7 @@ try {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     ALTER TABLE order_items ADD COLUMN IF NOT EXISTS variant_id INTEGER;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS unit_cost INTEGER;
     ALTER TABLE order_items ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PENDING';
     ALTER TABLE order_items ADD COLUMN IF NOT EXISTS delivery_method TEXT;
     ALTER TABLE order_items ADD COLUMN IF NOT EXISTS delivery_cost INTEGER NOT NULL DEFAULT 0;
@@ -392,6 +394,7 @@ try {
       sim_type TEXT NOT NULL CHECK (sim_type IN ('eSIM', 'SIM')),
       price INTEGER NOT NULL CHECK (price >= 0),
       old_price INTEGER CHECK (old_price IS NULL OR old_price >= 0),
+      unit_cost INTEGER CHECK (unit_cost IS NULL OR unit_cost >= 0),
       currency TEXT NOT NULL DEFAULT 'RUB',
       short_description TEXT NOT NULL DEFAULT '',
       full_description TEXT NOT NULL DEFAULT '',
@@ -438,6 +441,7 @@ try {
     ALTER TABLE products ADD COLUMN IF NOT EXISTS esim_type TEXT;
     ALTER TABLE products ADD COLUMN IF NOT EXISTS esim_delivery_method TEXT;
     ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_options JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS unit_cost INTEGER;
 
     CREATE TABLE IF NOT EXISTS product_variants (
       id SERIAL PRIMARY KEY,
@@ -446,6 +450,7 @@ try {
       sku TEXT NOT NULL,
       slug TEXT NOT NULL,
       price INTEGER NOT NULL CHECK (price >= 0),
+      unit_cost INTEGER CHECK (unit_cost IS NULL OR unit_cost >= 0),
       currency TEXT NOT NULL DEFAULT 'RUB',
       data_volume TEXT,
       validity_days INTEGER CHECK (validity_days IS NULL OR validity_days > 0),
@@ -460,6 +465,7 @@ try {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variants_sku ON product_variants(sku);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variants_slug ON product_variants(slug);
     CREATE INDEX IF NOT EXISTS idx_product_variants_product_order ON product_variants(product_id, sort_order);
+    ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS unit_cost INTEGER;
 
     CREATE TABLE IF NOT EXISTS product_images (
       id SERIAL PRIMARY KEY,
@@ -785,6 +791,15 @@ try {
       ALTER TABLE orders ADD CONSTRAINT orders_total_amount_consistent CHECK (total_amount = subtotal_amount - discount_amount + delivery_amount);
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'order_items_delivery_cost_nonnegative') THEN
         ALTER TABLE order_items ADD CONSTRAINT order_items_delivery_cost_nonnegative CHECK (delivery_cost >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'order_items_unit_cost_nonnegative') THEN
+        ALTER TABLE order_items ADD CONSTRAINT order_items_unit_cost_nonnegative CHECK (unit_cost IS NULL OR unit_cost >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'products_unit_cost_nonnegative') THEN
+        ALTER TABLE products ADD CONSTRAINT products_unit_cost_nonnegative CHECK (unit_cost IS NULL OR unit_cost >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'product_variants_unit_cost_nonnegative') THEN
+        ALTER TABLE product_variants ADD CONSTRAINT product_variants_unit_cost_nonnegative CHECK (unit_cost IS NULL OR unit_cost >= 0);
       END IF;
     END
     $fulfillment_constraints$;

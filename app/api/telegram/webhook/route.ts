@@ -17,6 +17,7 @@ import { isValidPromoCodeFormat, normalizePromoCode } from "@/lib/promo-codes";
 import { isValidPartnerCode, normalizePartnerCode, partnerCommission } from "@/lib/partner-attribution";
 import { formatSalesByCurrency } from "@/lib/sales-analytics";
 import { calculateRepeatPurchaseRetention, retentionPercent, RETENTION_DAYS, type RetentionRow } from "@/lib/retention-analytics";
+import { calculateRevenueAnalytics } from "@/lib/revenue-analytics";
 import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
@@ -440,6 +441,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [button("30 дней", 30), button("90 дней", 90), button("Год", 365)],
     [button("Всё время", 0), { text: `${customRange && !calendarMode ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:range" }],
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
+    [{ text: "💰 Выручка и прибыль", callback_data: `analytics:revenue:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
   ];
   if (customRange) {
@@ -600,6 +602,66 @@ async function sendUnitEconomics(db: ReturnType<typeof getDb>, token: string, ch
     "", "CAC — рекламные расходы на новых покупателей, чья первая оплата пришлась на период кампании:", cacLines,
     "", "Валюты не смешиваются. Возвраты исключены из оплаченной выборки.",
   ].join("\n"), { inline_keyboard: actions });
+}
+
+function revenueKeyboard(days: number, customRange?: AnalyticsDateRange): InlineKeyboard {
+  const button = (label: string, value: number) => ({ text: `${!customRange && days === value ? "✅ " : ""}${label}`, callback_data: `analytics:revenue:${value}` });
+  return { inline_keyboard: [
+    [button("7 дней", 7), button("14 дней", 14), button("30 дней", 30)],
+    [button("90 дней", 90), button("Год", 365), button("Всё время", 0)],
+    [{ text: `${customRange ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:revenue_range" }],
+    [{ text: "🔄 Обновить", callback_data: customRange ? `analytics:revenue:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:revenue:${days}` }],
+    [{ text: "📈 Общая аналитика", callback_data: `analytics:period:${days || 30}` }, { text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+}
+
+async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const conditions = [inArray(orders.status, [...paidOrderStatuses, "REFUNDED"])];
+  const paymentTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
+  if (bounds.start) conditions.push(sql`${paymentTime} >= ${bounds.start}::timestamptz`);
+  if (bounds.end) conditions.push(sql`${paymentTime} <= ${bounds.end}::timestamptz`);
+  const financialOrders = await db.select({
+    id: orders.id, status: orders.status, subtotalAmount: orders.subtotalAmount, discountAmount: orders.discountAmount,
+    deliveryAmount: orders.deliveryAmount, totalAmount: orders.totalAmount, currency: orders.currency, partnerCode: orders.partnerCode,
+  }).from(orders).where(and(...conditions));
+  const [items, partnerRows, costRows] = await Promise.all([
+    financialOrders.length ? db.select({ orderId: orderItems.orderId, unitCost: orderItems.unitCost, quantity: orderItems.quantity }).from(orderItems).where(inArray(orderItems.orderId, financialOrders.map((order) => order.id))) : Promise.resolve([]),
+    db.select({ code: partners.code, commissionBps: partners.commissionBps }).from(partners),
+    db.select({ amount: marketingCosts.amount, currency: marketingCosts.currency, startsAt: marketingCosts.startsAt, endsAt: marketingCosts.endsAt }).from(marketingCosts),
+  ]);
+  const rows = calculateRevenueAnalytics(financialOrders, items, partnerRows, costRows, bounds.start, bounds.end);
+  const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
+  const blocks = rows.slice(0, 6).map((row) => {
+    const money = (value: number) => `${value.toLocaleString("ru-RU")} ${row.currency}`;
+    const coverage = row.totalCostItems ? row.knownCostItems / row.totalCostItems * 100 : 100;
+    const approximate = coverage < 100;
+    return [
+      `💱 ${row.currency} · заказов: ${row.orders}`,
+      `Валовый товарный оборот: ${money(row.grossRevenue)}`,
+      `Скидки: −${money(row.discounts)}`,
+      `Возвраты: −${money(row.refunds)}`,
+      `Чистая товарная выручка: ${money(row.netProductRevenue)}`,
+      `Доставка: +${money(row.deliveryRevenue)}`,
+      `Себестоимость: −${money(row.costOfGoods)}`,
+      `Партнёрские комиссии: −${money(row.partnerCommission)}`,
+      `Реклама: −${money(row.marketingCost)}`,
+      `${approximate ? "Оценочная" : "Чистая"} прибыль: ${money(row.profit)}`,
+      `Маржинальность: ${row.marginPercent === null ? "—" : `${row.marginPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
+      `ROAS: ${row.roas === null ? "—" : `${row.roas.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}×`}`,
+      `ROI: ${row.roiPercent === null ? "—" : `${row.roiPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
+      `Себестоимость заполнена: ${row.knownCostItems}/${row.totalCostItems} ед. (${coverage.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%)`,
+    ].join("\n");
+  });
+  await sendMessage(token, chatId, [
+    `💰 Финансовая аналитика ${period}`,
+    "",
+    ...(blocks.length ? blocks.flatMap((block, index) => index ? ["", block] : [block]) : ["Оплаченных заказов и возвратов за период пока нет."]),
+    ...(rows.length > 6 ? ["", `Показаны первые 6 валют из ${rows.length}. Валюты не смешиваются.`] : []),
+    "",
+    "Расходы на рекламу распределяются пропорционально дням пересечения кампании с периодом.",
+    "Себестоимость возвратов считается понесённым расходом. Комиссия платёжного провайдера появится после выбора и подключения сервиса.",
+  ].join("\n"), revenueKeyboard(bounds.days, customRange));
 }
 
 function retentionCell(row: RetentionRow, days: (typeof RETENTION_DAYS)[number]) {
@@ -1057,6 +1119,17 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await sendAnalyticsSummary(db, token, chatId, 0, role, range);
     return true;
   }
+  if (replyContext.startsWith("[ANALYTICS_REVENUE_RANGE]")) {
+    const range = parseAnalyticsDateRange(text);
+    const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
+    if (!range || duration > 10 * 366 * 86_400_000) {
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:revenue_range" }], [{ text: "◀️ К отчёту", callback_data: "analytics:revenue:30" }]] });
+      return true;
+    }
+    await audit(db, adminId, "analytics.revenue_custom_range.view", null, { start: range.start, end: range.end });
+    await sendRevenueAnalytics(db, token, chatId, 0, range);
+    return true;
+  }
   if (replyContext.startsWith("[CREATE_MARKETING_COST]")) {
     const parts = text.split("|").map((part) => part.trim());
     const [source, rawCampaign, rawAmount, rawCurrency, rawStart, rawEnd] = parts;
@@ -1464,6 +1537,18 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "unit_economics") {
     await sendUnitEconomics(db, token, chatId, role);
+    return;
+  }
+  if (scope === "analytics" && action === "revenue" && first) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first) && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendRevenueAnalytics(db, token, chatId, 0, range); return; }
+    }
+    await sendRevenueAnalytics(db, token, chatId, Number(first), undefined);
+    return;
+  }
+  if (scope === "analytics" && action === "revenue_range") {
+    await sendMessage(token, chatId, "[ANALYTICS_REVENUE_RANGE]\nВведите начало и конец финансового периода через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
     return;
   }
   if (scope === "analytics" && action === "retention") {

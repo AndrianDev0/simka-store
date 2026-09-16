@@ -1,4 +1,4 @@
-import { and, eq, gte, notInArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { catalogProducts, cryptoPayments, orderItems, orders, productVariants, promoCodes } from "@/db/schema";
@@ -205,6 +205,13 @@ export async function POST(request: Request) {
 
     const catalog = await getCatalogProducts({ requireDatabase: true });
     const productById = new Map(catalog.map((product) => [product.id, product]));
+    const requestedProductIds = [...new Set(parsed.data.items.map((line) => line.productId))];
+    const [productCostRows, variantCostRows] = await Promise.all([
+      db.select({ id: catalogProducts.id, unitCost: catalogProducts.unitCost }).from(catalogProducts).where(inArray(catalogProducts.id, requestedProductIds)),
+      db.select({ id: productVariants.id, unitCost: productVariants.unitCost }).from(productVariants).where(inArray(productVariants.productId, requestedProductIds)),
+    ]);
+    const productCosts = new Map(productCostRows.map((row) => [row.id, row.unitCost]));
+    const variantCosts = new Map(variantCostRows.map((row) => [row.id, row.unitCost]));
     const resolved = parsed.data.items.map((line) => {
       const product = productById.get(line.productId);
       if (!product || !product.available || product.availabilityStatus === "OUT_OF_STOCK" || product.stockQuantity === 0) throw new Error("PRODUCT_UNAVAILABLE");
@@ -216,7 +223,8 @@ export async function POST(request: Request) {
       if (product.variants.length && !variant) throw new Error("PRODUCT_VARIANT_UNAVAILABLE");
       if (variant && (!variant.available || variant.availabilityStatus === "OUT_OF_STOCK" || variant.stockQuantity === 0)) throw new Error("PRODUCT_VARIANT_UNAVAILABLE");
       const unitPrice = variant?.price ?? product.price;
-      return { product, variant, quantity: line.quantity, unitPrice, currency: variant?.currency ?? product.currency, lineTotal: unitPrice * line.quantity };
+      const unitCost = variant ? variantCosts.get(variant.id) ?? productCosts.get(product.id) ?? null : productCosts.get(product.id) ?? null;
+      return { product, variant, quantity: line.quantity, unitPrice, unitCost, currency: variant?.currency ?? product.currency, lineTotal: unitPrice * line.quantity };
     });
     const quantityByProduct = new Map<number, number>();
     const quantityByVariant = new Map<number, number>();
@@ -267,7 +275,7 @@ export async function POST(request: Request) {
     let totalAmount = subtotalAmount + deliveryAmount;
     const status = parsed.data.paymentMethod === "manager" ? "WAITING_FOR_MANAGER" : "WAITING_PAYMENT";
     const chargedDeliveryProducts = new Set<number>();
-    const itemRows = resolved.flatMap(({ product, variant, quantity, unitPrice, lineTotal }) => {
+    const itemRows = resolved.flatMap(({ product, variant, quantity, unitPrice, unitCost, lineTotal }) => {
       const delivery = deliveryByProduct.get(product.id);
       const chargeDelivery = Boolean(delivery) && !chargedDeliveryProducts.has(product.id);
       if (delivery) chargedDeliveryProducts.add(product.id);
@@ -275,7 +283,7 @@ export async function POST(request: Request) {
       const units = product.type === "eSIM" ? quantity : 1;
       return Array.from({ length: units }, (_, unitIndex) => ({
         id: crypto.randomUUID(), orderId: id, productId: product.id, variantId: variant?.id, sku: variant?.sku ?? product.sku,
-        productName: units > 1 ? `${baseName} · eSIM ${unitIndex + 1}/${units}` : baseName, simType: product.type, unitPrice,
+        productName: units > 1 ? `${baseName} · eSIM ${unitIndex + 1}/${units}` : baseName, simType: product.type, unitPrice, unitCost,
         quantity: product.type === "eSIM" ? 1 : quantity, lineTotal: product.type === "eSIM" ? unitPrice : lineTotal,
         fulfillmentStatus: "PENDING", deliveryMethod: delivery?.label ?? (product.type === "eSIM" ? product.esimDeliveryMethod || "email" : null),
         deliveryCost: chargeDelivery && unitIndex === 0 ? delivery?.cost ?? 0 : 0,

@@ -202,6 +202,8 @@ export const orderItems = pgTable("order_items", {
   productName: text("product_name").notNull(),
   simType: text("sim_type", { enum: ["eSIM", "SIM"] }).notNull(),
   unitPrice: integer("unit_price").notNull(),
+  // Procurement cost at checkout. Null means the cost was not configured.
+  unitCost: integer("unit_cost"),
   quantity: integer("quantity").notNull(),
   lineTotal: integer("line_total").notNull(),
   fulfillmentStatus: text("fulfillment_status").notNull().default("PENDING"),
@@ -218,6 +220,7 @@ export const orderItems = pgTable("order_items", {
   index("idx_order_items_order_id").on(table.orderId),
   index("idx_order_items_fulfillment_status").on(table.fulfillmentStatus),
   check("order_items_delivery_cost_nonnegative", sql`${table.deliveryCost} >= 0`),
+  check("order_items_unit_cost_nonnegative", sql`${table.unitCost} IS NULL OR ${table.unitCost} >= 0`),
 ]);
 
 export const cryptoPayments = pgTable("crypto_payments", {
@@ -338,6 +341,7 @@ export const catalogProducts = pgTable("products", {
   simType: text("sim_type", { enum: ["eSIM", "SIM"] }).notNull(),
   price: integer("price").notNull(),
   oldPrice: integer("old_price"),
+  unitCost: integer("unit_cost"),
   currency: text("currency").notNull().default("RUB"),
   shortDescription: text("short_description").notNull().default(""),
   fullDescription: text("full_description").notNull().default(""),
@@ -383,6 +387,7 @@ export const catalogProducts = pgTable("products", {
   index("idx_products_price_validity_data").on(table.price, table.validityDays, table.dataMb),
   check("products_price_nonnegative", sql`${table.price} >= 0`),
   check("products_old_price_nonnegative", sql`${table.oldPrice} IS NULL OR ${table.oldPrice} >= 0`),
+  check("products_unit_cost_nonnegative", sql`${table.unitCost} IS NULL OR ${table.unitCost} >= 0`),
   check("products_validity_days_positive", sql`${table.validityDays} > 0`),
   check("products_data_mb_nonnegative", sql`${table.dataMb} IS NULL OR ${table.dataMb} >= 0`),
   check("products_stock_quantity_nonnegative", sql`${table.stockQuantity} IS NULL OR ${table.stockQuantity} >= 0`),
@@ -395,6 +400,7 @@ export const productVariants = pgTable("product_variants", {
   sku: text("sku").notNull(),
   slug: text("slug").notNull(),
   price: integer("price").notNull(),
+  unitCost: integer("unit_cost"),
   currency: text("currency").notNull().default("RUB"),
   dataVolume: text("data_volume"),
   validityDays: integer("validity_days"),
@@ -410,6 +416,7 @@ export const productVariants = pgTable("product_variants", {
   uniqueIndex("idx_product_variants_slug").on(table.slug),
   index("idx_product_variants_product_order").on(table.productId, table.sortOrder),
   check("product_variants_price_nonnegative", sql`${table.price} >= 0`),
+  check("product_variants_unit_cost_nonnegative", sql`${table.unitCost} IS NULL OR ${table.unitCost} >= 0`),
   check("product_variants_validity_days_positive", sql`${table.validityDays} IS NULL OR ${table.validityDays} > 0`),
   check("product_variants_stock_quantity_nonnegative", sql`${table.stockQuantity} IS NULL OR ${table.stockQuantity} >= 0`),
 ]);
