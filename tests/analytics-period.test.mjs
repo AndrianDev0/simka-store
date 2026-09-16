@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildAnalyticsPeriodBounds, parseAnalyticsDateRange, shiftIsoYear } from "../lib/analytics-period.ts";
+import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, parseAnalyticsDateRange, shiftIsoYear } from "../lib/analytics-period.ts";
 
 test("analytics periods calculate previous and calendar year comparisons", () => {
   const bounds = buildAnalyticsPeriodBounds(14, new Date("2026-09-17T12:00:00.000Z"));
@@ -28,4 +28,10 @@ test("custom period comparison covers whole calendar days", () => {
   const bounds = buildAnalyticsPeriodBounds(0, new Date(), range);
   assert.equal(bounds.previousStart, "2026-08-31T00:00:00.000Z");
   assert.equal(bounds.previousEnd, "2026-09-01T00:00:00.000Z");
+});
+
+test("calendar periods distinguish today from the last 24 hours", () => {
+  const now = new Date("2026-09-17T12:34:56.000Z");
+  assert.deepEqual(calendarAnalyticsDateRange("today", now), { start: "2026-09-17T00:00:00.000Z", end: "2026-09-17T23:59:59.999Z" });
+  assert.deepEqual(calendarAnalyticsDateRange("yesterday", now), { start: "2026-09-16T00:00:00.000Z", end: "2026-09-16T23:59:59.999Z" });
 });

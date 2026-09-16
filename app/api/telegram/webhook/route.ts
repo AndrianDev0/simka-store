@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
-import { buildAnalyticsPeriodBounds, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
+import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
@@ -16,6 +16,7 @@ import { isIgnoredOperationalPath } from "@/lib/operational-event-shape";
 import { isValidPromoCodeFormat, normalizePromoCode } from "@/lib/promo-codes";
 import { isValidPartnerCode, normalizePartnerCode, partnerCommission } from "@/lib/partner-attribution";
 import { formatSalesByCurrency } from "@/lib/sales-analytics";
+import { calculateRepeatPurchaseRetention, retentionPercent, RETENTION_DAYS, type RetentionRow } from "@/lib/retention-analytics";
 import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
@@ -431,20 +432,22 @@ async function sendPartnerAnalytics(db: ReturnType<typeof getDb>, token: string,
   await sendMessage(token, chatId, ["📊 Партнёрская аналитика", "", ...(lines.length ? lines : ["Пока нет данных."]), "", "Комиссия расчётная; фактические выплаты отдельно не учитываются."].join("\n"), { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
 }
 
-function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange?: AnalyticsDateRange): InlineKeyboard {
+function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange?: AnalyticsDateRange, calendarMode?: "today" | "yesterday"): InlineKeyboard {
   const button = (label: string, days: number) => ({ text: `${!customRange && selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
   const rows: InlineKeyboard["inline_keyboard"] = [
+    [{ text: `${calendarMode === "today" ? "✅ " : ""}Сегодня`, callback_data: "analytics:calendar:today" }, { text: `${calendarMode === "yesterday" ? "✅ " : ""}Вчера`, callback_data: "analytics:calendar:yesterday" }],
     [button("24 часа", 1), button("7 дней", 7), button("14 дней", 14)],
     [button("30 дней", 30), button("90 дней", 90), button("Год", 365)],
-    [button("Всё время", 0), { text: `${customRange ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:range" }],
+    [button("Всё время", 0), { text: `${customRange && !calendarMode ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:range" }],
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
+    [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
   ];
   if (customRange) {
     const start = customRange.start.slice(0, 10);
     const end = customRange.end.slice(0, 10);
-    rows.splice(3, 0, [{ text: "🔄 Обновить", callback_data: `analytics:range_show:${start}:${end}` }]);
+    rows.splice(4, 0, [{ text: "🔄 Обновить", callback_data: calendarMode ? `analytics:calendar:${calendarMode}` : `analytics:range_show:${start}:${end}` }]);
   } else {
-    rows.splice(3, 0,
+    rows.splice(4, 0,
       [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
       [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
       [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
@@ -599,7 +602,28 @@ async function sendUnitEconomics(db: ReturnType<typeof getDb>, token: string, ch
   ].join("\n"), { inline_keyboard: actions });
 }
 
-async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole, customRange?: AnalyticsDateRange) {
+function retentionCell(row: RetentionRow, days: (typeof RETENTION_DAYS)[number]) {
+  const eligible = row.eligible[days];
+  return eligible ? `${retentionPercent(row.retained[days], eligible).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% (${row.retained[days]}/${eligible})` : "—";
+}
+
+async function sendRetentionAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number) {
+  const paidOrders = await loadPaidCustomerOrders(db);
+  const report = calculateRepeatPurchaseRetention(paidOrders.map((order) => ({ customerKey: order.customerKey, paidAt: order.paidAt, source: order.source })));
+  const overallLines = RETENTION_DAYS.map((days) => `• D${days}: ${retentionCell(report.overall, days)}`).join("\n");
+  const cohortLines = report.cohorts.slice(0, 12).map((row) => `• ${row.label} · D0: ${row.customers} · D7: ${retentionCell(row, 7)} · D30: ${retentionCell(row, 30)} · D90: ${retentionCell(row, 90)}`).join("\n") || "• Оплаченных покупателей пока нет";
+  const sourceLines = report.sources.slice(0, 8).map((row) => `• ${row.label}: ${row.customers} покупателей · D30 ${retentionCell(row, 30)} · D90 ${retentionCell(row, 90)}`).join("\n") || "• Данных об источниках пока нет";
+  await sendMessage(token, chatId, [
+    "🔁 Retention повторных покупок", "",
+    `D0 — уникальные покупатели: ${report.overall.customers}`,
+    "Доля покупателей, совершивших ещё одну оплату не позднее указанного дня:", overallLines,
+    "", "Когорты по месяцу первой оплаты:", cohortLines,
+    "", "По первому источнику:", sourceLines,
+    "", "В знаменатель попадают только покупатели, для которых соответствующий период уже полностью прошёл.",
+  ].join("\n"), { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "analytics:retention" }], [{ text: "📈 Общая аналитика", callback_data: "analytics:period:30" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+}
+
+async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole, customRange?: AnalyticsDateRange, calendarMode?: "today" | "yesterday") {
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const normalizedDays = bounds.days;
   const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
@@ -660,7 +684,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   const statusCounts = new Map<string, number>();
   for (const order of rows) statusCounts.set(order.status, (statusCounts.get(order.status) ?? 0) + 1);
   const statusLines = [...statusCounts].sort((left, right) => right[1] - left[1]).map(([status, count]) => `• ${analyticsStatusLabels[status] ?? status}: ${count}`).join("\n") || "• Заказов пока нет";
-  const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(normalizedDays);
+  const period = calendarMode === "today" ? "сегодня (UTC)" : calendarMode === "yesterday" ? "за вчера (UTC)" : customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(normalizedDays);
   const conversion = percentage(cohortPaid.length, rows.length);
   const previousConversion = percentage(previousCohortPaid.length, previousRows.length);
   const yearAgoConversion = percentage(yearAgoCohortPaid.length, yearAgoRows.length);
@@ -715,7 +739,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     "",
     "Данные обновляются напрямую из базы магазина. Для старых оплат без точной даты используется дата заказа.",
   ].join("\n");
-  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays, role, customRange));
+  await sendMessage(token, chatId, text, analyticsKeyboard(normalizedDays, role, customRange, calendarMode));
 }
 
 async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, orderNumber: string, role: TelegramRole) {
@@ -1424,6 +1448,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendAnalyticsSummary(db, token, chatId, Number(first), role);
     return;
   }
+  if (scope === "analytics" && action === "calendar" && (first === "today" || first === "yesterday")) {
+    await sendAnalyticsSummary(db, token, chatId, 0, role, calendarAnalyticsDateRange(first), first);
+    return;
+  }
   if (scope === "analytics" && action === "range") {
     await sendMessage(token, chatId, "[ANALYTICS_RANGE]\nВведите начало и конец периода через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
     return;
@@ -1436,6 +1464,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "unit_economics") {
     await sendUnitEconomics(db, token, chatId, role);
+    return;
+  }
+  if (scope === "analytics" && action === "retention") {
+    await sendRetentionAnalytics(db, token, chatId);
     return;
   }
   if (scope === "analytics" && action === "cost_create") {

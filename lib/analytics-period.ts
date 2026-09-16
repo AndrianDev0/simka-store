@@ -73,3 +73,13 @@ export function formatAnalyticsDateRange(range: AnalyticsDateRange) {
   const format = (iso: string) => new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(iso));
   return `${format(range.start)}–${format(range.end)}`;
 }
+
+export function calendarAnalyticsDateRange(mode: "today" | "yesterday", now = new Date()): AnalyticsDateRange {
+  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  if (mode === "yesterday") day.setUTCDate(day.getUTCDate() - 1);
+  const date = day.toISOString().slice(0, 10);
+  return {
+    start: `${date}T00:00:00.000Z`,
+    end: `${date}T23:59:59.999Z`,
+  };
+}
