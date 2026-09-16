@@ -34,7 +34,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
             <label className="block text-sm font-semibold text-[#283b54]">Telegram или телефон<span className="font-normal text-[#7a899a]"> — необязательно</span><input name="contact" maxLength={100} defaultValue={account.contact} className="mt-2 h-11 w-full rounded-xl border border-[#cddbea] px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]" placeholder="@username или +7…"/></label>
             <button className="min-h-11 w-full rounded-xl bg-[#1168e8] px-4 font-bold text-white hover:bg-[#0d56c3]">Сохранить профиль</button>
           </form>
-          <div className="mt-5 border-t border-[#e5edf5] pt-5"><a href="/account/forgot" className="text-sm font-bold text-[#1168e8] hover:underline">Изменить пароль</a></div>
+          <div className="mt-5 flex flex-wrap gap-x-5 gap-y-3 border-t border-[#e5edf5] pt-5"><a href="/account/forgot" className="inline-flex min-h-11 items-center text-sm font-bold text-[#1168e8] hover:underline">Изменить пароль</a><a href="/account/privacy" className="inline-flex min-h-11 items-center text-sm font-bold text-[#1168e8] hover:underline">Управление данными</a></div>
           <a href="/contacts" className="mt-5 block rounded-xl border border-[#cddbea] bg-[#f8fbfe] p-3 text-center text-sm font-bold text-[#1168e8] hover:border-[#9fc5f4] hover:bg-white">Обратиться в поддержку</a>
         </section>
         <section className="rounded-2xl border border-[#dbe5ef] bg-white p-6 shadow-[0_12px_35px_rgba(23,58,96,.06)]"><div className="flex items-center justify-between gap-3"><h2 className="text-xl font-black text-[#10213a]">Мои заказы</h2><span className="text-sm text-[#637389]">{accountOrders.length}</span></div>
