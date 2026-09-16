@@ -6,6 +6,7 @@ import { catalogProducts, cryptoPaymentEvents, cryptoPayments, orderItems, order
 import { getCryptoPaymentConfig, verifyCryptoWebhookSignature } from "@/lib/crypto-payments";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
+import { recordOperationalEvent } from "@/lib/operational-events";
 
 export const runtime = "nodejs";
 
@@ -97,6 +98,7 @@ export async function POST(request: Request, context: { params: Promise<{ provid
     });
     if (!recorded) return Response.json({ ok: true, duplicate: true });
     console.error("crypto_payment_mismatch", { orderId: order.id, paymentId: payment.id });
+    await recordOperationalEvent({ kind: "payment_error", severity: "critical", area: "crypto_webhook", path: "/api/payments/crypto/webhook", code: "payment_details_mismatch" });
     return Response.json({ error: "Payment details mismatch" }, { status: 409 });
   }
 
@@ -146,6 +148,7 @@ export async function POST(request: Request, context: { params: Promise<{ provid
   }
   if (result.reviewRequired) {
     console.error("crypto_payment_confirmation_requires_review", { orderId: order.id, paymentId: payment.id, orderStatus: order.status });
+    await recordOperationalEvent({ kind: "payment_error", severity: "critical", area: "crypto_webhook", path: "/api/payments/crypto/webhook", code: "confirmation_requires_review" });
     await notifyManagers(`Криптоплатёж требует ручной проверки\nЗаказ: ${order.orderNumber}\nТекущий статус заказа: ${order.status}\nТранзакция сохранена, но заказ автоматически не переведён в PAID.`, order.orderNumber);
   }
   return Response.json({ ok: true, status: result.changed || order.status === "PAID" ? "PAID" : order.status });

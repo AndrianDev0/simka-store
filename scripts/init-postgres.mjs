@@ -86,6 +86,21 @@ try {
     DELETE FROM customer_password_resets WHERE expires_at::timestamptz < NOW();
     DELETE FROM request_rate_limits WHERE updated_at::timestamptz < NOW() - INTERVAL '7 days';
 
+    CREATE TABLE IF NOT EXISTS operational_events (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK (severity IN ('warning', 'error', 'critical')),
+      area TEXT NOT NULL,
+      path TEXT NOT NULL,
+      code TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1 CHECK (count > 0),
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_operational_events_last_seen_at ON operational_events(last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_operational_events_kind_last_seen ON operational_events(kind, last_seen_at);
+    DELETE FROM operational_events WHERE last_seen_at::timestamptz < NOW() - INTERVAL '90 days';
+
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,

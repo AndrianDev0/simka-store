@@ -22,7 +22,7 @@ if (backup?.format !== "simka-database-backup" || backup?.version !== 1 || typeo
 
 const allowedTables = new Set([
   "customer_accounts", "customer_sessions", "customer_password_resets", "privacy_consent_events", "orders", "order_items", "crypto_payments", "crypto_payment_events",
-  "countries", "operators", "categories", "products", "product_variants", "product_images", "product_categories", "admin_audit_log", "store_settings", "seo_redirects",
+  "countries", "operators", "categories", "products", "product_variants", "product_images", "product_categories", "admin_audit_log", "operational_events", "store_settings", "seo_redirects",
 ]);
 for (const [table, rows] of Object.entries(backup.tables)) {
   if (!allowedTables.has(table) || !Array.isArray(rows)) throw new Error(`Недопустимая таблица в копии: ${table}`);
@@ -36,7 +36,7 @@ if (!confirmed) {
 
 const client = new Client({ connectionString, ssl: connectionString.includes("localhost") ? false : { rejectUnauthorized: false } });
 await client.connect();
-const insertOrder = ["customer_accounts", "privacy_consent_events", "countries", "operators", "categories", "products", "product_variants", "product_images", "product_categories", "orders", "order_items", "crypto_payments", "crypto_payment_events", "customer_sessions", "customer_password_resets", "admin_audit_log", "store_settings", "seo_redirects"];
+const insertOrder = ["customer_accounts", "privacy_consent_events", "countries", "operators", "categories", "products", "product_variants", "product_images", "product_categories", "orders", "order_items", "crypto_payments", "crypto_payment_events", "customer_sessions", "customer_password_resets", "admin_audit_log", "operational_events", "store_settings", "seo_redirects"];
 const present = insertOrder.filter((table) => Array.isArray(backup.tables[table]));
 
 try {

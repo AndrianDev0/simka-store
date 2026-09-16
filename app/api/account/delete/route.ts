@@ -5,6 +5,7 @@ import { customerAccounts, orderItems, orders } from "@/db/schema";
 import { clearSessionCookie, getCurrentAccount, sameOrigin, verifyPassword } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
+import { recordOperationalEvent } from "@/lib/operational-events";
 
 const terminalOrderStatuses = ["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"];
 
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
       return redirect("/account/privacy?error=Сначала%20дождитесь%20завершения%20или%20отмены%20активных%20заказов");
     }
     console.error("customer_account_deletion_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+    await recordOperationalEvent({ kind: "api_error", severity: "error", area: "account", path: "/api/account/delete", code: "account_deletion_failed" });
     return redirect("/account/privacy?error=Не%20удалось%20удалить%20аккаунт.%20Попробуйте%20позже");
   }
 

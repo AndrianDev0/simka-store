@@ -4,6 +4,7 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
 import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
+import { reportTechnicalEvent } from "@/lib/client-telemetry";
 
 type Consent = "accepted" | "declined" | null;
 type ConsentDecision = Exclude<Consent, null> | "withdrawn";
@@ -100,6 +101,17 @@ export function AnalyticsProvider() {
   useReportWebVitals(useCallback((metric) => {
     trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: Math.round(metric.value) });
   }, []));
+
+  useEffect(() => {
+    const onError = () => reportTechnicalEvent({ kind: "window_error", area: "window", code: "window_error" });
+    const onUnhandledRejection = () => reportTechnicalEvent({ kind: "unhandled_rejection", area: "window", code: "unhandled_rejection" });
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    };
+  }, []);
 
   useEffect(() => {
     if (consent !== "accepted" || window.__simkaAnalyticsInitialised) return;

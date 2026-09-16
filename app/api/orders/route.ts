@@ -7,6 +7,7 @@ import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } fro
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { releaseReservedInventory } from "@/lib/order-inventory";
+import { recordOperationalEvent } from "@/lib/operational-events";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
 const payloadSchema = z.object({
@@ -295,6 +296,7 @@ export async function POST(request: Request) {
         await db.update(cryptoPayments).set({ status: "CREATE_FAILED", updatedAt: new Date().toISOString() }).where(eq(cryptoPayments.orderId, id));
         await releaseReservedInventory(id, "FAILED", ["WAITING_PAYMENT"]);
         console.error("crypto_payment_creation_failed", { name: providerError instanceof Error ? providerError.name : "UnknownError" });
+        await recordOperationalEvent({ kind: "payment_error", severity: "critical", area: "checkout", path: "/api/orders", code: "crypto_payment_creation_failed" });
         throw new Error("CRYPTO_PAYMENT_CREATION_FAILED");
       }
       checkoutUrl = createdPayment.checkoutUrl;
@@ -322,9 +324,15 @@ export async function POST(request: Request) {
       };
     const [managerResult, customerResult] = await Promise.allSettled([notifyManagers(notificationPayload), notifyCustomer(notificationPayload)]);
     if (managerResult.status === "fulfilled") managerNotified = managerResult.value;
-    else console.error("order_manager_notification_failed", { name: managerResult.reason instanceof Error ? managerResult.reason.name : "UnknownError" });
+    else {
+      console.error("order_manager_notification_failed", { name: managerResult.reason instanceof Error ? managerResult.reason.name : "UnknownError" });
+      await recordOperationalEvent({ kind: "notification_error", severity: "error", area: "telegram", path: "/api/orders", code: "manager_notification_failed" });
+    }
     if (customerResult.status === "fulfilled") customerNotified = customerResult.value.delivered;
-    else console.error("order_customer_notification_failed", { name: customerResult.reason instanceof Error ? customerResult.reason.name : "UnknownError" });
+    else {
+      console.error("order_customer_notification_failed", { name: customerResult.reason instanceof Error ? customerResult.reason.name : "UnknownError" });
+      await recordOperationalEvent({ kind: "notification_error", severity: "error", area: "email", path: "/api/orders", code: "customer_notification_failed" });
+    }
     return Response.json({ order: { orderNumber: number, paymentMethod: parsed.data.paymentMethod, status, totalAmount, currency, checkoutUrl, managerNotified, customerNotified } }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const errorCode = typeof error === "object" && error !== null && "code" in error ? String(error.code) : null;
@@ -348,6 +356,7 @@ export async function POST(request: Request) {
     if (error instanceof Error && error.message === "DELIVERY_REQUIRES_MANAGER") return Response.json({ error: "Эту доставку должен подтвердить менеджер. Выберите оплату через менеджера." }, { status: 409 });
     if (error instanceof Error && error.message === "CRYPTO_PAYMENT_CREATION_FAILED") return Response.json({ error: "Платёжный провайдер временно недоступен. Заказ не оплачен." }, { status: 502 });
     console.error("order_creation_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+    await recordOperationalEvent({ kind: "api_error", severity: "critical", area: "checkout", path: "/api/orders", code: "order_creation_failed" });
     return Response.json({ error: "Не удалось создать заказ. Попробуйте ещё раз." }, { status: 500 });
   }
 }

@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { releaseReservedInventory } from "@/lib/order-inventory";
+import { recordOperationalEvent } from "@/lib/operational-events";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
@@ -110,7 +111,8 @@ function mainKeyboard(): InlineKeyboard {
     [{ text: "🛒 Заказы", callback_data: "orders:list" }, { text: "💳 Реквизиты", callback_data: "settings:payment" }],
     [{ text: "👥 Клиенты", callback_data: "customers:list" }, { text: "✉️ Почта", callback_data: "settings:email" }],
     [{ text: "📈 Аналитика", callback_data: "analytics:period:7" }, { text: "📊 Статус", callback_data: "status" }],
-    [{ text: "📋 Журнал действий", callback_data: "audit:list:0" }, { text: "🗄 Резервная копия", callback_data: "backup:prompt" }],
+    [{ text: "⚠️ Ошибки", callback_data: "errors:period:24" }, { text: "📋 Журнал действий", callback_data: "audit:list:0" }],
+    [{ text: "🗄 Резервная копия", callback_data: "backup:prompt" }],
   ] };
 }
 
@@ -122,7 +124,8 @@ function persistentKeyboard(): ReplyKeyboard {
       [{ text: "🛒 Заказы" }, { text: "💳 Реквизиты" }],
       [{ text: "👥 Клиенты" }, { text: "✉️ Почта" }],
       [{ text: "📈 Аналитика" }, { text: "📊 Статус магазина" }],
-      [{ text: "📋 Журнал действий" }, { text: "🗄 Резервная копия" }],
+      [{ text: "⚠️ Ошибки" }, { text: "📋 Журнал действий" }],
+      [{ text: "🗄 Резервная копия" }],
       [{ text: "🏠 Меню" }],
     ],
     resize_keyboard: true,
@@ -141,6 +144,7 @@ const adminButtonCommands: Record<string, string> = {
   "📈 Аналитика": "/analytics",
   "📊 Статус магазина": "/status",
   "📋 Журнал действий": "/audit",
+  "⚠️ Ошибки": "/errors",
   "🗄 Резервная копия": "/backup",
   "✉️ Почта": "/email",
   "🏠 Меню": "/start",
@@ -295,6 +299,29 @@ async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string,
   }
   const lines = [...groups.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15).map(([country, value], index) => `${index + 1}. ${country} · ${value.quantity} шт. · ${value.revenue.toLocaleString("ru-RU")} (валюты могут отличаться)`).join("\n") || "Оплаченных продаж по странам пока нет.";
   await sendMessage(token, chatId, `🌍 Продажи по странам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+}
+
+async function sendOperationalErrors(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, hours: number) {
+  const normalizedHours = hours === 168 ? 168 : 24;
+  const boundary = new Date(Date.now() - normalizedHours * 60 * 60 * 1000).toISOString();
+  const rows = await db.select({
+    kind: operationalEvents.kind,
+    severity: operationalEvents.severity,
+    area: operationalEvents.area,
+    path: operationalEvents.path,
+    code: operationalEvents.code,
+    count: operationalEvents.count,
+    lastSeenAt: operationalEvents.lastSeenAt,
+  }).from(operationalEvents).where(gte(operationalEvents.lastSeenAt, boundary)).orderBy(desc(operationalEvents.lastSeenAt)).limit(20);
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  const critical = rows.filter((row) => row.severity === "critical").reduce((sum, row) => sum + row.count, 0);
+  const lines = rows.map((row, index) => [
+    `${index + 1}. ${row.severity === "critical" ? "🔴" : row.severity === "error" ? "🟠" : "🟡"} ${row.code} · ×${row.count}`,
+    `${row.area} · ${row.path}`,
+    `Последнее: ${row.lastSeenAt} UTC`,
+  ].join("\n")).join("\n\n") || "Технических ошибок за период не зафиксировано.";
+  await sendMessage(token, chatId, `⚠️ Технические ошибки за ${normalizedHours === 24 ? "24 часа" : "7 дней"}\nВсего событий: ${total}\nКритических: ${critical}\n\n${lines}`, { inline_keyboard: [[{ text: `${normalizedHours === 24 ? "✅ " : ""}24 часа`, callback_data: "errors:period:24" }, { text: `${normalizedHours === 168 ? "✅ " : ""}7 дней`, callback_data: "errors:period:168" }], [{ text: "🔄 Обновить", callback_data: `errors:period:${normalizedHours}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+  await audit(db, adminId, "errors.view", null, { hours: normalizedHours, events: total });
 }
 
 const paidOrderStatuses = new Set(["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"]);
@@ -897,14 +924,15 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
   if (data === "status") {
     const staleBoundary = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const [recent, stale, lowStock] = await Promise.all([
+    const [recent, stale, lowStock, errorTotals] = await Promise.all([
       db.select({ status: orders.status }).from(orders).orderBy(desc(orders.createdAt)).limit(100),
       db.select({ id: orders.id }).from(orders).where(and(inArray(orders.status, [...activeOrderStatuses]), lt(orders.updatedAt, staleBoundary))).limit(100),
       db.select({ id: catalogProducts.id }).from(catalogProducts).where(and(eq(catalogProducts.publicationStatus, "PUBLISHED"), or(eq(catalogProducts.available, false), sql`${catalogProducts.stockQuantity} IS NOT NULL AND ${catalogProducts.stockQuantity} <= 3`))).limit(100),
+      db.select({ total: sql<number>`COALESCE(SUM(${operationalEvents.count}), 0)::int` }).from(operationalEvents).where(gte(operationalEvents.lastSeenAt, staleBoundary)),
     ]);
     const active = recent.filter((order) => !["COMPLETED", "CANCELLED", "REFUNDED", "FAILED"].includes(order.status)).length;
     const email = getEmailConfigurationStatus();
-    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "status" }], [{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    await sendMessage(token, chatId, `SIMKA работает.\nБаза данных: доступна\nЗаказов в выборке: ${recent.length}\nАктивных: ${active}\nБез движения более 24 часов: ${stale.length}\nМало товара / нет в наличии: ${lowStock.length}\nТехнических ошибок за 24 часа: ${Number(errorTotals[0]?.total || 0)}\nПочта: ${email.configured ? "настроена" : `не настроена (${email.missing.join(", ")})`}`, { inline_keyboard: [[{ text: "🔄 Обновить", callback_data: "status" }], [{ text: "⚠️ Открыть ошибки", callback_data: "errors:period:24" }], [{ text: "✉️ Проверить почту", callback_data: "settings:email" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
     return;
   }
   if (scope === "analytics" && action === "period") {
@@ -917,6 +945,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "countries") {
     await sendCountryAnalytics(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "errors" && action === "period") {
+    await sendOperationalErrors(db, token, chatId, adminId, Number(first));
     return;
   }
   if (scope === "audit" && action === "list") {
@@ -1445,6 +1477,8 @@ export async function POST(request: Request) {
       await handleCallback(token, chatId, from.id, "backup:prompt");
     } else if (command === "/audit") {
       await sendAuditPage(getDb(), token, chatId, from.id);
+    } else if (command === "/errors") {
+      await sendOperationalErrors(getDb(), token, chatId, from.id, 24);
     } else if (command === "/analytics") {
       await sendAnalyticsSummary(getDb(), token, chatId, 7);
     } else if (command === "/customers") {
@@ -1632,6 +1666,7 @@ export async function POST(request: Request) {
     return Response.json({ ok: true });
   } catch (error) {
     console.error("telegram_webhook_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+    await recordOperationalEvent({ kind: "api_error", severity: "critical", area: "telegram", path: "/api/telegram/webhook", code: "telegram_webhook_failed" });
     return new Response(null, { status: 500 });
   }
 }

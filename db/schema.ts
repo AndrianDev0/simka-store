@@ -392,6 +392,22 @@ export const requestRateLimits = pgTable("request_rate_limits", {
   check("request_rate_limits_count_positive", sql`${table.count} > 0`),
 ]);
 
+export const operationalEvents = pgTable("operational_events", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  severity: text("severity", { enum: ["warning", "error", "critical"] }).notNull(),
+  area: text("area").notNull(),
+  path: text("path").notNull(),
+  code: text("code").notNull(),
+  count: integer("count").notNull().default(1),
+  firstSeenAt: text("first_seen_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+}, (table) => [
+  index("idx_operational_events_last_seen_at").on(table.lastSeenAt),
+  index("idx_operational_events_kind_last_seen").on(table.kind, table.lastSeenAt),
+  check("operational_events_count_positive", sql`${table.count} > 0`),
+]);
+
 export const seoRedirects = pgTable("seo_redirects", {
   id: serial("id").primaryKey(),
   entityType: text("entity_type", { enum: ["category", "country", "product"] }).notNull(),
