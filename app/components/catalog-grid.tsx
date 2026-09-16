@@ -1,6 +1,7 @@
 /* eslint-disable @next/next/no-img-element -- catalog images are administrator-managed remote URLs. */
 import { ArrowRight, Clock3, MessageSquareText, Phone, Wifi } from "lucide-react";
 import { getCatalogProducts, type CatalogProduct } from "@/lib/catalog-repository";
+import { CountryFlag } from "@/app/components/country-flag";
 import { productDisplayOffer, productIsAvailable } from "@/lib/catalog";
 
 const availabilityLabels: Record<CatalogProduct["availabilityStatus"], string> = {
@@ -57,7 +58,7 @@ export async function CatalogGrid({ items }: { items?: CatalogProduct[] }) {
               ) : (
                 <div className="flex h-full items-center justify-between p-5 text-white">
                   <span className="rounded-lg bg-white/15 px-2.5 py-1 text-xs font-black uppercase tracking-wider backdrop-blur">{product.type}</span>
-                  <span role="img" aria-label={`Флаг страны ${product.country}`} className="text-4xl drop-shadow">{product.flag}</span>
+                  <CountryFlag flag={product.flag} country={product.country} className="h-10 w-14 border-white/25" />
                 </div>
               )}
               {image && <span className="absolute left-4 top-4 rounded-lg bg-[#10213a]/85 px-2.5 py-1 text-xs font-black uppercase tracking-wider text-white backdrop-blur">{product.type}</span>}
@@ -65,7 +66,7 @@ export async function CatalogGrid({ items }: { items?: CatalogProduct[] }) {
 
             <div className="flex flex-1 flex-col p-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-[#64758a]">{product.flag} {product.country} · {product.operator}</p>
+                <p className="flex items-center gap-2 text-xs font-semibold text-[#64758a]"><CountryFlag flag={product.flag} country={product.country} className="h-5 w-7 rounded-sm" />{product.country} · {product.operator}</p>
                 <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${availabilityClasses(effectiveStatus)}`}>
                   <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
                   {availabilityLabels[effectiveStatus]}

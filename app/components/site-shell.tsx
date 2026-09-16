@@ -21,4 +21,4 @@ export function SiteShell({ children, eyebrow, title, description }: { children:
 
 export function ContentSection({ children }: { children: React.ReactNode }) { return <section className="mx-auto max-w-[1000px] px-4 py-12 sm:px-6 sm:py-16">{children}</section>; }
 
-export function InfoCard({ title, children }: { title: string; children: React.ReactNode }) { return <article className="theme-card rounded-2xl border border-[#dbe5ef] bg-white p-5 shadow-[0_12px_35px_rgba(23,58,96,.06)] sm:p-6"><h2 className="text-xl font-black text-[#10213a]">{title}</h2><div className="mt-3 text-sm leading-7 text-[#637389]">{children}</div></article>; }
+export function InfoCard({ title, children }: { title: React.ReactNode; children: React.ReactNode }) { return <article className="theme-card rounded-2xl border border-[#dbe5ef] bg-white p-5 shadow-[0_12px_35px_rgba(23,58,96,.06)] sm:p-6"><h2 className="text-xl font-black text-[#10213a]">{title}</h2><div className="mt-3 text-sm leading-7 text-[#637389]">{children}</div></article>; }

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
 import { ProductAnalytics } from "@/app/components/product-analytics";
+import { CountryFlag } from "@/app/components/country-flag";
 import { getPublicCategories } from "@/lib/categories";
 import { getCatalogCountries, getCatalogProductBySlug, type CatalogProduct } from "@/lib/catalog-repository";
 import { absoluteUrl, breadcrumbJsonLd, jsonLd, pageMetadata } from "@/lib/seo";
@@ -215,7 +216,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
               </figure>
             ) : (
               <div className={`flex aspect-[4/3] flex-col justify-between rounded-[28px] bg-gradient-to-br ${product.tone} p-7 text-white shadow-xl`}>
-                <div className="flex items-start justify-between"><span className="rounded-full bg-white/15 px-3 py-1 text-xs font-black uppercase tracking-wider">{product.type}</span><span role="img" aria-label={`Флаг страны ${product.country}`} className="text-5xl">{product.flag}</span></div>
+                <div className="flex items-start justify-between"><span className="rounded-full bg-white/15 px-3 py-1 text-xs font-black uppercase tracking-wider">{product.type}</span><CountryFlag flag={product.flag} country={product.country} className="h-10 w-14 border-white/25" /></div>
                 <div><p className="text-sm text-white/75">{product.country} · {product.operator}</p><p className="mt-2 text-4xl font-black">{product.data}</p><p className="mt-2 text-white/85">Срок действия — {product.days} дней</p></div>
               </div>
             )}
