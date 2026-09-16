@@ -16,6 +16,7 @@ export type CustomerAccount = {
   email: string;
   name: string;
   contact: string;
+  partnerCode: string | null;
 };
 
 function base64Url(value: Uint8Array) {
@@ -45,11 +46,12 @@ export async function getCurrentAccount(): Promise<CustomerAccount | null> {
     email: customerAccounts.email,
     name: customerAccounts.name,
     contact: customerAccounts.contact,
+    partnerCode: customerAccounts.partnerCode,
   }).from(customerSessions).innerJoin(customerAccounts, eq(customerSessions.accountId, customerAccounts.id)).where(and(eq(customerSessions.tokenHash, hashToken(token)), gt(customerSessions.expiresAt, new Date().toISOString()), eq(customerAccounts.isBlocked, false))).limit(1);
   if (!row) {
     return null;
   }
-  const account = { id: row.id, email: row.email, name: row.name, contact: row.contact };
+  const account = { id: row.id, email: row.email, name: row.name, contact: row.contact, partnerCode: row.partnerCode };
   await db.update(customerSessions).set({ lastUsedAt: new Date().toISOString() }).where(eq(customerSessions.id, row.sessionId));
   return account;
 }

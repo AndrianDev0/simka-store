@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
@@ -13,6 +13,7 @@ import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
 import { isIgnoredOperationalPath } from "@/lib/operational-event-shape";
 import { isValidPromoCodeFormat, normalizePromoCode } from "@/lib/promo-codes";
+import { isValidPartnerCode, normalizePartnerCode, partnerCommission } from "@/lib/partner-attribution";
 import { formatSalesByCurrency } from "@/lib/sales-analytics";
 import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
@@ -139,6 +140,7 @@ function mainKeyboard(role: TelegramRole): InlineKeyboard {
   const insights: InlineButton[] = [];
   if (telegramRoleCan(role, "analytics.read")) insights.push({ text: "📈 Аналитика", callback_data: "analytics:period:7" });
   if (telegramRoleCan(role, "promocodes.read")) insights.push({ text: "🎟 Промокоды", callback_data: "promocodes:list" });
+  if (telegramRoleCan(role, "partners.read")) insights.push({ text: "🤝 Партнёры", callback_data: "partners:list" });
   if (telegramRoleCan(role, "operations.read")) insights.push({ text: "📊 Статус", callback_data: "status" });
   for (let index = 0; index < insights.length; index += 2) rows.push(insights.slice(index, index + 2));
   const control: InlineButton[] = [];
@@ -166,6 +168,7 @@ function persistentKeyboard(role: TelegramRole): ReplyKeyboard {
   const insights: Array<{ text: string }> = [];
   if (telegramRoleCan(role, "analytics.read")) insights.push({ text: "📈 Аналитика" });
   if (telegramRoleCan(role, "promocodes.read")) insights.push({ text: "🎟 Промокоды" });
+  if (telegramRoleCan(role, "partners.read")) insights.push({ text: "🤝 Партнёры" });
   if (telegramRoleCan(role, "operations.read")) insights.push({ text: "📊 Статус магазина" });
   for (let index = 0; index < insights.length; index += 2) rows.push(insights.slice(index, index + 2));
   const control: Array<{ text: string }> = [];
@@ -191,6 +194,7 @@ const adminButtonCommands: Record<string, string> = {
   "💳 Реквизиты": "/payment_requisites",
   "📈 Аналитика": "/analytics",
   "🎟 Промокоды": "/promocodes",
+  "🤝 Партнёры": "/partners",
   "📊 Статус магазина": "/status",
   "📋 Журнал действий": "/audit",
   "⚠️ Ошибки": "/errors",
@@ -363,6 +367,68 @@ async function sendPromoAnalytics(db: ReturnType<typeof getDb>, token: string, c
   await sendMessage(token, chatId, ["📊 Аналитика промокодов", "", ...(lines.length ? lines : ["Пока нет данных."])].join("\n"), { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
 }
 
+function formatMoneyMap(values: Map<string, number>) {
+  return [...values].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
+}
+
+async function partnerStats(db: ReturnType<typeof getDb>, code: string, commissionBps: number) {
+  const [clickRows, registrations, partnerOrders] = await Promise.all([
+    db.select({ clickCount: partnerClicks.clickCount }).from(partnerClicks).where(eq(partnerClicks.partnerCode, code)),
+    db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.partnerCode, code)),
+    db.select({ status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.partnerCode, code)),
+  ]);
+  const paid = partnerOrders.filter((order) => successfulPromoStatuses.has(order.status));
+  const revenue = new Map<string, number>();
+  const commission = new Map<string, number>();
+  for (const order of paid) {
+    revenue.set(order.currency, (revenue.get(order.currency) ?? 0) + order.totalAmount);
+    commission.set(order.currency, (commission.get(order.currency) ?? 0) + partnerCommission(order.totalAmount, commissionBps));
+  }
+  return { clicks: clickRows.reduce((sum, row) => sum + row.clickCount, 0), uniqueClicks: clickRows.length, registrations: registrations.length, orders: partnerOrders.length, paidOrders: paid.length, revenue, commission };
+}
+
+async function sendPartners(db: ReturnType<typeof getDb>, token: string, chatId: number, role: TelegramRole) {
+  const list = await db.select().from(partners).orderBy(desc(partners.createdAt)).limit(50);
+  const rows: InlineKeyboard["inline_keyboard"] = list.map((partner) => [{ text: `${partner.active ? "🟢" : "⚪"} ${partner.code} · ${partner.name.slice(0, 22)}`, callback_data: `partners:view:${partner.id}` }]);
+  if (telegramRoleCan(role, "partners.write")) rows.push([{ text: "➕ Добавить партнёра", callback_data: "partners:create" }]);
+  rows.push([{ text: "📊 Общая аналитика", callback_data: "partners:analytics" }]);
+  rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
+  await sendMessage(token, chatId, list.length ? `Партнёры: ${list.length}\n\nPartner ID автоматически привязывает переход, регистрацию и заказ.` : "Партнёров пока нет.", { inline_keyboard: rows });
+}
+
+async function sendPartnerDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, partnerId: string, role: TelegramRole) {
+  const [partner] = await db.select().from(partners).where(eq(partners.id, partnerId)).limit(1);
+  if (!partner) { await sendMessage(token, chatId, "Партнёр не найден.", backKeyboard()); return; }
+  const stats = await partnerStats(db, partner.code, partner.commissionBps);
+  const actions: InlineKeyboard["inline_keyboard"] = [];
+  if (telegramRoleCan(role, "partners.write")) actions.push([{ text: partner.active ? "⏸ Отключить ссылку" : "▶️ Включить ссылку", callback_data: `partners:toggle:${partner.id}` }]);
+  actions.push([{ text: "🌐 Открыть партнёрскую ссылку", url: `${SITE_ORIGIN}/?partner=${encodeURIComponent(partner.code)}` }]);
+  actions.push([{ text: "◀️ К партнёрам", callback_data: "partners:list" }]);
+  await sendMessage(token, chatId, [
+    `🤝 ${partner.name}`,
+    `Partner ID: ${partner.code}`,
+    `Статус: ${partner.active ? "активен" : "отключён для новых переходов"}`,
+    `Комиссия: ${(partner.commissionBps / 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })}%`,
+    `Ссылка: ${SITE_ORIGIN}/?partner=${partner.code}`,
+    "",
+    `Клики: ${stats.clicks} · уникальные: ${stats.uniqueClicks}`,
+    `Регистрации: ${stats.registrations}`,
+    `Заказы: ${stats.orders} · оплачено: ${stats.paidOrders}`,
+    `Конверсия уникальный переход → оплата: ${formatPercentage(percentage(stats.paidOrders, stats.uniqueClicks))}`,
+    `Оборот: ${formatMoneyMap(stats.revenue)}`,
+    `Расчётная комиссия: ${formatMoneyMap(stats.commission)}`,
+  ].join("\n"), { inline_keyboard: actions });
+}
+
+async function sendPartnerAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number) {
+  const list = await db.select().from(partners).orderBy(desc(partners.createdAt)).limit(50);
+  const lines = await Promise.all(list.map(async (partner) => {
+    const stats = await partnerStats(db, partner.code, partner.commissionBps);
+    return `${partner.active ? "🟢" : "⚪"} ${partner.code}: ${stats.uniqueClicks} уник. переходов · ${stats.registrations} регистраций · ${stats.paidOrders}/${stats.orders} оплачено · оборот ${formatMoneyMap(stats.revenue)} · комиссия ${formatMoneyMap(stats.commission)}`;
+  }));
+  await sendMessage(token, chatId, ["📊 Партнёрская аналитика", "", ...(lines.length ? lines : ["Пока нет данных."]), "", "Комиссия расчётная; фактические выплаты отдельно не учитываются."].join("\n"), { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
+}
+
 function analyticsKeyboard(selectedDays: number, role: TelegramRole): InlineKeyboard {
   const button = (label: string, days: number) => ({ text: `${selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
   const rows: InlineKeyboard["inline_keyboard"] = [
@@ -388,6 +454,7 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
     paymentMethod: orders.paymentMethod,
     subtotalAmount: orders.subtotalAmount,
     promoCode: orders.promoCode,
+    partnerCode: orders.partnerCode,
     discountAmount: orders.discountAmount,
     deliveryAmount: orders.deliveryAmount,
     totalAmount: orders.totalAmount,
@@ -399,8 +466,8 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
   const rows = normalizedDays
     ? await db.select(selection).from(orders).where(sql`${orders.createdAt}::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`).orderBy(desc(orders.createdAt)).limit(5_000)
     : await db.select(selection).from(orders).orderBy(desc(orders.createdAt)).limit(5_000);
-  const header = ["order_number", "created_at_utc", "paid_at_utc", "status", "payment_method", "subtotal", "promo_code", "discount", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
-  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.promoCode, row.discountAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
+  const header = ["order_number", "created_at_utc", "paid_at_utc", "status", "payment_method", "subtotal", "promo_code", "partner_id", "discount", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
+  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.promoCode, row.partnerCode, row.discountAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
   const suffix = normalizedDays ? `${normalizedDays}d` : "all";
   await sendDocument(token, chatId, Buffer.from(`\uFEFF${csv}`, "utf8"), `simka-orders-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`, `Обезличенный отчёт SIMKA ${analyticsPeriod(normalizedDays)} · строк: ${rows.length}${rows.length === 5_000 ? " (показаны последние 5000)" : ""}.`, "text/csv; charset=utf-8");
   await audit(db, adminId, "analytics.export", null, { days: normalizedDays, rows: rows.length, format: "csv" });
@@ -642,6 +709,7 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
     order.paidAt ? `Оплата подтверждена: ${order.paidAt}` : "",
     `Товары: ${order.subtotalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     order.promoCode ? `Промокод: ${order.promoCode} · скидка ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
+    order.partnerCode ? `Partner ID: ${order.partnerCode}` : "",
     order.deliveryAmount ? `Доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
     `Итого: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     "",
@@ -881,6 +949,31 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     if (!changed) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return true; }
     await audit(db, adminId, "customer.edit", id, { field });
     await sendCustomerDetails(db, token, chatId, id, role);
+    return true;
+  }
+  if (replyContext.startsWith("[CREATE_PARTNER]")) {
+    const parts = text.split("|").map((part) => part.trim());
+    if (parts.length !== 3) {
+      await sendMessage(token, chatId, "Нужно 3 поля через |:\nPARTNER_ID | Название | комиссия %", { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
+      return true;
+    }
+    const code = normalizePartnerCode(parts[0]);
+    const name = parts[1];
+    const commissionPercent = Number(parts[2].replace(",", "."));
+    const commissionBps = Math.round(commissionPercent * 100);
+    if (!isValidPartnerCode(code) || name.length < 2 || name.length > 100 || !Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100 || Math.abs(commissionBps / 100 - commissionPercent) > 0.0001) {
+      await sendMessage(token, chatId, "Проверьте данные. Partner ID: 3–32 латинских символа/цифры/_/-. Название: 2–100 символов. Комиссия: от 0 до 100, максимум 2 знака после запятой.", { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
+      return true;
+    }
+    try {
+      const [created] = await db.insert(partners).values({ id: crypto.randomUUID(), code, name, commissionBps, active: true, createdBy: String(adminId) }).returning({ id: partners.id });
+      await audit(db, adminId, "partner.create", created.id, { code, name, commissionBps });
+      await sendMessage(token, chatId, `Партнёр ${name} создан. Partner ID: ${code}`);
+      await sendPartnerDetails(db, token, chatId, created.id, role);
+    } catch (error) {
+      const duplicate = typeof error === "object" && error !== null && "code" in error && String(error.code) === "23505";
+      await sendMessage(token, chatId, duplicate ? `Partner ID ${code} уже существует.` : "Не удалось создать партнёра.", { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
+    }
     return true;
   }
   if (replyContext.startsWith("[CREATE_PROMO]")) {
@@ -1158,6 +1251,30 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
+  if (scope === "partners" && action === "list") {
+    await sendPartners(db, token, chatId, role);
+    return;
+  }
+  if (scope === "partners" && action === "analytics") {
+    await sendPartnerAnalytics(db, token, chatId);
+    return;
+  }
+  if (scope === "partners" && action === "view" && first) {
+    await sendPartnerDetails(db, token, chatId, first, role);
+    return;
+  }
+  if (scope === "partners" && action === "create") {
+    await sendMessage(token, chatId, "[CREATE_PARTNER]\nВведите данные через |:\nPARTNER_ID | Название | комиссия %\n\nПример:\nTRAVELBLOG | Travel Blog | 12.5", { force_reply: true, selective: true, input_field_placeholder: "TRAVELBLOG | Travel Blog | 12.5" });
+    return;
+  }
+  if (scope === "partners" && action === "toggle" && first) {
+    const [partner] = await db.select({ id: partners.id, code: partners.code, active: partners.active }).from(partners).where(eq(partners.id, first)).limit(1);
+    if (!partner) { await sendMessage(token, chatId, "Партнёр не найден.", backKeyboard()); return; }
+    await db.update(partners).set({ active: !partner.active, updatedAt: new Date().toISOString() }).where(eq(partners.id, partner.id));
+    await audit(db, adminId, "partner.toggle", partner.id, { code: partner.code, active: !partner.active });
+    await sendPartnerDetails(db, token, chatId, partner.id, role);
+    return;
+  }
   if (scope === "promocodes" && action === "list") {
     await sendPromoCodes(db, token, chatId, role);
     return;
@@ -1788,6 +1905,8 @@ export async function POST(request: Request) {
       await sendAnalyticsSummary(getDb(), token, chatId, 7, role);
     } else if (command === "/promocodes") {
       await sendPromoCodes(getDb(), token, chatId, role);
+    } else if (command === "/partners") {
+      await sendPartners(getDb(), token, chatId, role);
     } else if (command === "/customers") {
       await sendCustomersPage(getDb(), token, chatId);
     } else if (command === "/orders") {

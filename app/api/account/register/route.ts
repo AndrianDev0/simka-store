@@ -7,6 +7,7 @@ import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { getEmailValidationError } from "@/lib/email-validation";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
+import { partnerCodeFromRequest } from "@/lib/partner-attribution";
 
 function redirect(path: string) {
   return NextResponse.redirect(absoluteUrl(path), 303);
@@ -33,7 +34,7 @@ export async function POST(request: Request) {
     if ((await db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1))[0]) {
       return redirect("/account/login?error=Аккаунт%20с%20этим%20email%20уже%20существует");
     }
-    const [account] = await db.insert(customerAccounts).values({ id: crypto.randomUUID(), email, passwordHash: await hashPassword(password), name, contact }).returning({ id: customerAccounts.id });
+    const [account] = await db.insert(customerAccounts).values({ id: crypto.randomUUID(), email, passwordHash: await hashPassword(password), name, contact, partnerCode: partnerCodeFromRequest(request) }).returning({ id: customerAccounts.id });
     const accountUrl = absoluteUrl("/account");
     const delivery = await sendTransactionalEmail({
       to: email,

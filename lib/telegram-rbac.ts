@@ -15,6 +15,8 @@ export type TelegramPermission =
   | "analytics.export"
   | "promocodes.read"
   | "promocodes.write"
+  | "partners.read"
+  | "partners.write"
   | "settings.read"
   | "settings.write"
   | "operations.read"
@@ -23,16 +25,16 @@ export type TelegramPermission =
 
 const allPermissions: TelegramPermission[] = [
   "catalog.read", "catalog.write", "orders.read", "orders.write", "customers.read", "customers.write",
-  "customers.export", "customers.delete", "analytics.read", "analytics.export", "promocodes.read", "promocodes.write", "settings.read", "settings.write",
+  "customers.export", "customers.delete", "analytics.read", "analytics.export", "promocodes.read", "promocodes.write", "partners.read", "partners.write", "settings.read", "settings.write",
   "operations.read", "audit.read", "backup.create",
 ];
 
 const permissionsByRole: Record<TelegramRole, ReadonlySet<TelegramPermission>> = {
   owner: new Set(allPermissions),
   admin: new Set(allPermissions.filter((permission) => permission !== "backup.create")),
-  analyst: new Set(["analytics.read", "analytics.export", "promocodes.read", "operations.read"]),
-  marketing: new Set(["analytics.read", "analytics.export", "promocodes.read", "promocodes.write"]),
-  sales: new Set(["orders.read", "orders.write", "customers.read", "analytics.read"]),
+  analyst: new Set(["analytics.read", "analytics.export", "promocodes.read", "partners.read", "operations.read"]),
+  marketing: new Set(["analytics.read", "analytics.export", "promocodes.read", "promocodes.write", "partners.read", "partners.write"]),
+  sales: new Set(["orders.read", "orders.write", "customers.read", "analytics.read", "partners.read"]),
   support: new Set(["orders.read", "customers.read"]),
 };
 
@@ -96,6 +98,7 @@ export function telegramCallbackPermission(data: string): TelegramPermission | n
   if (catalogPermission) return catalogPermission;
   if (scope === "analytics") return action === "csv" ? "analytics.export" : "analytics.read";
   if (scope === "promocodes") return ["create", "toggle"].includes(action) ? "promocodes.write" : "promocodes.read";
+  if (scope === "partners") return ["create", "toggle"].includes(action) ? "partners.write" : "partners.read";
   if (scope === "errors") return "operations.read";
   if (scope === "audit") return "audit.read";
   if (scope === "backup") return "backup.create";
@@ -123,6 +126,7 @@ export function telegramCommandPermission(command: string): TelegramPermission |
   if (["/customers"].includes(command)) return "customers.read";
   if (["/analytics"].includes(command)) return "analytics.read";
   if (["/promocodes"].includes(command)) return "promocodes.read";
+  if (["/partners"].includes(command)) return "partners.read";
   if (["/status", "/errors"].includes(command)) return "operations.read";
   if (command === "/audit") return "audit.read";
   if (command === "/backup") return "backup.create";
@@ -138,6 +142,7 @@ export function telegramReplyPermission(replyContext: string): TelegramPermissio
   if (replyContext.startsWith("[EDIT_PAYMENT_REQUISITES]")) return "settings.write";
   if (/^\[(?:DELIVERY_COST|FULFILL_ESIM|SHIP_ITEM):/i.test(replyContext)) return "orders.write";
   if (replyContext.startsWith("[CREATE_PROMO]")) return "promocodes.write";
+  if (replyContext.startsWith("[CREATE_PARTNER]")) return "partners.write";
   if (/^\[(?:CREATE_|EDIT_)/i.test(replyContext)) return "catalog.write";
   return null;
 }

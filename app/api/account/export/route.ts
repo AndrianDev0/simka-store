@@ -24,6 +24,7 @@ export async function GET(request: Request) {
     email: customerAccounts.email,
     name: customerAccounts.name,
     contact: customerAccounts.contact,
+    partnerCode: customerAccounts.partnerCode,
     createdAt: customerAccounts.createdAt,
     updatedAt: customerAccounts.updatedAt,
   }).from(customerAccounts).where(eq(customerAccounts.id, account.id)).limit(1);
@@ -41,6 +42,7 @@ export async function GET(request: Request) {
     status: orders.status,
     subtotalAmount: orders.subtotalAmount,
     promoCode: orders.promoCode,
+    partnerCode: orders.partnerCode,
     discountAmount: orders.discountAmount,
     deliveryAmount: orders.deliveryAmount,
     totalAmount: orders.totalAmount,

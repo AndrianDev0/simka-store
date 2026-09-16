@@ -12,6 +12,7 @@ import { recordOperationalEvent } from "@/lib/operational-events";
 import { evaluatePromoCode, isValidPromoCodeFormat, normalizePromoCode } from "@/lib/promo-codes";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 import { resolveTelegramRole, telegramRoleCan } from "@/lib/telegram-rbac";
+import { partnerCodeFromRequest } from "@/lib/partner-attribution";
 
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
@@ -72,6 +73,7 @@ async function notifyManagers(order: {
   paymentMethod: "crypto" | "manager";
   totalAmount: number;
   promoCode?: string;
+  partnerCode?: string;
   discountAmount: number;
   deliveryAmount: number;
   deliveryAddress?: string;
@@ -102,6 +104,7 @@ async function notifyManagers(order: {
     `Оплата: ${paymentLabel}`,
     `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     order.promoCode ? `Промокод: ${order.promoCode} · скидка ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
+    order.partnerCode ? `Partner ID: ${order.partnerCode}` : "",
     order.deliveryAmount ? `Доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
     order.deliveryAddress ? `Адрес: ${order.deliveryAddress}` : "",
     order.deliveryMethods.length ? `Способ доставки: ${order.deliveryMethods.join(", ")}` : "",
@@ -192,6 +195,7 @@ export async function POST(request: Request) {
     // Keep guest checkout available, but link new orders to the signed-in
     // customer so the personal cabinet can show a private order history.
     const account = await getCurrentAccount();
+    const attributedPartnerCode = partnerCodeFromRequest(request) ?? account?.partnerCode ?? null;
     const [existing] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
     if (existing) {
       const canContinueCryptoPayment = existing.paymentMethod === "crypto" && ["WAITING_PAYMENT", "PAYMENT_PENDING"].includes(existing.status);
@@ -314,7 +318,7 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, promoCode: appliedPromoCode, discountAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), analyticsSource: parsed.data.analytics?.source || null, analyticsMedium: parsed.data.analytics?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || null, analyticsContent: parsed.data.analytics?.content || null, analyticsTerm: parsed.data.analytics?.term || null });
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, promoCode: appliedPromoCode, partnerCode: attributedPartnerCode, discountAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), analyticsSource: parsed.data.analytics?.source || null, analyticsMedium: parsed.data.analytics?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || null, analyticsContent: parsed.data.analytics?.content || null, analyticsTerm: parsed.data.analytics?.term || null });
       await tx.insert(orderItems).values(itemRows);
       if (parsed.data.paymentMethod === "crypto" && cryptoConfig) {
         await tx.insert(cryptoPayments).values({ id: crypto.randomUUID(), orderId: id, provider: cryptoConfig.provider, requestedAmount: totalAmount, requestedCurrency: currency.toUpperCase() });
@@ -345,6 +349,7 @@ export async function POST(request: Request) {
         paymentMethod: parsed.data.paymentMethod,
         totalAmount,
         promoCode: appliedPromoCode ?? undefined,
+        partnerCode: attributedPartnerCode ?? undefined,
         discountAmount,
         deliveryAmount,
         deliveryAddress: parsed.data.deliveryAddress,

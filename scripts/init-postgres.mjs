@@ -32,6 +32,7 @@ try {
       password_hash TEXT NOT NULL,
       name TEXT NOT NULL,
       contact TEXT NOT NULL DEFAULT '',
+      partner_code TEXT,
       is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
       blocked_at TEXT,
       blocked_reason TEXT,
@@ -41,7 +42,9 @@ try {
     ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS blocked_at TEXT;
     ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
+    ALTER TABLE customer_accounts ADD COLUMN IF NOT EXISTS partner_code TEXT;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_accounts_email ON customer_accounts(email);
+    CREATE INDEX IF NOT EXISTS idx_customer_accounts_partner_code ON customer_accounts(partner_code);
 
     CREATE TABLE IF NOT EXISTS customer_sessions (
       id TEXT PRIMARY KEY,
@@ -96,6 +99,32 @@ try {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code);
     CREATE INDEX IF NOT EXISTS idx_promo_codes_active_dates ON promo_codes(active, starts_at, ends_at);
+
+    CREATE TABLE IF NOT EXISTS partners (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      commission_bps INTEGER NOT NULL DEFAULT 0 CHECK (commission_bps >= 0 AND commission_bps <= 10000),
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_code ON partners(code);
+    CREATE INDEX IF NOT EXISTS idx_partners_active_created_at ON partners(active, created_at);
+
+    CREATE TABLE IF NOT EXISTS partner_clicks (
+      id TEXT PRIMARY KEY,
+      partner_code TEXT NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      click_count INTEGER NOT NULL DEFAULT 1 CHECK (click_count > 0),
+      landing_path TEXT NOT NULL DEFAULT '/',
+      first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_clicks_partner_visitor ON partner_clicks(partner_code, visitor_hash);
+    CREATE INDEX IF NOT EXISTS idx_partner_clicks_last_seen_at ON partner_clicks(last_seen_at);
+    DELETE FROM partner_clicks WHERE last_seen_at::timestamptz < NOW() - INTERVAL '365 days';
 
     CREATE TABLE IF NOT EXISTS request_rate_limits (
       key TEXT PRIMARY KEY,
@@ -156,6 +185,7 @@ try {
       status TEXT NOT NULL CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT', 'PAYMENT_PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED')),
       subtotal_amount INTEGER NOT NULL DEFAULT 0,
       promo_code TEXT,
+      partner_code TEXT,
       discount_amount INTEGER NOT NULL DEFAULT 0,
       delivery_amount INTEGER NOT NULL DEFAULT 0,
       total_amount INTEGER NOT NULL,
@@ -183,6 +213,7 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS subtotal_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS partner_code TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
@@ -200,6 +231,7 @@ try {
     CREATE INDEX IF NOT EXISTS idx_orders_customer_account_id ON orders(customer_account_id);
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_orders_paid_at ON orders(paid_at);
+    CREATE INDEX IF NOT EXISTS idx_orders_partner_code ON orders(partner_code);
 
     -- Statuses intentionally remain text so the workflow can be extended without
     -- a destructive migration or a production restart race.

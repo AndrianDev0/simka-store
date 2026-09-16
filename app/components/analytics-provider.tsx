@@ -132,6 +132,29 @@ export function AnalyticsProvider() {
   useEffect(() => {
     if (consent !== "accepted") return;
     const url = new URL(window.location.href);
+    const partnerId = url.searchParams.get("partner") || url.searchParams.get("ref") || url.searchParams.get("partner_id");
+    if (!partnerId) return;
+    const sessionKey = `simka-partner-visit:${partnerId.toUpperCase()}:${url.pathname}`;
+    if (window.sessionStorage.getItem(sessionKey)) return;
+    void fetch("/api/partners/visit", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: partnerId, landingPath: url.pathname }),
+    }).then((response) => {
+      if (!response.ok) return;
+      window.sessionStorage.setItem(sessionKey, "1");
+      url.searchParams.delete("partner");
+      url.searchParams.delete("ref");
+      url.searchParams.delete("partner_id");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      trackEvent("partner_referral", { partner_id: partnerId.toUpperCase() });
+    }).catch(() => undefined);
+  }, [consent, pathname]);
+
+  useEffect(() => {
+    if (consent !== "accepted") return;
+    const url = new URL(window.location.href);
     const event = url.searchParams.get("analytics");
     if (!event || !["login", "sign_up", "password_reset"].includes(event)) return;
     trackEvent(event, { method: "email" });
@@ -184,7 +207,7 @@ export function AnalyticsProvider() {
 }
 
 export function AnalyticsConsentReset() {
-  const reset = () => {
+  const reset = async () => {
     try {
       if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY)) void recordConsent("withdrawn", "settings");
       window.localStorage.removeItem(ANALYTICS_CONSENT_KEY);
@@ -199,6 +222,7 @@ export function AnalyticsConsentReset() {
       document.cookie = `${name}=; Max-Age=0; path=/; SameSite=Lax`;
       document.cookie = `${name}=; Max-Age=0; path=/; domain=${window.location.hostname}; SameSite=Lax`;
     }
+    try { await fetch("/api/partners/visit", { method: "DELETE", credentials: "same-origin" }); } catch { /* Cookie cleanup is best effort. */ }
     window.location.reload();
   };
   return <button type="button" onClick={reset} className="mt-4 min-h-11 rounded-xl border border-[#cddbea] bg-white px-4 text-sm font-bold text-[#1168e8] hover:bg-[#f4f8fd]">Изменить настройки аналитики</button>;

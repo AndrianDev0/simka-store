@@ -31,6 +31,7 @@ export const customerAccounts = pgTable("customer_accounts", {
   passwordHash: text("password_hash").notNull(),
   name: text("name").notNull(),
   contact: text("contact").notNull().default(""),
+  partnerCode: text("partner_code"),
   isBlocked: boolean("is_blocked").notNull().default(false),
   blockedAt: text("blocked_at"),
   blockedReason: text("blocked_reason"),
@@ -38,6 +39,7 @@ export const customerAccounts = pgTable("customer_accounts", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("idx_customer_accounts_email").on(table.email),
+  index("idx_customer_accounts_partner_code").on(table.partnerCode),
 ]);
 
 export const customerSessions = pgTable("customer_sessions", {
@@ -101,6 +103,35 @@ export const promoCodes = pgTable("promo_codes", {
   check("promo_codes_usage_limit_positive", sql`${table.usageLimit} IS NULL OR ${table.usageLimit} > 0`),
 ]);
 
+export const partners = pgTable("partners", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  commissionBps: integer("commission_bps").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_partners_code").on(table.code),
+  index("idx_partners_active_created_at").on(table.active, table.createdAt),
+  check("partners_commission_valid", sql`${table.commissionBps} >= 0 AND ${table.commissionBps} <= 10000`),
+]);
+
+export const partnerClicks = pgTable("partner_clicks", {
+  id: text("id").primaryKey(),
+  partnerCode: text("partner_code").notNull(),
+  visitorHash: text("visitor_hash").notNull(),
+  clickCount: integer("click_count").notNull().default(1),
+  landingPath: text("landing_path").notNull().default("/"),
+  firstSeenAt: text("first_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_partner_clicks_partner_visitor").on(table.partnerCode, table.visitorHash),
+  index("idx_partner_clicks_last_seen_at").on(table.lastSeenAt),
+  check("partner_clicks_count_positive", sql`${table.clickCount} > 0`),
+]);
+
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),
@@ -116,6 +147,7 @@ export const orders = pgTable("orders", {
   status: text("status").notNull(),
   subtotalAmount: integer("subtotal_amount").notNull().default(0),
   promoCode: text("promo_code"),
+  partnerCode: text("partner_code"),
   discountAmount: integer("discount_amount").notNull().default(0),
   deliveryAmount: integer("delivery_amount").notNull().default(0),
   totalAmount: integer("total_amount").notNull(),
@@ -141,6 +173,7 @@ export const orders = pgTable("orders", {
   index("idx_orders_customer_account_id").on(table.customerAccountId),
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
   index("idx_orders_paid_at").on(table.paidAt),
+  index("idx_orders_partner_code").on(table.partnerCode),
   check("orders_subtotal_amount_nonnegative", sql`${table.subtotalAmount} >= 0`),
   check("orders_discount_amount_nonnegative", sql`${table.discountAmount} >= 0`),
   check("orders_discount_not_above_subtotal", sql`${table.discountAmount} <= ${table.subtotalAmount}`),
