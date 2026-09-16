@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql
 import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
+import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
@@ -363,11 +364,20 @@ const analyticsStatusLabels: Record<string, string> = {
 async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
   const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
-  const rows = normalizedDays
-    ? await db.select(selection).from(orders).where(gte(orders.createdAt, new Date(Date.now() - normalizedDays * 86_400_000).toISOString()))
-    : await db.select(selection).from(orders);
+  const now = Date.now();
+  const currentBoundary = normalizedDays ? new Date(now - normalizedDays * 86_400_000).toISOString() : null;
+  const previousBoundary = normalizedDays ? new Date(now - normalizedDays * 2 * 86_400_000).toISOString() : null;
+  const [rows, previousRows, active] = await Promise.all([
+    currentBoundary
+      ? db.select(selection).from(orders).where(gte(orders.createdAt, currentBoundary))
+      : db.select(selection).from(orders),
+    currentBoundary && previousBoundary
+      ? db.select(selection).from(orders).where(and(gte(orders.createdAt, previousBoundary), lt(orders.createdAt, currentBoundary)))
+      : Promise.resolve([]),
+    db.select({ id: orders.id }).from(orders).where(inArray(orders.status, [...activeOrderStatuses])),
+  ]);
   const paid = rows.filter((order) => paidOrderStatuses.has(order.status));
-  const active = await db.select({ id: orders.id }).from(orders).where(inArray(orders.status, [...activeOrderStatuses]));
+  const previousPaid = previousRows.filter((order) => paidOrderStatuses.has(order.status));
   const cancelled = rows.filter((order) => order.status === "CANCELLED");
   const refunded = rows.filter((order) => order.status === "REFUNDED");
   const failed = rows.filter((order) => order.status === "FAILED");
@@ -379,6 +389,8 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   const soldSim = soldItems.filter((item) => item.simType === "SIM").reduce((sum, item) => sum + item.quantity, 0);
   const revenue = new Map<string, number>();
   for (const order of paid) revenue.set(order.currency, (revenue.get(order.currency) ?? 0) + order.totalAmount);
+  const previousRevenue = new Map<string, number>();
+  for (const order of previousPaid) previousRevenue.set(order.currency, (previousRevenue.get(order.currency) ?? 0) + order.totalAmount);
   const revenueLines = [...revenue].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const averageLines = [...revenue].map(([currency, amount]) => `${Math.round(amount / paid.filter((order) => order.currency === currency).length).toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const sourceCounts = new Map<string, number>();
@@ -391,7 +403,20 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   for (const order of rows) statusCounts.set(order.status, (statusCounts.get(order.status) ?? 0) + 1);
   const statusLines = [...statusCounts].sort((left, right) => right[1] - left[1]).map(([status, count]) => `• ${analyticsStatusLabels[status] ?? status}: ${count}`).join("\n") || "• Заказов пока нет";
   const period = normalizedDays === 0 ? "за всё время" : normalizedDays === 1 ? "за последние 24 часа" : `за последние ${normalizedDays} дней`;
-  const conversion = rows.length ? (paid.length / rows.length * 100).toFixed(1).replace(".", ",") : "0";
+  const conversion = percentage(paid.length, rows.length);
+  const previousConversion = percentage(previousPaid.length, previousRows.length);
+  const comparisonLines = normalizedDays ? [
+    "",
+    `📉 Сравнение с предыдущим таким же периодом:`,
+    `• Заказы: ${rows.length} против ${previousRows.length} (${formatRelativeChange(rows.length, previousRows.length)})`,
+    `• Оплаченные: ${paid.length} против ${previousPaid.length} (${formatRelativeChange(paid.length, previousPaid.length)})`,
+    `• Конверсия: ${formatPercentage(conversion)} против ${formatPercentage(previousConversion)}`,
+    ...[...new Set([...revenue.keys(), ...previousRevenue.keys()])].sort().map((currency) => {
+      const currentAmount = revenue.get(currency) ?? 0;
+      const previousAmount = previousRevenue.get(currency) ?? 0;
+      return `• Оборот ${currency}: ${currentAmount.toLocaleString("ru-RU")} против ${previousAmount.toLocaleString("ru-RU")} (${formatRelativeChange(currentAmount, previousAmount)})`;
+    }),
+  ] : [];
   const text = [
     `📈 Аналитика SIMKA ${period}`,
     "",
@@ -399,7 +424,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     `✅ Оплаченных: ${paid.length}`,
     `💰 Оборот: ${revenueLines}`,
     `🧾 Средний оплаченный заказ: ${averageLines}`,
-    `📊 Конверсия заказ → оплата: ${conversion}%`,
+    `📊 Конверсия заказ → оплата: ${formatPercentage(conversion)}`,
     `⚙️ Активных сейчас: ${active.length}`,
     `❌ Отменено: ${cancelled.length}`,
     `↩️ Возвратов: ${refunded.length}`,
@@ -412,6 +437,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     "",
     "Статусы:",
     statusLines,
+    ...comparisonLines,
     "",
     "Данные обновляются напрямую из базы магазина.",
   ].join("\n");
