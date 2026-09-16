@@ -40,6 +40,8 @@ export async function GET(request: Request) {
     paymentMethod: orders.paymentMethod,
     status: orders.status,
     subtotalAmount: orders.subtotalAmount,
+    promoCode: orders.promoCode,
+    discountAmount: orders.discountAmount,
     deliveryAmount: orders.deliveryAmount,
     totalAmount: orders.totalAmount,
     currency: orders.currency,

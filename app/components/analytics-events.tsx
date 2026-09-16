@@ -64,14 +64,14 @@ export function CatalogAnalytics({ filters, hasSearch, items, totalResults }: { 
   return null;
 }
 
-export function OrderStatusAnalytics({ orderNumber, status, value, currency, items, serverTracked = false }: { orderNumber: string; status: string; value: number; currency: string; items: AnalyticsItem[]; serverTracked?: boolean }) {
+export function OrderStatusAnalytics({ orderNumber, status, value, currency, coupon, items, serverTracked = false }: { orderNumber: string; status: string; value: number; currency: string; coupon?: string | null; items: AnalyticsItem[]; serverTracked?: boolean }) {
   const ready = useAnalyticsReady();
   useEffect(() => {
     if (!ready) return;
-    const params = { transaction_id: orderNumber, value, currency, items };
+    const params = { transaction_id: orderNumber, value, currency, ...(coupon ? { coupon } : {}), items };
     if (!serverTracked && ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(status)) trackPurchase(orderNumber, params);
     if (!serverTracked && status === "CANCELLED") trackOnce(`cancel:${orderNumber}`, "order_cancelled", params);
     if (!serverTracked && status === "REFUNDED") trackOnce(`refund:${orderNumber}`, "refund", params);
-  }, [currency, items, orderNumber, ready, serverTracked, status, value]);
+  }, [coupon, currency, items, orderNumber, ready, serverTracked, status, value]);
   return null;
 }

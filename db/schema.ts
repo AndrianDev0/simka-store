@@ -78,6 +78,29 @@ export const privacyConsentEvents = pgTable("privacy_consent_events", {
   index("idx_privacy_consent_events_created_at").on(table.createdAt),
 ]);
 
+export const promoCodes = pgTable("promo_codes", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull(),
+  discountType: text("discount_type", { enum: ["percent", "fixed"] }).notNull(),
+  discountValue: integer("discount_value").notNull(),
+  currency: text("currency").notNull().default("RUB"),
+  minOrderAmount: integer("min_order_amount").notNull().default(0),
+  usageLimit: integer("usage_limit"),
+  active: boolean("active").notNull().default(true),
+  startsAt: text("starts_at"),
+  endsAt: text("ends_at"),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("idx_promo_codes_code").on(table.code),
+  index("idx_promo_codes_active_dates").on(table.active, table.startsAt, table.endsAt),
+  check("promo_codes_discount_value_positive", sql`${table.discountValue} > 0`),
+  check("promo_codes_percent_below_100", sql`${table.discountType} <> 'percent' OR ${table.discountValue} < 100`),
+  check("promo_codes_min_order_nonnegative", sql`${table.minOrderAmount} >= 0`),
+  check("promo_codes_usage_limit_positive", sql`${table.usageLimit} IS NULL OR ${table.usageLimit} > 0`),
+]);
+
 export const orders = pgTable("orders", {
   id: text("id").primaryKey(),
   requestId: text("request_id").notNull(),
@@ -92,6 +115,8 @@ export const orders = pgTable("orders", {
   // Kept as text so new workflow states can be added without a destructive migration.
   status: text("status").notNull(),
   subtotalAmount: integer("subtotal_amount").notNull().default(0),
+  promoCode: text("promo_code"),
+  discountAmount: integer("discount_amount").notNull().default(0),
   deliveryAmount: integer("delivery_amount").notNull().default(0),
   totalAmount: integer("total_amount").notNull(),
   currency: text("currency").notNull().default("RUB"),
@@ -117,9 +142,11 @@ export const orders = pgTable("orders", {
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
   index("idx_orders_paid_at").on(table.paidAt),
   check("orders_subtotal_amount_nonnegative", sql`${table.subtotalAmount} >= 0`),
+  check("orders_discount_amount_nonnegative", sql`${table.discountAmount} >= 0`),
+  check("orders_discount_not_above_subtotal", sql`${table.discountAmount} <= ${table.subtotalAmount}`),
   check("orders_delivery_amount_nonnegative", sql`${table.deliveryAmount} >= 0`),
   check("orders_total_amount_nonnegative", sql`${table.totalAmount} >= 0`),
-  check("orders_total_amount_consistent", sql`${table.totalAmount} = ${table.subtotalAmount} + ${table.deliveryAmount}`),
+  check("orders_total_amount_consistent", sql`${table.totalAmount} = ${table.subtotalAmount} - ${table.discountAmount} + ${table.deliveryAmount}`),
 ]);
 
 export const orderItems = pgTable("order_items", {

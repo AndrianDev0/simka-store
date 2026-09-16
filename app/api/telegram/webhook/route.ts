@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, searchAnalytics, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
@@ -12,6 +12,7 @@ import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfil
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
 import { isIgnoredOperationalPath } from "@/lib/operational-event-shape";
+import { isValidPromoCodeFormat, normalizePromoCode } from "@/lib/promo-codes";
 import { formatSalesByCurrency } from "@/lib/sales-analytics";
 import { SITE_ORIGIN } from "@/lib/seo";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
@@ -137,8 +138,9 @@ function mainKeyboard(role: TelegramRole): InlineKeyboard {
   if (peopleAndEmail.length) rows.push(peopleAndEmail);
   const insights: InlineButton[] = [];
   if (telegramRoleCan(role, "analytics.read")) insights.push({ text: "📈 Аналитика", callback_data: "analytics:period:7" });
+  if (telegramRoleCan(role, "promocodes.read")) insights.push({ text: "🎟 Промокоды", callback_data: "promocodes:list" });
   if (telegramRoleCan(role, "operations.read")) insights.push({ text: "📊 Статус", callback_data: "status" });
-  if (insights.length) rows.push(insights);
+  for (let index = 0; index < insights.length; index += 2) rows.push(insights.slice(index, index + 2));
   const control: InlineButton[] = [];
   if (telegramRoleCan(role, "operations.read")) control.push({ text: "⚠️ Ошибки", callback_data: "errors:period:24" });
   if (telegramRoleCan(role, "audit.read")) control.push({ text: "📋 Журнал действий", callback_data: "audit:list:0" });
@@ -163,8 +165,9 @@ function persistentKeyboard(role: TelegramRole): ReplyKeyboard {
   if (peopleAndEmail.length) rows.push(peopleAndEmail);
   const insights: Array<{ text: string }> = [];
   if (telegramRoleCan(role, "analytics.read")) insights.push({ text: "📈 Аналитика" });
+  if (telegramRoleCan(role, "promocodes.read")) insights.push({ text: "🎟 Промокоды" });
   if (telegramRoleCan(role, "operations.read")) insights.push({ text: "📊 Статус магазина" });
-  if (insights.length) rows.push(insights);
+  for (let index = 0; index < insights.length; index += 2) rows.push(insights.slice(index, index + 2));
   const control: Array<{ text: string }> = [];
   if (telegramRoleCan(role, "operations.read")) control.push({ text: "⚠️ Ошибки" });
   if (telegramRoleCan(role, "audit.read")) control.push({ text: "📋 Журнал действий" });
@@ -187,6 +190,7 @@ const adminButtonCommands: Record<string, string> = {
   "👥 Клиенты": "/customers",
   "💳 Реквизиты": "/payment_requisites",
   "📈 Аналитика": "/analytics",
+  "🎟 Промокоды": "/promocodes",
   "📊 Статус магазина": "/status",
   "📋 Журнал действий": "/audit",
   "⚠️ Ошибки": "/errors",
@@ -303,6 +307,62 @@ async function sendCustomerDetails(db: ReturnType<typeof getDb>, token: string, 
   ].join("\n"), { inline_keyboard: actions });
 }
 
+const successfulPromoStatuses = new Set(["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"]);
+
+function promoDiscountLabel(promo: { discountType: string; discountValue: number; currency: string }) {
+  return promo.discountType === "percent" ? `${promo.discountValue}%` : `${promo.discountValue.toLocaleString("ru-RU")} ${promo.currency}`;
+}
+
+async function sendPromoCodes(db: ReturnType<typeof getDb>, token: string, chatId: number, role: TelegramRole) {
+  const list = await db.select().from(promoCodes).orderBy(desc(promoCodes.createdAt)).limit(50);
+  const rows: InlineKeyboard["inline_keyboard"] = list.map((promo) => [{ text: `${promo.active ? "🟢" : "⚪"} ${promo.code} · ${promoDiscountLabel(promo)}`, callback_data: `promocodes:view:${promo.id}` }]);
+  if (telegramRoleCan(role, "promocodes.write")) rows.push([{ text: "➕ Создать промокод", callback_data: "promocodes:create" }]);
+  rows.push([{ text: "📊 Общая аналитика", callback_data: "promocodes:analytics" }]);
+  rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
+  await sendMessage(token, chatId, list.length ? `Промокоды: ${list.length}\n\n🟢 активен · ⚪ отключён` : "Промокодов пока нет.", { inline_keyboard: rows });
+}
+
+async function sendPromoDetails(db: ReturnType<typeof getDb>, token: string, chatId: number, promoId: string, role: TelegramRole) {
+  const [promo] = await db.select().from(promoCodes).where(eq(promoCodes.id, promoId)).limit(1);
+  if (!promo) { await sendMessage(token, chatId, "Промокод не найден.", backKeyboard()); return; }
+  const promoOrders = await db.select({ status: orders.status, totalAmount: orders.totalAmount, discountAmount: orders.discountAmount }).from(orders).where(eq(orders.promoCode, promo.code));
+  const paid = promoOrders.filter((order) => successfulPromoStatuses.has(order.status));
+  const revenue = paid.reduce((sum, order) => sum + order.totalAmount, 0);
+  const paidDiscount = paid.reduce((sum, order) => sum + order.discountAmount, 0);
+  const actions: InlineKeyboard["inline_keyboard"] = [];
+  if (telegramRoleCan(role, "promocodes.write")) actions.push([{ text: promo.active ? "⏸ Отключить" : "▶️ Включить", callback_data: `promocodes:toggle:${promo.id}` }]);
+  actions.push([{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]);
+  await sendMessage(token, chatId, [
+    `🎟 ${promo.code}`,
+    `Статус: ${promo.active ? "активен" : "отключён"}`,
+    `Скидка: ${promoDiscountLabel(promo)}`,
+    `Минимальная сумма: ${promo.minOrderAmount.toLocaleString("ru-RU")} ${promo.currency}`,
+    `Лимит: ${promo.usageLimit ?? "без ограничений"}`,
+    `Начало: ${promo.startsAt ? new Date(promo.startsAt).toLocaleDateString("ru-RU") : "сразу"}`,
+    `Окончание: ${promo.endsAt ? new Date(promo.endsAt).toLocaleDateString("ru-RU") : "без срока"}`,
+    "",
+    `Заказов с кодом: ${promoOrders.length}`,
+    `Оплаченных заказов: ${paid.length}`,
+    `Оборот: ${revenue.toLocaleString("ru-RU")} ${promo.currency}`,
+    `Скидок в оплаченных: ${paidDiscount.toLocaleString("ru-RU")} ${promo.currency}`,
+  ].join("\n"), { inline_keyboard: actions });
+}
+
+async function sendPromoAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number) {
+  const [list, promoOrders] = await Promise.all([
+    db.select().from(promoCodes).orderBy(desc(promoCodes.createdAt)).limit(50),
+    db.select({ promoCode: orders.promoCode, status: orders.status, totalAmount: orders.totalAmount, discountAmount: orders.discountAmount, currency: orders.currency }).from(orders).where(sql`${orders.promoCode} IS NOT NULL`),
+  ]);
+  const lines = list.map((promo) => {
+    const related = promoOrders.filter((order) => order.promoCode === promo.code);
+    const paid = related.filter((order) => successfulPromoStatuses.has(order.status));
+    const revenue = paid.reduce((sum, order) => sum + order.totalAmount, 0);
+    const discounts = paid.reduce((sum, order) => sum + order.discountAmount, 0);
+    return `${promo.active ? "🟢" : "⚪"} ${promo.code}: ${related.length} заказов · ${paid.length} оплачено · оборот ${revenue.toLocaleString("ru-RU")} ${promo.currency} · скидки ${discounts.toLocaleString("ru-RU")} ${promo.currency}`;
+  });
+  await sendMessage(token, chatId, ["📊 Аналитика промокодов", "", ...(lines.length ? lines : ["Пока нет данных."])].join("\n"), { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
+}
+
 function analyticsKeyboard(selectedDays: number, role: TelegramRole): InlineKeyboard {
   const button = (label: string, days: number) => ({ text: `${selectedDays === days ? "✅ " : ""}${label}`, callback_data: `analytics:period:${days}` });
   const rows: InlineKeyboard["inline_keyboard"] = [
@@ -327,6 +387,8 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
     paidAt: orders.paidAt,
     paymentMethod: orders.paymentMethod,
     subtotalAmount: orders.subtotalAmount,
+    promoCode: orders.promoCode,
+    discountAmount: orders.discountAmount,
     deliveryAmount: orders.deliveryAmount,
     totalAmount: orders.totalAmount,
     currency: orders.currency,
@@ -337,8 +399,8 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
   const rows = normalizedDays
     ? await db.select(selection).from(orders).where(sql`${orders.createdAt}::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`).orderBy(desc(orders.createdAt)).limit(5_000)
     : await db.select(selection).from(orders).orderBy(desc(orders.createdAt)).limit(5_000);
-  const header = ["order_number", "created_at_utc", "paid_at_utc", "status", "payment_method", "subtotal", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
-  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
+  const header = ["order_number", "created_at_utc", "paid_at_utc", "status", "payment_method", "subtotal", "promo_code", "discount", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
+  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.promoCode, row.discountAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
   const suffix = normalizedDays ? `${normalizedDays}d` : "all";
   await sendDocument(token, chatId, Buffer.from(`\uFEFF${csv}`, "utf8"), `simka-orders-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`, `Обезличенный отчёт SIMKA ${analyticsPeriod(normalizedDays)} · строк: ${rows.length}${rows.length === 5_000 ? " (показаны последние 5000)" : ""}.`, "text/csv; charset=utf-8");
   await audit(db, adminId, "analytics.export", null, { days: normalizedDays, rows: rows.length, format: "csv" });
@@ -425,7 +487,7 @@ const analyticsStatusLabels: Record<string, string> = {
 
 async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, role: TelegramRole) {
   const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
-  const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
+  const selection = { id: orders.id, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount, analyticsSource: orders.analyticsSource, analyticsMedium: orders.analyticsMedium, analyticsCampaign: orders.analyticsCampaign };
   const now = Date.now();
   const currentBoundary = normalizedDays ? new Date(now - normalizedDays * 86_400_000).toISOString() : null;
   const previousBoundary = normalizedDays ? new Date(now - normalizedDays * 2 * 86_400_000).toISOString() : null;
@@ -462,6 +524,10 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
   for (const order of previousPaid) previousRevenue.set(order.currency, (previousRevenue.get(order.currency) ?? 0) + order.totalAmount);
   const revenueLines = [...revenue].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const averageLines = [...revenue].map(([currency, amount]) => `${Math.round(amount / paid.filter((order) => order.currency === currency).length).toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
+  const promoPaid = paid.filter((order) => order.promoCode);
+  const promoDiscounts = new Map<string, number>();
+  for (const order of promoPaid) promoDiscounts.set(order.currency, (promoDiscounts.get(order.currency) ?? 0) + order.discountAmount);
+  const promoDiscountLines = [...promoDiscounts].map(([currency, amount]) => `${amount.toLocaleString("ru-RU")} ${currency}`).join(" + ") || "0";
   const sourceCounts = new Map<string, number>();
   for (const order of paid) {
     const source = order.analyticsSource ? `${order.analyticsSource}${order.analyticsMedium ? ` / ${order.analyticsMedium}` : ""}` : "Прямой заход / не указан";
@@ -493,6 +559,7 @@ async function sendAnalyticsSummary(db: ReturnType<typeof getDb>, token: string,
     `✅ Оплачено за период: ${paid.length}`,
     `💰 Оборот: ${revenueLines}`,
     `🧾 Средний оплаченный заказ: ${averageLines}`,
+    `🎟 Оплачено с промокодом: ${promoPaid.length} · скидки ${promoDiscountLines}`,
     `📊 Конверсия созданных заказов → оплата: ${formatPercentage(conversion)}`,
     `⚙️ Активных сейчас: ${active.length}`,
     `❌ Отменено: ${cancelled.length}`,
@@ -573,7 +640,10 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
     `Оплата: ${order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта"}`,
     order.paymentInstructionsSentAt ? `Реквизиты отправлены: ${order.paymentInstructionsSentAt}` : "",
     order.paidAt ? `Оплата подтверждена: ${order.paidAt}` : "",
-    `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
+    `Товары: ${order.subtotalAmount.toLocaleString("ru-RU")} ${order.currency}`,
+    order.promoCode ? `Промокод: ${order.promoCode} · скидка ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
+    order.deliveryAmount ? `Доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
+    `Итого: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     "",
     lines,
   ].filter(Boolean).join("\n");
@@ -813,6 +883,45 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await sendCustomerDetails(db, token, chatId, id, role);
     return true;
   }
+  if (replyContext.startsWith("[CREATE_PROMO]")) {
+    const parts = text.split("|").map((part) => part.trim());
+    if (parts.length !== 8) {
+      await sendMessage(token, chatId, "Нужно 8 полей через |:\nКОД | percent/fixed | значение | минимальная сумма | лимит или - | валюта | начало или - | окончание или -", { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
+      return true;
+    }
+    const [rawCode, rawType, rawValue, rawMinimum, rawLimit, rawCurrency, rawStart, rawEnd] = parts;
+    const code = normalizePromoCode(rawCode);
+    const discountType = rawType.toLowerCase();
+    const discountValue = Number(rawValue);
+    const minOrderAmount = Number(rawMinimum);
+    const usageLimit = rawLimit === "-" ? null : Number(rawLimit);
+    const currency = rawCurrency.toUpperCase();
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const startsAt = rawStart === "-" ? null : datePattern.test(rawStart) ? `${rawStart}T00:00:00.000Z` : "invalid";
+    const endsAt = rawEnd === "-" ? null : datePattern.test(rawEnd) ? `${rawEnd}T23:59:59.999Z` : "invalid";
+    const invalid = !isValidPromoCodeFormat(code)
+      || !["percent", "fixed"].includes(discountType)
+      || !Number.isInteger(discountValue) || discountValue <= 0 || (discountType === "percent" && discountValue >= 100)
+      || !Number.isInteger(minOrderAmount) || minOrderAmount < 0
+      || (usageLimit !== null && (!Number.isInteger(usageLimit) || usageLimit <= 0))
+      || !/^[A-Z]{3,8}$/.test(currency)
+      || startsAt === "invalid" || endsAt === "invalid"
+      || Boolean(startsAt && endsAt && startsAt > endsAt);
+    if (invalid) {
+      await sendMessage(token, chatId, "Проверьте данные. Код: 3–32 латинских символа/цифры. Процент: 1–99. Суммы и лимит — целые положительные числа. Даты: YYYY-MM-DD или -.", { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
+      return true;
+    }
+    try {
+      const [created] = await db.insert(promoCodes).values({ id: crypto.randomUUID(), code, discountType: discountType as "percent" | "fixed", discountValue, minOrderAmount, usageLimit, currency, active: true, startsAt, endsAt, createdBy: String(adminId) }).returning({ id: promoCodes.id });
+      await audit(db, adminId, "promocode.create", created.id, { code, discountType, discountValue, currency, minOrderAmount, usageLimit, startsAt, endsAt });
+      await sendMessage(token, chatId, `Промокод ${code} создан.`);
+      await sendPromoDetails(db, token, chatId, created.id, role);
+    } catch (error) {
+      const duplicate = typeof error === "object" && error !== null && "code" in error && String(error.code) === "23505";
+      await sendMessage(token, chatId, duplicate ? `Промокод ${code} уже существует.` : "Не удалось создать промокод.", { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
+    }
+    return true;
+  }
   if (replyContext.startsWith("[TEST_EMAIL]")) {
     const email = text.trim().toLowerCase();
     const emailError = getEmailValidationError(email);
@@ -860,13 +969,13 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     if (item.deliveryCostConfirmed) { await sendMessage(token, chatId, "Стоимость этой доставки уже подтверждена. Старый запрос ввода больше не действует.", orderBackKeyboard(item.orderNumber)); return true; }
     if (!Number.isInteger(cost) || cost < 0 || cost > 100000000) { await sendMessage(token, chatId, "Введите целую сумму от 0 до 100000000 без пробелов и знаков валюты.", orderBackKeyboard(item.orderNumber)); return true; }
     const totals = await db.transaction(async (tx) => {
-      const [lockedOrder] = await tx.select({ status: orders.status, subtotalAmount: orders.subtotalAmount, currency: orders.currency }).from(orders).where(eq(orders.id, item.orderId)).for("update").limit(1);
+      const [lockedOrder] = await tx.select({ status: orders.status, subtotalAmount: orders.subtotalAmount, discountAmount: orders.discountAmount, currency: orders.currency }).from(orders).where(eq(orders.id, item.orderId)).for("update").limit(1);
       if (!lockedOrder || lockedOrder.status !== "WAITING_FOR_MANAGER") return null;
       await tx.update(orderItems).set({ deliveryCost: cost, deliveryCostConfirmed: true, updatedAt: new Date().toISOString() }).where(eq(orderItems.id, item.itemId));
       const deliveryRows = await tx.select({ simType: orderItems.simType, deliveryCost: orderItems.deliveryCost, confirmed: orderItems.deliveryCostConfirmed }).from(orderItems).where(eq(orderItems.orderId, item.orderId));
       const deliveryAmount = deliveryRows.filter((row) => row.simType === "SIM").reduce((sum, row) => sum + row.deliveryCost, 0);
       const pending = deliveryRows.some((row) => row.simType === "SIM" && !row.confirmed);
-      const totalAmount = lockedOrder.subtotalAmount + deliveryAmount;
+      const totalAmount = lockedOrder.subtotalAmount - lockedOrder.discountAmount + deliveryAmount;
       await tx.update(orders).set({ deliveryAmount, totalAmount, paymentInstructionsSentAt: null, updatedAt: new Date().toISOString() }).where(eq(orders.id, item.orderId));
       return { deliveryAmount, totalAmount, currency: lockedOrder.currency, pending };
     });
@@ -1049,6 +1158,30 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (await handleCatalogAdminCallback({ token, chatId, adminId }, data)) return;
+  if (scope === "promocodes" && action === "list") {
+    await sendPromoCodes(db, token, chatId, role);
+    return;
+  }
+  if (scope === "promocodes" && action === "analytics") {
+    await sendPromoAnalytics(db, token, chatId);
+    return;
+  }
+  if (scope === "promocodes" && action === "view" && first) {
+    await sendPromoDetails(db, token, chatId, first, role);
+    return;
+  }
+  if (scope === "promocodes" && action === "create") {
+    await sendMessage(token, chatId, "[CREATE_PROMO]\nВведите данные через |:\nКОД | percent/fixed | значение | минимальная сумма | лимит или - | валюта | начало или - | окончание или -\n\nПример:\nWELCOME10 | percent | 10 | 1000 | 100 | RUB | - | 2026-12-31", { force_reply: true, selective: true, input_field_placeholder: "WELCOME10 | percent | 10 | 1000 | 100 | RUB | - | 2026-12-31" });
+    return;
+  }
+  if (scope === "promocodes" && action === "toggle" && first) {
+    const [promo] = await db.select({ id: promoCodes.id, code: promoCodes.code, active: promoCodes.active }).from(promoCodes).where(eq(promoCodes.id, first)).limit(1);
+    if (!promo) { await sendMessage(token, chatId, "Промокод не найден.", backKeyboard()); return; }
+    await db.update(promoCodes).set({ active: !promo.active, updatedAt: new Date().toISOString() }).where(eq(promoCodes.id, promo.id));
+    await audit(db, adminId, "promocode.toggle", promo.id, { code: promo.code, active: !promo.active });
+    await sendPromoDetails(db, token, chatId, promo.id, role);
+    return;
+  }
   if (data === "status") {
     const staleBoundary = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const [recent, stale, lowStock, errorTotals] = await Promise.all([
@@ -1653,6 +1786,8 @@ export async function POST(request: Request) {
       await sendOperationalErrors(getDb(), token, chatId, from.id, 24);
     } else if (command === "/analytics") {
       await sendAnalyticsSummary(getDb(), token, chatId, 7, role);
+    } else if (command === "/promocodes") {
+      await sendPromoCodes(getDb(), token, chatId, role);
     } else if (command === "/customers") {
       await sendCustomersPage(getDb(), token, chatId);
     } else if (command === "/orders") {

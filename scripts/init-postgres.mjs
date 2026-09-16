@@ -78,6 +78,25 @@ try {
     CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_account_id ON privacy_consent_events(account_id);
     CREATE INDEX IF NOT EXISTS idx_privacy_consent_events_created_at ON privacy_consent_events(created_at);
 
+    CREATE TABLE IF NOT EXISTS promo_codes (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      discount_type TEXT NOT NULL CHECK (discount_type IN ('percent', 'fixed')),
+      discount_value INTEGER NOT NULL CHECK (discount_value > 0),
+      currency TEXT NOT NULL DEFAULT 'RUB',
+      min_order_amount INTEGER NOT NULL DEFAULT 0 CHECK (min_order_amount >= 0),
+      usage_limit INTEGER CHECK (usage_limit IS NULL OR usage_limit > 0),
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      starts_at TEXT,
+      ends_at TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT promo_codes_percent_below_100 CHECK (discount_type <> 'percent' OR discount_value < 100)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code);
+    CREATE INDEX IF NOT EXISTS idx_promo_codes_active_dates ON promo_codes(active, starts_at, ends_at);
+
     CREATE TABLE IF NOT EXISTS request_rate_limits (
       key TEXT PRIMARY KEY,
       action TEXT NOT NULL,
@@ -136,6 +155,8 @@ try {
       payment_method TEXT NOT NULL CHECK (payment_method IN ('crypto', 'manager')),
       status TEXT NOT NULL CHECK (status IN ('NEW', 'WAITING_FOR_MANAGER', 'WAITING_PAYMENT', 'PAYMENT_PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED')),
       subtotal_amount INTEGER NOT NULL DEFAULT 0,
+      promo_code TEXT,
+      discount_amount INTEGER NOT NULL DEFAULT 0,
       delivery_amount INTEGER NOT NULL DEFAULT 0,
       total_amount INTEGER NOT NULL,
       currency TEXT NOT NULL DEFAULT 'RUB',
@@ -161,6 +182,8 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_account_id TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS subtotal_amount INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_amount INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
@@ -709,12 +732,17 @@ try {
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_delivery_amount_nonnegative') THEN
         ALTER TABLE orders ADD CONSTRAINT orders_delivery_amount_nonnegative CHECK (delivery_amount >= 0);
       END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_discount_amount_nonnegative') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_discount_amount_nonnegative CHECK (discount_amount >= 0);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_discount_not_above_subtotal') THEN
+        ALTER TABLE orders ADD CONSTRAINT orders_discount_not_above_subtotal CHECK (discount_amount <= subtotal_amount);
+      END IF;
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_total_amount_nonnegative') THEN
         ALTER TABLE orders ADD CONSTRAINT orders_total_amount_nonnegative CHECK (total_amount >= 0);
       END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'orders_total_amount_consistent') THEN
-        ALTER TABLE orders ADD CONSTRAINT orders_total_amount_consistent CHECK (total_amount = subtotal_amount + delivery_amount);
-      END IF;
+      ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_total_amount_consistent;
+      ALTER TABLE orders ADD CONSTRAINT orders_total_amount_consistent CHECK (total_amount = subtotal_amount - discount_amount + delivery_amount);
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'order_items_delivery_cost_nonnegative') THEN
         ALTER TABLE order_items ADD CONSTRAINT order_items_delivery_cost_nonnegative CHECK (delivery_cost >= 0);
       END IF;

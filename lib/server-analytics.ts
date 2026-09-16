@@ -23,6 +23,7 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
     customerAccountId: orders.customerAccountId,
     analyticsClientId: orders.analyticsClientId,
     totalAmount: orders.totalAmount,
+    promoCode: orders.promoCode,
     currency: orders.currency,
     sentAt: config.sentAt,
   }).from(orders).where(eq(orders.id, orderId)).limit(1);
@@ -51,6 +52,7 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
           transaction_id: order.orderNumber,
           value: order.totalAmount,
           currency: order.currency,
+          ...(order.promoCode ? { coupon: order.promoCode } : {}),
           items: items.map((item) => ({ item_id: item.sku, item_name: item.productName, item_category: item.simType, price: item.unitPrice, quantity: item.quantity })),
         },
       }],

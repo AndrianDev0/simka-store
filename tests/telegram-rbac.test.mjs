@@ -29,6 +29,9 @@ test("explicit assignments override safe defaults and malformed assignments are 
 test("role matrix separates analytics, sales, support and privileged operations", () => {
   assert.equal(telegramRoleCan("analyst", "analytics.export"), true);
   assert.equal(telegramRoleCan("analyst", "orders.read"), false);
+  assert.equal(telegramRoleCan("analyst", "promocodes.read"), true);
+  assert.equal(telegramRoleCan("analyst", "promocodes.write"), false);
+  assert.equal(telegramRoleCan("marketing", "promocodes.write"), true);
   assert.equal(telegramRoleCan("sales", "orders.write"), true);
   assert.equal(telegramRoleCan("support", "orders.read"), true);
   assert.equal(telegramRoleCan("support", "orders.write"), false);
@@ -41,8 +44,10 @@ test("callbacks, commands and forced replies are classified before execution", (
   assert.equal(telegramCallbackPermission("order:paid_confirm:SIM-1"), "orders.write");
   assert.equal(telegramCallbackPermission("customer:view:id"), "customers.read");
   assert.equal(telegramCallbackPermission("product:update:1"), "catalog.write");
+  assert.equal(telegramCallbackPermission("promocodes:toggle:id"), "promocodes.write");
   assert.equal(telegramCommandPermission("/category_delete"), "catalog.write");
   assert.equal(telegramCommandPermission("/orders"), "orders.read");
   assert.equal(telegramReplyPermission("[FULFILL_ESIM:00000000-0000-4000-8000-000000000000]"), "orders.write");
   assert.equal(telegramReplyPermission("[EDIT_CUSTOMER:00000000-0000-4000-8000-000000000000:email]"), "customers.write");
+  assert.equal(telegramReplyPermission("[CREATE_PROMO]"), "promocodes.write");
 });

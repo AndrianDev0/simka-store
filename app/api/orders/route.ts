@@ -1,7 +1,7 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { catalogProducts, cryptoPayments, orderItems, orders, productVariants } from "@/db/schema";
+import { catalogProducts, cryptoPayments, orderItems, orders, productVariants, promoCodes } from "@/db/schema";
 import { getCatalogProducts } from "@/lib/catalog-repository";
 import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } from "@/lib/crypto-payments";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
@@ -9,7 +9,9 @@ import { getEmailValidationError } from "@/lib/email-validation";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
+import { evaluatePromoCode, isValidPromoCodeFormat, normalizePromoCode } from "@/lib/promo-codes";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
+import { resolveTelegramRole, telegramRoleCan } from "@/lib/telegram-rbac";
 
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
@@ -19,6 +21,7 @@ const payloadSchema = z.object({
   deliveryAddress: z.string().trim().max(500).optional(),
   customerComment: z.string().trim().max(1000).default(""),
   paymentMethod: z.enum(["crypto", "manager"]),
+  promoCode: z.string().trim().max(32).optional(),
   analytics: z.object({
     source: z.string().trim().max(200).optional(),
     medium: z.string().trim().max(200).optional(),
@@ -29,6 +32,8 @@ const payloadSchema = z.object({
   items: z.array(z.object({ productId: z.number().int().positive(), variantId: z.number().int().positive().optional(), quantity: z.number().int().min(1).max(20) })).min(1).max(30),
   deliverySelections: z.array(z.object({ productId: z.number().int().positive(), optionId: z.string().trim().min(1).max(80) })).max(30).default([]),
 }).strict();
+
+class PromoCodeError extends Error {}
 
 function orderNumber() {
   const date = new Date().toISOString().slice(0, 10).replaceAll("-", "");
@@ -66,6 +71,8 @@ async function notifyManagers(order: {
   customerContact: string;
   paymentMethod: "crypto" | "manager";
   totalAmount: number;
+  promoCode?: string;
+  discountAmount: number;
   deliveryAmount: number;
   deliveryAddress?: string;
   deliveryMethods: string[];
@@ -78,7 +85,11 @@ async function notifyManagers(order: {
   checkoutUrl?: string;
 }) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const adminIds = (process.env.TELEGRAM_ADMIN_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  const adminIdsValue = process.env.TELEGRAM_ADMIN_IDS ?? "";
+  const adminIds = adminIdsValue.split(",").map((id) => id.trim()).filter((id) => {
+    const role = resolveTelegramRole(id, adminIdsValue, process.env.TELEGRAM_ADMIN_ROLES);
+    return Boolean(role && telegramRoleCan(role, "orders.read"));
+  });
   if (!token || !adminIds.length) return false;
   const paymentLabel = order.paymentMethod === "manager" ? "через менеджера" : "криптовалюта (ожидает провайдера)";
   const lines = order.items.map((item) => `• ${item.productName} × ${item.quantity}`).join("\n");
@@ -90,6 +101,7 @@ async function notifyManagers(order: {
     order.customerContact ? `Контакт: ${order.customerContact}` : "",
     `Оплата: ${paymentLabel}`,
     `Сумма: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
+    order.promoCode ? `Промокод: ${order.promoCode} · скидка ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
     order.deliveryAmount ? `Доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
     order.deliveryAddress ? `Адрес: ${order.deliveryAddress}` : "",
     order.deliveryMethods.length ? `Способ доставки: ${order.deliveryMethods.join(", ")}` : "",
@@ -126,6 +138,8 @@ async function notifyCustomer(order: {
   customerEmail: string;
   paymentMethod: "crypto" | "manager";
   totalAmount: number;
+  promoCode?: string;
+  discountAmount: number;
   deliveryAmount: number;
   hasPendingDeliveryCost: boolean;
   currency: string;
@@ -146,8 +160,8 @@ async function notifyCustomer(order: {
   return sendTransactionalEmail({
     to: order.customerEmail,
     subject: `Заказ ${order.orderNumber} создан — SIMKA`,
-    text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}${paymentLinkText}\n\nСохраните номер заказа для обращения в поддержку.`,
-    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p>${paymentLinkHtml}<p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
+    text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.promoCode ? `\nПромокод: ${order.promoCode}\nСкидка: ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}${paymentLinkText}\n\nСохраните номер заказа для обращения в поддержку.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.promoCode ? `<br>Промокод: <strong>${escapeHtml(order.promoCode)}</strong><br>Скидка: <strong>${escapeHtml(`${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p>${paymentLinkHtml}<p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
     idempotencyKey: `order-created/${order.orderNumber}`,
   });
 }
@@ -178,11 +192,11 @@ export async function POST(request: Request) {
     // Keep guest checkout available, but link new orders to the signed-in
     // customer so the personal cabinet can show a private order history.
     const account = await getCurrentAccount();
-    const [existing] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
+    const [existing] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
     if (existing) {
       const canContinueCryptoPayment = existing.paymentMethod === "crypto" && ["WAITING_PAYMENT", "PAYMENT_PENDING"].includes(existing.status);
       const [existingPayment] = canContinueCryptoPayment ? await db.select({ checkoutUrl: cryptoPayments.checkoutUrl }).from(cryptoPayments).where(eq(cryptoPayments.orderId, existing.id)).limit(1) : [];
-      return Response.json({ order: { orderNumber: existing.orderNumber, paymentMethod: existing.paymentMethod, status: existing.status, totalAmount: existing.totalAmount, currency: existing.currency, checkoutUrl: existingPayment?.checkoutUrl ?? undefined, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
+      return Response.json({ order: { orderNumber: existing.orderNumber, paymentMethod: existing.paymentMethod, status: existing.status, totalAmount: existing.totalAmount, currency: existing.currency, promoCode: existing.promoCode, discountAmount: existing.discountAmount, checkoutUrl: existingPayment?.checkoutUrl ?? undefined, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
     }
 
     const catalog = await getCatalogProducts({ requireDatabase: true });
@@ -244,7 +258,9 @@ export async function POST(request: Request) {
     const number = orderNumber();
     const subtotalAmount = resolved.reduce((sum, line) => sum + line.lineTotal, 0);
     const deliveryAmount = [...deliveryByProduct.values()].reduce((sum, option) => sum + (option.cost ?? 0), 0);
-    const totalAmount = subtotalAmount + deliveryAmount;
+    let discountAmount = 0;
+    let appliedPromoCode: string | null = null;
+    let totalAmount = subtotalAmount + deliveryAmount;
     const status = parsed.data.paymentMethod === "manager" ? "WAITING_FOR_MANAGER" : "WAITING_PAYMENT";
     const chargedDeliveryProducts = new Set<number>();
     const itemRows = resolved.flatMap(({ product, variant, quantity, unitPrice, lineTotal }) => {
@@ -263,6 +279,19 @@ export async function POST(request: Request) {
       }));
     });
     await db.transaction(async (tx) => {
+      if (parsed.data.promoCode) {
+        if (!isValidPromoCodeFormat(parsed.data.promoCode)) throw new PromoCodeError("Проверьте промокод");
+        const code = normalizePromoCode(parsed.data.promoCode);
+        const [promo] = await tx.select().from(promoCodes).where(eq(promoCodes.code, code)).for("update").limit(1);
+        if (!promo) throw new PromoCodeError("Промокод не найден");
+        const [usage] = await tx.select({ count: sql<number>`count(*)::int` }).from(orders)
+          .where(and(eq(orders.promoCode, code), notInArray(orders.status, ["CANCELLED", "REFUNDED", "FAILED"])));
+        const promoResult = evaluatePromoCode(promo, { subtotalAmount, currency, usedCount: usage?.count ?? 0 });
+        if (!promoResult.valid) throw new PromoCodeError(promoResult.error);
+        appliedPromoCode = promoResult.code;
+        discountAmount = promoResult.discountAmount;
+        totalAmount = subtotalAmount - discountAmount + deliveryAmount;
+      }
       for (const [productId, quantity] of quantityByProduct) {
         const product = productById.get(productId)!;
         if (product.stockQuantity === null) continue;
@@ -285,7 +314,7 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), analyticsSource: parsed.data.analytics?.source || null, analyticsMedium: parsed.data.analytics?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || null, analyticsContent: parsed.data.analytics?.content || null, analyticsTerm: parsed.data.analytics?.term || null });
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, promoCode: appliedPromoCode, discountAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), analyticsSource: parsed.data.analytics?.source || null, analyticsMedium: parsed.data.analytics?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || null, analyticsContent: parsed.data.analytics?.content || null, analyticsTerm: parsed.data.analytics?.term || null });
       await tx.insert(orderItems).values(itemRows);
       if (parsed.data.paymentMethod === "crypto" && cryptoConfig) {
         await tx.insert(cryptoPayments).values({ id: crypto.randomUUID(), orderId: id, provider: cryptoConfig.provider, requestedAmount: totalAmount, requestedCurrency: currency.toUpperCase() });
@@ -315,6 +344,8 @@ export async function POST(request: Request) {
         customerContact: parsed.data.customerContact,
         paymentMethod: parsed.data.paymentMethod,
         totalAmount,
+        promoCode: appliedPromoCode ?? undefined,
+        discountAmount,
         deliveryAmount,
         deliveryAddress: parsed.data.deliveryAddress,
         deliveryMethods: [...deliveryByProduct.values()].map((option) => option.label),
@@ -337,13 +368,13 @@ export async function POST(request: Request) {
       console.error("order_customer_notification_failed", { name: customerResult.reason instanceof Error ? customerResult.reason.name : "UnknownError" });
       await recordOperationalEvent({ kind: "notification_error", severity: "error", area: "email", path: "/api/orders", code: "customer_notification_failed" });
     }
-    return Response.json({ order: { orderNumber: number, paymentMethod: parsed.data.paymentMethod, status, totalAmount, currency, checkoutUrl, managerNotified, customerNotified } }, { status: 201, headers: { "Cache-Control": "no-store" } });
+    return Response.json({ order: { orderNumber: number, paymentMethod: parsed.data.paymentMethod, status, totalAmount, currency, promoCode: appliedPromoCode, discountAmount, checkoutUrl, managerNotified, customerNotified } }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const errorCode = typeof error === "object" && error !== null && "code" in error ? String(error.code) : null;
     if (errorCode === "23505" && validatedRequestId) {
       try {
         const db = getDb();
-        const [existing] = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.requestId, validatedRequestId)).limit(1);
+        const [existing] = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount }).from(orders).where(eq(orders.requestId, validatedRequestId)).limit(1);
         if (existing) return Response.json({ order: { ...existing, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
       } catch (lookupError) {
         console.error("duplicate_order_lookup_failed", { name: lookupError instanceof Error ? lookupError.name : "UnknownError" });
@@ -358,6 +389,7 @@ export async function POST(request: Request) {
     if (error instanceof Error && error.message === "DELIVERY_OPTION_UNAVAILABLE") return Response.json({ error: "Выберите доступный способ доставки для каждой физической SIM" }, { status: 409 });
     if (error instanceof Error && error.message === "DELIVERY_CURRENCY_MISMATCH") return Response.json({ error: "Способ доставки указан в другой валюте. Оформите заказ отдельно." }, { status: 409 });
     if (error instanceof Error && error.message === "DELIVERY_REQUIRES_MANAGER") return Response.json({ error: "Эту доставку должен подтвердить менеджер. Выберите оплату через менеджера." }, { status: 409 });
+    if (error instanceof PromoCodeError) return Response.json({ error: error.message }, { status: 409 });
     if (error instanceof Error && error.message === "CRYPTO_PAYMENT_CREATION_FAILED") return Response.json({ error: "Платёжный провайдер временно недоступен. Заказ не оплачен." }, { status: 502 });
     console.error("order_creation_failed", { name: error instanceof Error ? error.name : "UnknownError" });
     await recordOperationalEvent({ kind: "api_error", severity: "critical", area: "checkout", path: "/api/orders", code: "order_creation_failed" });
