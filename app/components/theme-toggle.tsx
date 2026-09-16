@@ -1,14 +1,31 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 
 export function ThemeToggle() {
-  const { resolvedTheme, setTheme } = useTheme();
-  const isDark = resolvedTheme === "dark";
+  const { setTheme } = useTheme();
+  const [isDark, setIsDark] = useState(false);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const syncTheme = () => setIsDark(root.classList.contains("dark"));
+    syncTheme();
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
+  const toggleTheme = () => {
+    const nextTheme = document.documentElement.classList.contains("dark") ? "light" : "dark";
+    setTheme(nextTheme);
+    setIsDark(nextTheme === "dark");
+  };
+
   return <button
     type="button"
-    onClick={() => setTheme(isDark ? "light" : "dark")}
+    onClick={toggleTheme}
     aria-label={isDark ? "Включить светлую тему" : "Включить тёмную тему"}
     aria-pressed={isDark}
     title={isDark ? "Светлая тема" : "Тёмная тема"}
