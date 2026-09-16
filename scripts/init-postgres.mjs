@@ -18,6 +18,14 @@ await client.connect();
 try {
   await client.query("BEGIN");
   await client.query(`
+    DO $do$
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'pg_trgm is unavailable; catalog search will work without trigram acceleration';
+    END
+    $do$;
+
     CREATE TABLE IF NOT EXISTS customer_accounts (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL,
@@ -405,6 +413,26 @@ try {
       PRIMARY KEY (product_id, category_id)
     );
     CREATE INDEX IF NOT EXISTS idx_product_categories_category_id ON product_categories(category_id);
+
+    DO $do$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+        CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_products_sku_trgm ON products USING GIN (sku gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_products_slug_trgm ON products USING GIN (slug gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_products_short_description_trgm ON products USING GIN (short_description gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_countries_name_trgm ON countries USING GIN (name gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_countries_slug_trgm ON countries USING GIN (slug gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_operators_name_trgm ON operators USING GIN (name gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_operators_slug_trgm ON operators USING GIN (slug gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_categories_name_trgm ON categories USING GIN (name gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_categories_slug_trgm ON categories USING GIN (slug gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_product_variants_name_trgm ON product_variants USING GIN (name gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_product_variants_sku_trgm ON product_variants USING GIN (sku gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_product_variants_data_trgm ON product_variants USING GIN (data_volume gin_trgm_ops);
+      END IF;
+    END
+    $do$;
 
     CREATE TABLE IF NOT EXISTS admin_audit_log (
       id TEXT PRIMARY KEY,

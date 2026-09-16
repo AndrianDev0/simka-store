@@ -1,13 +1,15 @@
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   catalogProducts,
+  categories,
   countries,
   operators,
   productCategories,
   productImages,
   productVariants,
 } from "@/db/schema";
+import { catalogSearchPattern, normalizeCatalogSearchQuery } from "@/lib/catalog-search";
 import {
   products as fallbackProducts,
   type Product,
@@ -49,7 +51,7 @@ export type CatalogQueryOptions = {
   requireDatabase?: boolean;
 };
 
-type ProductSelector = { id?: number; slug?: string };
+type ProductSelector = { id?: number; ids?: number[]; slug?: string };
 
 let fallbackWarningEmitted = false;
 
@@ -83,12 +85,14 @@ function cloneFallbackProduct(product: Product): Product {
 function fallback(options: CatalogQueryOptions, selector: ProductSelector = {}) {
   return fallbackProducts
     .filter((product) => selector.id === undefined || product.id === selector.id)
+    .filter((product) => selector.ids === undefined || selector.ids.includes(product.id))
     .filter((product) => selector.slug === undefined || product.slug === selector.slug)
     .filter((product) => isVisible(product, options))
     .map(cloneFallbackProduct);
 }
 
 async function loadFromDatabase(options: CatalogQueryOptions, selector: ProductSelector = {}): Promise<Product[]> {
+  if (selector.ids?.length === 0) return [];
   const db = getDb();
   const predicates = [
     isNull(catalogProducts.archivedAt),
@@ -102,6 +106,7 @@ async function loadFromDatabase(options: CatalogQueryOptions, selector: ProductS
   }
   if (options.availableOnly) predicates.push(eq(catalogProducts.available, true));
   if (selector.id !== undefined) predicates.push(eq(catalogProducts.id, selector.id));
+  if (selector.ids !== undefined) predicates.push(inArray(catalogProducts.id, selector.ids));
   if (selector.slug !== undefined) predicates.push(eq(catalogProducts.slug, selector.slug));
 
   const rows = await db.select({
@@ -251,6 +256,70 @@ async function loadWithFallback(options: CatalogQueryOptions, selector: ProductS
 /** Returns published products by default, including unavailable items. */
 export async function getCatalogProducts(options: CatalogQueryOptions = {}): Promise<CatalogProduct[]> {
   return loadWithFallback(options);
+}
+
+export type CatalogSearchResult = { items: CatalogProduct[]; total: number; limit: number; offset: number };
+
+export async function searchCatalogProducts(rawQuery: string, page = 1, pageSize = 24): Promise<CatalogSearchResult> {
+  const query = normalizeCatalogSearchQuery(rawQuery);
+  const limit = Math.min(48, Math.max(1, Math.trunc(pageSize) || 24));
+  const safePage = Math.min(10_000, Math.max(1, Math.trunc(page) || 1));
+  const offset = (safePage - 1) * limit;
+  if (!query) return { items: [], total: 0, limit, offset };
+
+  try {
+    const db = getDb();
+    const pattern = catalogSearchPattern(query);
+    const match = or(
+      ilike(catalogProducts.name, pattern),
+      ilike(catalogProducts.sku, pattern),
+      ilike(catalogProducts.slug, pattern),
+      ilike(catalogProducts.shortDescription, pattern),
+      ilike(countries.name, pattern),
+      ilike(countries.slug, pattern),
+      ilike(operators.name, pattern),
+      ilike(operators.slug, pattern),
+      and(eq(categories.isPublished, true), isNull(categories.archivedAt), or(ilike(categories.name, pattern), ilike(categories.slug, pattern))),
+      ilike(productVariants.name, pattern),
+      ilike(productVariants.sku, pattern),
+      ilike(productVariants.dataVolume, pattern),
+    );
+    const where = and(
+      isNull(catalogProducts.archivedAt),
+      isNull(countries.archivedAt),
+      isNull(operators.archivedAt),
+      eq(catalogProducts.publicationStatus, "PUBLISHED"),
+      eq(countries.publicationStatus, "PUBLISHED"),
+      eq(operators.publicationStatus, "PUBLISHED"),
+      match,
+    );
+    const joined = () => db.selectDistinct({ id: catalogProducts.id, sortOrder: catalogProducts.sortOrder }).from(catalogProducts)
+      .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
+      .innerJoin(operators, eq(catalogProducts.operatorId, operators.id))
+      .leftJoin(productCategories, eq(productCategories.productId, catalogProducts.id))
+      .leftJoin(categories, eq(productCategories.categoryId, categories.id))
+      .leftJoin(productVariants, eq(productVariants.productId, catalogProducts.id));
+    const [idRows, countRows] = await Promise.all([
+      joined().where(where).orderBy(asc(catalogProducts.sortOrder), asc(catalogProducts.id)).limit(limit).offset(offset),
+      db.select({ total: sql<number>`COUNT(DISTINCT ${catalogProducts.id})::int` }).from(catalogProducts)
+        .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
+        .innerJoin(operators, eq(catalogProducts.operatorId, operators.id))
+        .leftJoin(productCategories, eq(productCategories.productId, catalogProducts.id))
+        .leftJoin(categories, eq(productCategories.categoryId, categories.id))
+        .leftJoin(productVariants, eq(productVariants.productId, catalogProducts.id))
+        .where(where),
+    ]);
+    const items = await loadFromDatabase({}, { ids: idRows.map((row) => row.id) });
+    return { items, total: Number(countRows[0]?.total || 0), limit, offset };
+  } catch (error) {
+    warnAboutFallback(error);
+    const normalized = query.toLocaleLowerCase("ru-RU");
+    const matches = fallback({}, {}).filter((product) => {
+      const variants = product.variants.map((variant) => `${variant.name} ${variant.sku} ${variant.data || ""}`).join(" ");
+      return `${product.name} ${product.country} ${product.operator} ${product.sku} ${product.slug} ${product.shortDescription} ${variants}`.toLocaleLowerCase("ru-RU").includes(normalized);
+    });
+    return { items: matches.slice(offset, offset + limit), total: matches.length, limit, offset };
+  }
 }
 
 export async function getCatalogProductById(
