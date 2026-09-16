@@ -50,7 +50,7 @@ export async function CatalogGrid({ items }: { items?: CatalogProduct[] }) {
         const titleId = `catalog-product-${product.id}`;
 
         return (
-          <article key={product.id} aria-labelledby={titleId} className="flex h-full flex-col overflow-hidden rounded-2xl border border-[#dce5ee] bg-white shadow-[0_8px_24px_rgba(23,58,96,.04)] transition-shadow hover:shadow-[0_14px_35px_rgba(23,58,96,.09)]">
+          <article key={product.id} aria-labelledby={titleId} className="flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-[0_8px_24px_rgba(23,58,96,.04)] transition-shadow hover:shadow-[0_14px_35px_rgba(23,58,96,.09)]">
             <div className={`relative h-36 overflow-hidden bg-gradient-to-br ${product.tone}`}>
               {image ? (
                 <img src={image.url} alt={image.alt || product.name} width={720} height={360} loading="lazy" decoding="async" className="h-full w-full object-cover" />
@@ -78,10 +78,10 @@ export async function CatalogGrid({ items }: { items?: CatalogProduct[] }) {
               {product.shortDescription && <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#637389]">{product.shortDescription}</p>}
 
               <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
-                <div className="rounded-xl bg-[#f6f9fc] p-3"><dt className="flex items-center gap-1.5 text-xs text-[#6d7d90]"><Wifi aria-hidden="true" className="size-3.5 text-[#1168e8]" />Интернет</dt><dd className="mt-1 font-bold text-[#213752]">{product.data}</dd></div>
-                <div className="rounded-xl bg-[#f6f9fc] p-3"><dt className="flex items-center gap-1.5 text-xs text-[#6d7d90]"><Clock3 aria-hidden="true" className="size-3.5 text-[#1168e8]" />Срок</dt><dd className="mt-1 font-bold text-[#213752]">{product.days} дней</dd></div>
-                <div className="rounded-xl bg-[#f6f9fc] p-3"><dt className="flex items-center gap-1.5 text-xs text-[#6d7d90]"><Phone aria-hidden="true" className="size-3.5 text-[#1168e8]" />Звонки</dt><dd className="mt-1 font-bold text-[#213752]">{product.hasCalls ? product.calls || "Включены" : "Нет"}</dd></div>
-                <div className="rounded-xl bg-[#f6f9fc] p-3"><dt className="flex items-center gap-1.5 text-xs text-[#6d7d90]"><MessageSquareText aria-hidden="true" className="size-3.5 text-[#1168e8]" />SMS</dt><dd className="mt-1 font-bold text-[#213752]">{product.hasSms ? product.sms || "Включены" : "Нет"}</dd></div>
+                <div className="rounded-xl border border-border/60 bg-muted p-3"><dt className="flex items-center gap-1.5 text-xs text-muted-foreground"><Wifi aria-hidden="true" className="size-3.5 text-primary" />Интернет</dt><dd className="mt-1 font-bold text-card-foreground">{product.data}</dd></div>
+                <div className="rounded-xl border border-border/60 bg-muted p-3"><dt className="flex items-center gap-1.5 text-xs text-muted-foreground"><Clock3 aria-hidden="true" className="size-3.5 text-primary" />Срок</dt><dd className="mt-1 font-bold text-card-foreground">{product.days} дней</dd></div>
+                <div className="rounded-xl border border-border/60 bg-muted p-3"><dt className="flex items-center gap-1.5 text-xs text-muted-foreground"><Phone aria-hidden="true" className="size-3.5 text-primary" />Звонки</dt><dd className="mt-1 font-bold text-card-foreground">{product.hasCalls ? product.calls || "Включены" : "Нет"}</dd></div>
+                <div className="rounded-xl border border-border/60 bg-muted p-3"><dt className="flex items-center gap-1.5 text-xs text-muted-foreground"><MessageSquareText aria-hidden="true" className="size-3.5 text-primary" />SMS</dt><dd className="mt-1 font-bold text-card-foreground">{product.hasSms ? product.sms || "Включены" : "Нет"}</dd></div>
               </dl>
 
               <div className="mt-auto flex items-end justify-between gap-3 pt-5">
