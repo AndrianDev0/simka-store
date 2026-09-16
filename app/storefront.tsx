@@ -7,11 +7,13 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trackEvent, trackOnce, type AnalyticsItem } from "@/lib/analytics";
+import { parseStoredCart, serializeCart } from "@/lib/cart-storage";
 import { productDisplayOffer, productIsAvailable, variantIsAvailable, type Product, type ProductVariant } from "@/lib/catalog";
 import type { PublicCategory } from "@/lib/categories";
 const regions = ["Все направления", "Европа", "Азия", "Ближний Восток", "Америка"];
 type OrderReceipt = { number: string; paymentMethod: "crypto" | "manager"; checkoutUrl?: string; managerNotified: boolean; customerNotified: boolean; value: number; currency: string; items: AnalyticsItem[] };
 const cryptoPaymentEnabled = process.env.NEXT_PUBLIC_CRYPTO_PAYMENT_ENABLED === "true";
+const CART_STORAGE_KEY = "simka-cart-v1";
 type CartLine = { key: string; product: Product; variant: ProductVariant | null; quantity: number; price: number; currency: string; sku: string; data: string; days: number };
 
 function variantIsPurchasable(variant: ProductVariant) { return variantIsAvailable(variant); }
@@ -25,11 +27,41 @@ function analyticsItem(line: CartLine, quantity = line.quantity): AnalyticsItem 
 export default function Storefront({categories=[],products}:{categories?:PublicCategory[];products:Product[]}) {
   const [query,setQuery]=useState(""); const [region,setRegion]=useState("Все направления"); const [type,setType]=useState("Все типы");
   const [cart,setCart]=useState<Record<string,number>>({}); const [cartOpen,setCartOpen]=useState(false); const [checkout,setCheckout]=useState(false); const [ordered,setOrdered]=useState<OrderReceipt|null>(null); const [mobileMenu,setMobileMenu]=useState(false);
+  const cartHydrated=useRef(false);
   const visible=useMemo(()=>products.filter(p=>productIsPurchasable(p)&&`${p.name} ${p.country} ${p.operator} ${p.region} ${p.sku} ${p.variants.map(variant=>`${variant.name} ${variant.sku} ${variant.data||""}`).join(" ")}`.toLowerCase().includes(query.toLowerCase())&&(region==="Все направления"||p.region===region)&&(type==="Все типы"||p.type===type)),[products,query,region,type]);
   const cartItems=useMemo<CartLine[]>(()=>Object.entries(cart).flatMap(([key,quantity])=>{const [productId,variantId]=key.split(":").map(Number);const product=products.find(item=>item.id===productId);if(!product)return[];const variant=variantId?product.variants.find(item=>item.id===variantId)??null:null;return [{key,product,variant,quantity,price:variant?.price??product.price,currency:variant?.currency??product.currency,sku:variant?.sku??product.sku,data:variant?.data??product.data,days:variant?.days??product.days}]}),[cart,products]);
   const cartCount=cartItems.reduce((sum,line)=>sum+line.quantity,0); const total=cartItems.reduce((sum,line)=>sum+line.price*line.quantity,0); const cartCurrencies=[...new Set(cartItems.map(line=>line.currency))]; const cartCurrency=cartCurrencies[0]??"RUB"; const mixedCurrencies=cartCurrencies.length>1;
   const add=useCallback((id:number,variantId?:number)=>{const product=products.find(item=>item.id===id);if(!product||!productIsPurchasable(product))return;const selected=variantId?product.variants.find(item=>item.id===variantId&&variantIsPurchasable(item))??null:defaultVariant(product);if(product.variants.length&&!selected)return;const key=cartKey(id,selected?.id??null);const stock=selected?.stockQuantity??product.stockQuantity;const previous=cart[key]||0;const next=stock===null?previous+1:Math.min(stock,previous+1);setCart(current=>({...current,[key]:stock===null?((current[key]||0)+1):Math.min(stock,(current[key]||0)+1)}));if(next>previous){const line:CartLine={key,product,variant:selected,quantity:next-previous,price:selected?.price??product.price,currency:selected?.currency??product.currency,sku:selected?.sku??product.sku,data:selected?.data??product.data,days:selected?.days??product.days};trackEvent("add_to_cart",{currency:line.currency,value:line.price*(next-previous),items:[analyticsItem(line,next-previous)]})}},[cart,products]);
   const change=(key:string,amount:number)=>{const [productId,variantId]=key.split(":").map(Number);const product=products.find(item=>item.id===productId);const variant=variantId?product?.variants.find(item=>item.id===variantId):null;const stock=variant?.stockQuantity??product?.stockQuantity??null;const previous=cart[key]||0;const requested=Math.max(0,previous+amount);const next=stock===null?requested:Math.min(stock,requested);if(product&&next!==previous){const quantity=Math.abs(next-previous);const line:CartLine={key,product,variant:variant??null,quantity,price:variant?.price??product.price,currency:variant?.currency??product.currency,sku:variant?.sku??product.sku,data:variant?.data??product.data,days:variant?.days??product.days};trackEvent(amount>0?"add_to_cart":"remove_from_cart",{currency:line.currency,value:line.price*quantity,items:[analyticsItem(line,quantity)]})}setCart(current=>{const updated={...current,[key]:next};if(!next)delete updated[key];return updated})};
+
+  useEffect(()=>{
+    let stored:Record<string,number>={};
+    try{stored=parseStoredCart(window.localStorage.getItem(CART_STORAGE_KEY));}catch{/* Storage can be disabled by the browser. */}
+    const restored:Record<string,number>={};
+    for(const [key,quantity] of Object.entries(stored)){
+      const [productId,variantId]=key.split(":").map(Number);
+      const product=products.find(item=>item.id===productId&&productIsPurchasable(item));
+      if(!product)continue;
+      const variant=variantId?product.variants.find(item=>item.id===variantId&&variantIsPurchasable(item))??null:null;
+      if((variantId&&!variant)||(product.variants.length&&!variant))continue;
+      const stock=variant?.stockQuantity??product.stockQuantity;
+      const available=stock===null?quantity:Math.min(quantity,stock);
+      if(available>0)restored[key]=available;
+    }
+    const timer=window.setTimeout(()=>{
+      setCart(restored);
+      cartHydrated.current=true;
+    },0);
+    return()=>window.clearTimeout(timer);
+  },[products]);
+
+  useEffect(()=>{
+    if(!cartHydrated.current)return;
+    try{
+      if(Object.keys(cart).length)window.localStorage.setItem(CART_STORAGE_KEY,serializeCart(cart));
+      else window.localStorage.removeItem(CART_STORAGE_KEY);
+    }catch{/* Checkout still works when browser storage is unavailable. */}
+  },[cart]);
 
   useEffect(()=>{
     if(!query&&region==="Все направления"&&type==="Все типы")return;
