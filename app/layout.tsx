@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { AnalyticsProvider } from "@/app/components/analytics-provider";
+import { ThemeProvider } from "@/app/components/theme-provider";
 import { DEFAULT_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from "@/lib/seo";
 import "./globals.css";
 
@@ -45,8 +46,11 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  colorScheme: "light",
-  themeColor: "#ffffff",
+  colorScheme: "light dark",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#05070b" },
+  ],
 };
 
 export default function RootLayout({
@@ -55,8 +59,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru">
-      <body className="antialiased"><AnalyticsProvider />{children}</body>
+    <html lang="ru" suppressHydrationWarning>
+      <body className="antialiased"><ThemeProvider><AnalyticsProvider />{children}</ThemeProvider></body>
     </html>
   );
 }
