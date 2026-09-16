@@ -190,7 +190,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
     <SiteShell eyebrow={`${product.flag} ${product.country} · ${product.operator}`} title={product.h1 || product.name} description={product.shortDescription}>
       <ProductAnalytics itemId={product.sku} itemName={product.name} itemCategory={assignedCategories[0]?.name} itemVariant={product.type} price={displayPrice} currency={displayCurrency} />
       <ContentSection>
-        <nav aria-label="Хлебные крошки" className="mb-7 overflow-x-auto text-sm text-[#637389]">
+        <nav aria-label="Хлебные крошки" className="scrollbar-none mb-7 overflow-x-auto text-sm text-[#637389]">
           <ol className="flex min-w-max items-center gap-1.5">
             <li><a href="/" className="rounded-sm hover:text-[#1168e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1168e8]">Главная</a></li>
             <li aria-hidden="true"><ChevronRight className="size-4" /></li>
