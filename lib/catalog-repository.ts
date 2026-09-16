@@ -270,6 +270,13 @@ export async function searchCatalogProducts(rawQuery: string, page = 1, pageSize
   try {
     const db = getDb();
     const pattern = catalogSearchPattern(query);
+    const categoryAlias = query.toLocaleLowerCase("ru-RU");
+    const predefinedCategory = categoryAlias === "europe" || categoryAlias === "европа" ? eq(countries.region, "Европа")
+      : categoryAlias === "asia" || categoryAlias === "азия" ? eq(countries.region, "Азия")
+      : categoryAlias === "america" || categoryAlias === "америка" ? eq(countries.region, "Америка")
+      : categoryAlias === "esim" || categoryAlias === "e-sim" ? eq(catalogProducts.simType, "eSIM")
+      : categoryAlias === "sim" || categoryAlias === "физические sim" ? eq(catalogProducts.simType, "SIM")
+      : undefined;
     const match = or(
       ilike(catalogProducts.name, pattern),
       ilike(catalogProducts.sku, pattern),
@@ -277,12 +284,14 @@ export async function searchCatalogProducts(rawQuery: string, page = 1, pageSize
       ilike(catalogProducts.shortDescription, pattern),
       ilike(countries.name, pattern),
       ilike(countries.slug, pattern),
+      ilike(countries.region, pattern),
       ilike(operators.name, pattern),
       ilike(operators.slug, pattern),
       and(eq(categories.isPublished, true), isNull(categories.archivedAt), or(ilike(categories.name, pattern), ilike(categories.slug, pattern))),
       ilike(productVariants.name, pattern),
       ilike(productVariants.sku, pattern),
       ilike(productVariants.dataVolume, pattern),
+      predefinedCategory,
     );
     const where = and(
       isNull(catalogProducts.archivedAt),

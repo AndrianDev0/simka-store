@@ -423,6 +423,7 @@ try {
         CREATE INDEX IF NOT EXISTS idx_products_short_description_trgm ON products USING GIN (short_description gin_trgm_ops);
         CREATE INDEX IF NOT EXISTS idx_countries_name_trgm ON countries USING GIN (name gin_trgm_ops);
         CREATE INDEX IF NOT EXISTS idx_countries_slug_trgm ON countries USING GIN (slug gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_countries_region_trgm ON countries USING GIN (region gin_trgm_ops);
         CREATE INDEX IF NOT EXISTS idx_operators_name_trgm ON operators USING GIN (name gin_trgm_ops);
         CREATE INDEX IF NOT EXISTS idx_operators_slug_trgm ON operators USING GIN (slug gin_trgm_ops);
         CREATE INDEX IF NOT EXISTS idx_categories_name_trgm ON categories USING GIN (name gin_trgm_ops);
