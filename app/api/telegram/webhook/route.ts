@@ -7,6 +7,7 @@ import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analyt
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
+import { getEmailValidationError } from "@/lib/email-validation";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
@@ -719,8 +720,9 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
   }
   if (replyContext.startsWith("[FIND_CUSTOMER]")) {
     const email = text.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-      await sendMessage(token, chatId, "Введите корректный email клиента.", backKeyboard());
+    const emailError = getEmailValidationError(email);
+    if (emailError) {
+      await sendMessage(token, chatId, emailError, backKeyboard());
       return true;
     }
     const [customer] = await db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1);
@@ -751,7 +753,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const normalizedValue = field === "contact" && value === "-" ? "" : value;
     if (field === "name" && (normalizedValue.length < 2 || normalizedValue.length > 100)) { await sendMessage(token, chatId, "Имя должно быть от 2 до 100 символов.", backKeyboard()); return true; }
     if (field === "contact" && normalizedValue.length > 100) { await sendMessage(token, chatId, "Контакт должен быть не длиннее 100 символов.", backKeyboard()); return true; }
-    if (field === "email" && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedValue.toLowerCase()) || normalizedValue.length > 254)) { await sendMessage(token, chatId, "Введите корректный email.", backKeyboard()); return true; }
+    if (field === "email") { const emailError = getEmailValidationError(normalizedValue); if (emailError) { await sendMessage(token, chatId, emailError, backKeyboard()); return true; } }
     if (field === "email") {
       const duplicate = await db.select({ id: customerAccounts.id }).from(customerAccounts).where(and(eq(customerAccounts.email, normalizedValue.toLowerCase()), sql`${customerAccounts.id} <> ${id}`)).limit(1);
       if (duplicate[0]) { await sendMessage(token, chatId, "Этот email уже занят другим аккаунтом.", { inline_keyboard: [[{ text: "◀️ К клиенту", callback_data: `customer:view:${id}` }]] }); return true; }
@@ -765,8 +767,9 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
   }
   if (replyContext.startsWith("[TEST_EMAIL]")) {
     const email = text.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-      await sendMessage(token, chatId, "Введите корректный email для теста.", backKeyboard());
+    const emailError = getEmailValidationError(email);
+    if (emailError) {
+      await sendMessage(token, chatId, emailError, backKeyboard());
       return true;
     }
     const sentAt = new Date();

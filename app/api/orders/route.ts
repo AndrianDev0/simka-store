@@ -5,6 +5,7 @@ import { catalogProducts, cryptoPayments, orderItems, orders, productVariants } 
 import { getCatalogProducts } from "@/lib/catalog-repository";
 import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } from "@/lib/crypto-payments";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
+import { getEmailValidationError } from "@/lib/email-validation";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
@@ -13,7 +14,7 @@ import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
   customerName: z.string().trim().min(2).max(100),
-  customerEmail: z.string().trim().email().max(254),
+  customerEmail: z.string().trim().max(254).refine((value) => !getEmailValidationError(value), { message: "Проверьте email: адрес выглядит неверным" }),
   customerContact: z.string().trim().max(100).default(""),
   deliveryAddress: z.string().trim().max(500).optional(),
   customerComment: z.string().trim().max(1000).default(""),
@@ -163,7 +164,10 @@ export async function POST(request: Request) {
   let validatedRequestId: string | null = null;
   try {
     const parsed = payloadSchema.safeParse(await request.json());
-    if (!parsed.success) return Response.json({ error: "Проверьте заполненные поля", fields: parsed.error.flatten().fieldErrors }, { status: 400 });
+    if (!parsed.success) {
+      const fields = parsed.error.flatten().fieldErrors;
+      return Response.json({ error: fields.customerEmail?.[0] || "Проверьте заполненные поля", fields }, { status: 400 });
+    }
     validatedRequestId = parsed.data.requestId;
     const cryptoConfig = getCryptoPaymentConfig();
     if (parsed.data.paymentMethod === "crypto" && !cryptoConfig) {

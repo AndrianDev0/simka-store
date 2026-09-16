@@ -4,6 +4,7 @@ import { customerAccounts } from "@/db/schema";
 import { getDb } from "@/db";
 import { createSession, hashPassword, sameOrigin, setSessionCookie, validatePassword } from "@/lib/customer-auth";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
+import { getEmailValidationError } from "@/lib/email-validation";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
@@ -23,7 +24,9 @@ export async function POST(request: Request) {
     const contact = String(form.get("contact") || "").trim();
     const password = String(form.get("password") || "");
     const confirmation = String(form.get("passwordConfirmation") || "");
-    if (name.length < 2 || name.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || contact.length > 100 || !validatePassword(password) || password !== confirmation) {
+    const emailError = getEmailValidationError(email);
+    if (name.length < 2 || name.length > 100 || emailError || contact.length > 100 || !validatePassword(password) || password !== confirmation) {
+      if (emailError) return redirect(`/account/register?error=${encodeURIComponent(emailError)}`);
       return redirect("/account/register?error=Проверьте%20данные%20и%20пароль%20(минимум%2012%20символов)");
     }
     const db = getDb();
