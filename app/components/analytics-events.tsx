@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
-import { ANALYTICS_CONSENT_KEY, ANALYTICS_READY_EVENT, trackEvent, trackOnce, trackPurchase, type AnalyticsItem } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_READY_EVENT, trackEvent, trackOnce, trackPurchase, type AnalyticsItem } from "@/lib/analytics";
 
 function subscribeReady(callback: () => void) {
   window.addEventListener(ANALYTICS_READY_EVENT, callback);
@@ -35,6 +35,8 @@ export function SearchAnalytics({ query, results }: { query: string; results: nu
   useEffect(() => {
     if (!ready || !query) return;
     trackEvent("search", { query_length: Math.min(query.length, 100), results_count: results, no_results: results === 0 });
+    const consentId = window.localStorage.getItem(ANALYTICS_CONSENT_ID_KEY);
+    if (consentId) void fetch("/api/analytics/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ consentId, query, results }), keepalive: true });
   }, [query, ready, results]);
   return null;
 }

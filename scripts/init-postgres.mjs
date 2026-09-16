@@ -101,6 +101,20 @@ try {
     CREATE INDEX IF NOT EXISTS idx_operational_events_kind_last_seen ON operational_events(kind, last_seen_at);
     DELETE FROM operational_events WHERE last_seen_at::timestamptz < NOW() - INTERVAL '90 days';
 
+    CREATE TABLE IF NOT EXISTS search_analytics (
+      id TEXT PRIMARY KEY,
+      day TEXT NOT NULL,
+      query TEXT NOT NULL,
+      searches INTEGER NOT NULL DEFAULT 1 CHECK (searches > 0),
+      no_result_searches INTEGER NOT NULL DEFAULT 0 CHECK (no_result_searches >= 0),
+      total_results INTEGER NOT NULL DEFAULT 0 CHECK (total_results >= 0),
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_search_analytics_last_seen_at ON search_analytics(last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_search_analytics_query ON search_analytics(query);
+    DELETE FROM search_analytics WHERE last_seen_at::timestamptz < NOW() - INTERVAL '365 days';
+
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,

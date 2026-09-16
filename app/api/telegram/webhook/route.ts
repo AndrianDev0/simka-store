@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, storeSettings } from "@/db/schema";
+import { adminAuditLog, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, operationalEvents, orderItems, orders, productCategories, productVariants, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
@@ -260,6 +260,7 @@ function analyticsKeyboard(selectedDays: number): InlineKeyboard {
     [button("Всё время", 0)],
     [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
     [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
+    [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
     [{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }],
     [{ text: "🛒 Последние заказы", callback_data: "orders:list" }],
     [{ text: "◀️ В меню", callback_data: "menu" }],
@@ -327,6 +328,28 @@ async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string,
   }
   const lines = [...groups.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 15).map(([country, value], index) => `${index + 1}. ${country} · ${value.quantity} шт. · ${value.revenue.toLocaleString("ru-RU")} (валюты могут отличаться)`).join("\n") || "Оплаченных продаж по странам пока нет.";
   await sendMessage(token, chatId, `🌍 Продажи по странам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+}
+
+async function sendSearchAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
+  const normalizedDays = [0, 1, 7, 30].includes(days) ? days : 7;
+  const boundary = normalizedDays ? new Date(Date.now() - normalizedDays * 86_400_000).toISOString() : null;
+  const baseQuery = db.select({ query: searchAnalytics.query, searches: searchAnalytics.searches, noResultSearches: searchAnalytics.noResultSearches, totalResults: searchAnalytics.totalResults }).from(searchAnalytics);
+  const rows = boundary ? await baseQuery.where(gte(searchAnalytics.lastSeenAt, boundary)) : await baseQuery;
+  const grouped = new Map<string, { searches: number; noResults: number; totalResults: number }>();
+  for (const row of rows) {
+    const current = grouped.get(row.query) || { searches: 0, noResults: 0, totalResults: 0 };
+    current.searches += row.searches;
+    current.noResults += row.noResultSearches;
+    current.totalResults += row.totalResults;
+    grouped.set(row.query, current);
+  }
+  const totals = [...grouped.values()].reduce((sum, row) => ({ searches: sum.searches + row.searches, noResults: sum.noResults + row.noResults }), { searches: 0, noResults: 0 });
+  const lines = [...grouped.entries()].sort((left, right) => right[1].searches - left[1].searches).slice(0, 20).map(([query, value], index) => {
+    const average = value.searches ? (value.totalResults / value.searches).toFixed(1).replace(".", ",") : "0";
+    return `${index + 1}. ${query}\n   ${value.searches} запр. · без результатов: ${value.noResults} · среднее: ${average}`;
+  }).join("\n\n") || "Посковых запросов за период пока нет.";
+  await sendMessage(token, chatId, `🔎 Внутренний поиск ${analyticsPeriod(normalizedDays)}\n\nВсего поисков: ${totals.searches}\nБез результатов: ${totals.noResults}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "🔄 Обновить", callback_data: `analytics:search:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+  await audit(db, adminId, "analytics.search.view", null, { days: normalizedDays, searches: totals.searches });
 }
 
 async function sendOperationalErrors(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, hours: number) {
@@ -998,6 +1021,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "countries") {
     await sendCountryAnalytics(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "analytics" && action === "search") {
+    await sendSearchAnalytics(db, token, chatId, adminId, Number(first));
     return;
   }
   if (scope === "analytics" && action === "csv") {

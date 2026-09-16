@@ -408,6 +408,22 @@ export const operationalEvents = pgTable("operational_events", {
   check("operational_events_count_positive", sql`${table.count} > 0`),
 ]);
 
+export const searchAnalytics = pgTable("search_analytics", {
+  id: text("id").primaryKey(),
+  day: text("day").notNull(),
+  query: text("query").notNull(),
+  searches: integer("searches").notNull().default(1),
+  noResultSearches: integer("no_result_searches").notNull().default(0),
+  totalResults: integer("total_results").notNull().default(0),
+  firstSeenAt: text("first_seen_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+}, (table) => [
+  index("idx_search_analytics_last_seen_at").on(table.lastSeenAt),
+  index("idx_search_analytics_query").on(table.query),
+  check("search_analytics_searches_positive", sql`${table.searches} > 0`),
+  check("search_analytics_counts_nonnegative", sql`${table.noResultSearches} >= 0 AND ${table.totalResults} >= 0`),
+]);
+
 export const seoRedirects = pgTable("seo_redirects", {
   id: serial("id").primaryKey(),
   entityType: text("entity_type", { enum: ["category", "country", "product"] }).notNull(),
