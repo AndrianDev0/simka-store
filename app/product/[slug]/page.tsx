@@ -280,11 +280,11 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
         <section aria-labelledby="delivery-title" className="mt-12">
           <h2 id="delivery-title" className="text-2xl font-black tracking-tight text-[#10213a]">Получение товара</h2>
           {product.type === "eSIM" ? (
-            <div className="mt-5 grid gap-4 rounded-2xl border border-[#dbe5ef] bg-[#f7fbff] p-5 sm:grid-cols-3">
-              <Detail icon={Smartphone} label="Тип eSIM" value={esimTypeLabel(product.esimType)} />
-              <Detail icon={PackageCheck} label="Способ получения" value={esimDeliveryLabel(product.esimDeliveryMethod)} />
-              <Detail icon={ShieldCheck} label="Статус выдачи" value="Отслеживается менеджером в заказе" />
-            </div>
+            <dl className="mt-5 grid overflow-hidden rounded-2xl border border-border bg-card sm:grid-cols-3 sm:divide-x sm:divide-border">
+              <DeliveryFact icon={Smartphone} label="Тип eSIM" value={esimTypeLabel(product.esimType)} />
+              <DeliveryFact icon={PackageCheck} label="Способ получения" value={esimDeliveryLabel(product.esimDeliveryMethod)} />
+              <DeliveryFact icon={ShieldCheck} label="Статус выдачи" value="Отслеживается менеджером в заказе" />
+            </dl>
           ) : product.deliveryOptions.length ? (
             <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {product.deliveryOptions.map((option) => (
@@ -350,4 +350,8 @@ function KeyFact({ icon: Icon, label, value }: { icon: LucideIcon; label: string
 
 function Detail({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return <div className="grid gap-2 py-4 sm:grid-cols-[140px_1fr]"><dt className="flex items-center gap-2 text-sm font-bold text-[#263c57]"><Icon aria-hidden="true" className="size-4 text-[#1168e8]" />{label}</dt><dd className="text-sm leading-6 text-[#637389]">{value}</dd></div>;
+}
+
+function DeliveryFact({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return <div className="flex min-w-0 items-start gap-3 border-b border-border p-5 last:border-b-0 sm:border-b-0"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-primary"><Icon aria-hidden="true" className="size-5" /></span><div className="min-w-0"><dt className="text-xs font-semibold text-muted-foreground">{label}</dt><dd className="mt-1 text-sm font-bold leading-5 text-card-foreground">{value}</dd></div></div>;
 }
