@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { pbkdf2Sync } from "node:crypto";
 import test from "node:test";
-import { hashPassword, passwordHashNeedsUpgrade, verifyPassword } from "../lib/passwords.ts";
+import { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPassword } from "../lib/passwords.ts";
 
 test("new passwords use the hardened v2 scheme", async () => {
   const password = "correct horse battery staple";
@@ -27,4 +27,11 @@ test("malformed and unsupported hashes fail closed", async () => {
   assert.equal(await verifyPassword("password", "v3.salt.hash"), false);
   assert.equal(await verifyPassword("password", "v2.salt.short"), false);
   assert.equal(await verifyPassword("password", "not-a-password-hash"), false);
+});
+
+test("new and reset passwords require at least 12 characters", () => {
+  assert.equal(validatePassword("12345678901"), false);
+  assert.equal(validatePassword("123456789012"), true);
+  assert.equal(validatePassword("x".repeat(200)), true);
+  assert.equal(validatePassword("x".repeat(201)), false);
 });

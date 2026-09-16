@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     const password = String(form.get("password") || "");
     const confirmation = String(form.get("passwordConfirmation") || "");
     if (name.length < 2 || name.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || contact.length > 100 || !validatePassword(password) || password !== confirmation) {
-      return redirect("/account/register?error=Проверьте%20данные%20и%20пароль%20(минимум%208%20символов)");
+      return redirect("/account/register?error=Проверьте%20данные%20и%20пароль%20(минимум%2012%20символов)");
     }
     const db = getDb();
     if ((await db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1))[0]) {

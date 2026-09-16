@@ -20,7 +20,8 @@ export async function POST(request: Request) {
   const password = String(form.get("password") || "");
   const confirmation = String(form.get("passwordConfirmation") || "");
   const reset = await findPasswordReset(token);
-  if (!reset || !validatePassword(password) || password !== confirmation) return redirect(`/account/reset?error=Ссылка%20недействительна%20или%20пароли%20не%20совпадают&token=${encodeURIComponent(token)}`);
+  if (!reset) return redirect("/account/reset?error=Ссылка%20недействительна%20или%20истекла");
+  if (!validatePassword(password) || password !== confirmation) return redirect(`/account/reset?error=Пароли%20должны%20совпадать%20и%20содержать%20не%20менее%2012%20символов&token=${encodeURIComponent(token)}`);
   const now = new Date().toISOString();
   const db = getDb();
   await db.transaction(async (tx) => {

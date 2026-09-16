@@ -43,5 +43,5 @@ export function passwordHashNeedsUpgrade(storedHash: string) {
 }
 
 export function validatePassword(password: string) {
-  return password.length >= 8 && password.length <= 200;
+  return password.length >= 12 && password.length <= 200;
 }
