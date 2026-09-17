@@ -63,4 +63,5 @@ test("callbacks, commands and forced replies are classified before execution", (
   assert.equal(telegramReplyPermission("[ANALYTICS_RANGE]"), "analytics.read");
   assert.equal(telegramReplyPermission("[ANALYTICS_REVENUE_RANGE]"), "analytics.read");
   assert.equal(telegramReplyPermission("[ANALYTICS_TRAFFIC_RANGE]"), "analytics.read");
+  assert.equal(telegramReplyPermission("[ANALYTICS_ATTRIBUTION_RANGE:last_click]"), "analytics.read");
 });

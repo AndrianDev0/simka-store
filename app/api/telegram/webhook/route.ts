@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { adminAuditLog, analyticsEvents, analyticsSessions, analyticsVisitors, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
+import { calculateAttribution, isAttributionModel, type AttributionModel, type AttributionOrder } from "@/lib/attribution";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
@@ -443,6 +444,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
     [{ text: "💰 Выручка и прибыль", callback_data: `analytics:revenue:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "👥 Трафик и воронка", callback_data: `analytics:traffic:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
+    [{ text: "🧭 Модели атрибуции", callback_data: `analytics:attr:last_click:${customRange ? 0 : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
   ];
   if (customRange) {
@@ -752,6 +754,87 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     "", "Последние события:", recentLines,
     "", "Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
   ].join("\n"), trafficKeyboard(bounds.days, customRange));
+}
+
+const attributionModelLabels: Record<AttributionModel, string> = {
+  first_click: "First Click",
+  last_click: "Last Click",
+  linear: "Linear",
+  position_based: "Position Based",
+  time_decay: "Time Decay",
+};
+
+function attributionKeyboard(model: AttributionModel, days: number, customRange?: AnalyticsDateRange): InlineKeyboard {
+  const modelButton = (value: AttributionModel) => ({ text: `${model === value ? "✅ " : ""}${attributionModelLabels[value]}`, callback_data: customRange
+    ? `analytics:attr:${value}:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}`
+    : `analytics:attr:${value}:${days}` });
+  const periodButton = (label: string, value: number) => ({ text: `${!customRange && days === value ? "✅ " : ""}${label}`, callback_data: `analytics:attr:${model}:${value}` });
+  const refresh = customRange
+    ? `analytics:attrc:${model}|${customRange.start.slice(0, 10)}|${customRange.end.slice(0, 10)}`
+    : `analytics:attr:${model}:${days}`;
+  return { inline_keyboard: [
+    [modelButton("first_click"), modelButton("last_click")],
+    [modelButton("linear"), modelButton("position_based")],
+    [modelButton("time_decay")],
+    [periodButton("7 дней", 7), periodButton("30 дней", 30), periodButton("90 дней", 90)],
+    [periodButton("Год", 365), periodButton("Всё время", 0), { text: `${customRange ? "✅ " : ""}📅 Период`, callback_data: `analytics:attr_range:${model}` }],
+    [{ text: "🔄 Обновить", callback_data: refresh }],
+    [{ text: "📈 Общая аналитика", callback_data: `analytics:period:${days || 30}` }, { text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+}
+
+async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, model: AttributionModel, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const conversionTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
+  const conditions = [
+    inArray(orders.status, [...paidOrderStatuses]),
+    sql`${orders.firstPartyClientId} IS NOT NULL`,
+    sql`${conversionTime} <= ${bounds.end}::timestamptz`,
+  ];
+  if (bounds.start) conditions.push(sql`${conversionTime} >= ${bounds.start}::timestamptz`);
+  const paidOrders = await db.select({
+    id: orders.id, clientId: orders.firstPartyClientId, amount: orders.totalAmount, currency: orders.currency,
+    convertedAt: sql<string>`COALESCE(${orders.paidAt}, ${orders.createdAt})`, fallbackSource: orders.analyticsSource,
+    fallbackCampaign: orders.analyticsCampaign,
+  }).from(orders).where(and(...conditions)).orderBy(desc(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})`)).limit(5_000);
+  const clientIds = [...new Set(paidOrders.flatMap((order) => order.clientId ? [order.clientId] : []))];
+  const sessions = clientIds.length ? await db.select({
+    clientId: analyticsSessions.clientId, source: analyticsSessions.source, campaign: analyticsSessions.campaign,
+    occurredAt: analyticsSessions.startedAt,
+  }).from(analyticsSessions).where(and(inArray(analyticsSessions.clientId, clientIds), sql`${analyticsSessions.startedAt}::timestamptz <= ${bounds.end}::timestamptz`)).orderBy(asc(analyticsSessions.startedAt)) : [];
+  const sessionsByClient = new Map<string, typeof sessions>();
+  for (const session of sessions) {
+    const current = sessionsByClient.get(session.clientId) || [];
+    current.push(session);
+    sessionsByClient.set(session.clientId, current);
+  }
+  const attributionOrders: AttributionOrder[] = paidOrders.map((order) => {
+    const beforeConversion = (sessionsByClient.get(order.clientId!) || []).filter((session) => new Date(session.occurredAt).getTime() <= new Date(order.convertedAt).getTime());
+    return {
+      id: order.id, amount: order.amount, currency: order.currency, convertedAt: order.convertedAt,
+      touches: beforeConversion.length ? beforeConversion : [{ source: order.fallbackSource || "direct", campaign: order.fallbackCampaign, occurredAt: order.convertedAt }],
+    };
+  });
+  const rows = calculateAttribution(attributionOrders, model);
+  const currencies = [...new Set(rows.map((row) => row.currency))].sort();
+  const sections = currencies.flatMap((currency) => {
+    const currencyRows = rows.filter((row) => row.currency === currency);
+    const visible = currencyRows.slice(0, 10);
+    const omitted = currencyRows.slice(10);
+    const lines = visible.map((row, index) => `${index + 1}. ${compactAnalyticsLabel(row.source, 36)}${row.campaign ? ` / ${compactAnalyticsLabel(row.campaign, 30)}` : ""}\n   ${row.conversions.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} конв. · ${row.revenue.toLocaleString("ru-RU")} ${currency}`);
+    if (omitted.length) lines.push(`Остальные: ${omitted.reduce((sum, row) => sum + row.conversions, 0).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} конв. · ${omitted.reduce((sum, row) => sum + row.revenue, 0).toLocaleString("ru-RU")} ${currency}`);
+    return [`${currency}:`, ...lines, ""];
+  });
+  const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
+  const limitNote = paidOrders.length === 5_000 ? "\n⚠️ Показаны последние 5000 оплаченных заказов." : "";
+  await sendMessage(token, chatId, [
+    `🧭 Атрибуция · ${attributionModelLabels[model]} ${period}`, "",
+    `Оплаченных заказов: ${paidOrders.length}`,
+    `Касаний в цепочках: ${attributionOrders.reduce((sum, order) => sum + order.touches.length, 0)}`,
+    "", ...(sections.length ? sections : ["Данных для атрибуции пока нет."]),
+    model === "time_decay" ? "Time Decay: период полураспада касания — 7 дней." : "Выручка распределена между источниками по выбранной модели.",
+    limitNote,
+  ].join("\n"), attributionKeyboard(model, bounds.days, customRange));
 }
 
 function retentionCell(row: RetentionRow, days: (typeof RETENTION_DAYS)[number]) {
@@ -1231,6 +1314,19 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await sendTrafficAnalytics(db, token, chatId, 0, range);
     return true;
   }
+  const attributionRangeReply = replyContext.match(/^\[ANALYTICS_ATTRIBUTION_RANGE:([a-z_]+)\]/);
+  if (attributionRangeReply && isAttributionModel(attributionRangeReply[1])) {
+    const model = attributionRangeReply[1];
+    const range = parseAnalyticsDateRange(text);
+    const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
+    if (!range || duration > 10 * 366 * 86_400_000) {
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: `analytics:attr_range:${model}` }], [{ text: "◀️ К атрибуции", callback_data: `analytics:attr:${model}:30` }]] });
+      return true;
+    }
+    await audit(db, adminId, "analytics.attribution_custom_range.view", null, { model, start: range.start, end: range.end });
+    await sendAttributionAnalytics(db, token, chatId, model, 0, range);
+    return true;
+  }
   if (replyContext.startsWith("[CREATE_MARKETING_COST]")) {
     const parts = text.split("|").map((part) => part.trim());
     const [source, rawCampaign, rawAmount, rawCurrency, rawStart, rawEnd] = parts;
@@ -1542,7 +1638,7 @@ async function createsCategoryCycle(db: ReturnType<typeof getDb>, childId: strin
 
 async function handleCallback(token: string, chatId: number, adminId: number, data: string, role: TelegramRole) {
   const db = getDb();
-  const [scope, action, first, second] = data.split(":");
+  const [scope, action, first, second, third] = data.split(":");
   if (data === "menu") {
     await sendAdminMenu(token, chatId, role);
     return;
@@ -1663,6 +1759,23 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (scope === "analytics" && action === "traffic_range") {
     await sendMessage(token, chatId, "[ANALYTICS_TRAFFIC_RANGE]\nВведите начало и конец периода трафика через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
     return;
+  }
+  if (scope === "analytics" && action === "attr" && first && second && isAttributionModel(first)) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(second) && third) {
+      const range = parseAnalyticsDateRange(`${second} | ${third}`);
+      if (range) { await sendAttributionAnalytics(db, token, chatId, first, 0, range); return; }
+    }
+    await sendAttributionAnalytics(db, token, chatId, first, Number(second));
+    return;
+  }
+  if (scope === "analytics" && action === "attr_range" && first && isAttributionModel(first)) {
+    await sendMessage(token, chatId, `[ANALYTICS_ATTRIBUTION_RANGE:${first}]\nВведите начало и конец периода атрибуции через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17`, { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
+    return;
+  }
+  if (scope === "analytics" && action === "attrc" && first) {
+    const [rawModel, start, end] = first.split("|");
+    const range = parseAnalyticsDateRange(`${start} | ${end}`);
+    if (isAttributionModel(rawModel) && range) { await sendAttributionAnalytics(db, token, chatId, rawModel, 0, range); return; }
   }
   if (scope === "analytics" && action === "retention") {
     await sendRetentionAnalytics(db, token, chatId);
