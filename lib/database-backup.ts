@@ -160,7 +160,10 @@ export async function verifyBackupAgainstDatabase(backup: DatabaseBackupPayload,
   const client = databaseClient(connectionString);
   await client.connect();
   try {
-    await client.query("BEGIN READ ONLY");
+    // Verification writes only to session-scoped temporary tables. Some managed
+    // PostgreSQL providers reject CREATE TEMP TABLE in a read-only transaction,
+    // so use a regular transaction and always roll it back below.
+    await client.query("BEGIN");
     for (const [index, tableName] of BACKUP_TABLES.entries()) {
       const temporaryName = `backup_verify_${index}`;
       await client.query(`CREATE TEMP TABLE "${temporaryName}" (LIKE public."${tableName}" INCLUDING ALL) ON COMMIT DROP`);
