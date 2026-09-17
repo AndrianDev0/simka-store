@@ -6,6 +6,7 @@ import { allowsAnalytics } from "@/lib/analytics-policy";
 import { getCurrentAccount, sameOrigin } from "@/lib/customer-auth";
 import { analyticsSessionExitState, parseAnalyticsUserAgent, safeAnalyticsPath, safeHeaderLocation, sanitizeAnalyticsParams, validAnalyticsEventName } from "@/lib/first-party-analytics";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
+import { classifyTraffic } from "@/lib/traffic-classification";
 
 export const runtime = "nodejs";
 
@@ -27,6 +28,7 @@ const payloadSchema = z.object({
     screenWidth: z.number().int().min(0).max(100_000).optional(), screenHeight: z.number().int().min(0).max(100_000).optional(),
     viewportWidth: z.number().int().min(0).max(100_000).optional(), viewportHeight: z.number().int().min(0).max(100_000).optional(),
     pixelRatio: z.number().finite().min(0.1).max(20).optional(),
+    automation: z.boolean().optional(),
   }).optional(),
 });
 
@@ -50,7 +52,7 @@ export async function POST(request: Request) {
   const db = getDb();
   const [consent, existingSession, account] = await Promise.all([
     db.select({ decision: privacyConsentEvents.decision, policyVersion: privacyConsentEvents.policyVersion }).from(privacyConsentEvents).where(eq(privacyConsentEvents.consentId, parsed.data.clientId)).orderBy(desc(privacyConsentEvents.createdAt)).limit(1),
-    db.select({ clientId: analyticsSessions.clientId }).from(analyticsSessions).where(eq(analyticsSessions.id, parsed.data.sessionId)).limit(1),
+    db.select({ clientId: analyticsSessions.clientId, startedAt: analyticsSessions.startedAt, eventCount: analyticsSessions.eventCount, pageViews: analyticsSessions.pageViews, trafficClass: analyticsSessions.trafficClass, trafficReasons: analyticsSessions.trafficReasons }).from(analyticsSessions).where(eq(analyticsSessions.id, parsed.data.sessionId)).limit(1),
     getCurrentAccount(),
   ]);
   if (!allowsAnalytics(consent[0])) {
@@ -69,6 +71,17 @@ export async function POST(request: Request) {
   const region = safeHeaderLocation(request.headers.get("cf-region") || request.headers.get("x-vercel-ip-country-region"), 120);
   const city = safeHeaderLocation(request.headers.get("cf-ipcity") || request.headers.get("x-vercel-ip-city"), 120);
   const device = parsed.data.device;
+  const traffic = classifyTraffic({
+    userAgent: request.headers.get("user-agent") || "",
+    automation: device?.automation,
+    eventName: parsed.data.name,
+    sessionStartedAt: existingSession[0]?.startedAt || occurredAt,
+    occurredAt,
+    priorEventCount: existingSession[0]?.eventCount || 0,
+    priorPageViews: existingSession[0]?.pageViews || 0,
+    priorClass: existingSession[0]?.trafficClass,
+    priorReasons: existingSession[0]?.trafficReasons,
+  });
 
   const recorded = await db.transaction(async (tx) => {
     if (account) await tx.update(privacyConsentEvents).set({ accountId: account.id }).where(and(eq(privacyConsentEvents.consentId, parsed.data.clientId), isNull(privacyConsentEvents.accountId)));
@@ -90,7 +103,7 @@ export async function POST(request: Request) {
       screenWidth: device?.screenWidth, screenHeight: device?.screenHeight,
       viewportWidth: device?.viewportWidth, viewportHeight: device?.viewportHeight,
       pixelRatio: device?.pixelRatio ? Math.round(device.pixelRatio * 100) : null,
-      connectionType: device?.connectionType || null, pageViews: 0, eventCount: 0,
+      connectionType: device?.connectionType || null, trafficClass: traffic.trafficClass, trafficReasons: traffic.reasons, pageViews: 0, eventCount: 0,
       startedAt: occurredAt, lastSeenAt: occurredAt, ...exitState,
     }).onConflictDoNothing({ target: analyticsSessions.id }).returning({ id: analyticsSessions.id });
     const inserted = await tx.insert(analyticsEvents).values({
@@ -100,6 +113,8 @@ export async function POST(request: Request) {
     if (!inserted[0]) return false;
     await tx.update(analyticsSessions).set({
       exitPath: path, lastSeenAt: occurredAt,
+      trafficClass: sql`CASE WHEN ${analyticsSessions.trafficClass} = 'BOT' OR ${traffic.trafficClass} = 'BOT' THEN 'BOT' WHEN ${analyticsSessions.trafficClass} = 'SUSPICIOUS' OR ${traffic.trafficClass} = 'SUSPICIOUS' THEN 'SUSPICIOUS' ELSE 'HUMAN' END`,
+      trafficReasons: traffic.reasons,
       ...exitState,
       eventCount: sql`${analyticsSessions.eventCount} + 1`,
       pageViews: parsed.data.name === "page_view" ? sql`${analyticsSessions.pageViews} + 1` : analyticsSessions.pageViews,

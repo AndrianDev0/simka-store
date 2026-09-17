@@ -122,6 +122,8 @@ export const analyticsSessions = pgTable("analytics_sessions", {
   viewportHeight: integer("viewport_height"),
   pixelRatio: integer("pixel_ratio_x100"),
   connectionType: text("connection_type"),
+  trafficClass: text("traffic_class", { enum: ["HUMAN", "SUSPICIOUS", "BOT"] }).notNull().default("HUMAN"),
+  trafficReasons: jsonb("traffic_reasons").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   pageViews: integer("page_views").notNull().default(0),
   eventCount: integer("event_count").notNull().default(0),
   startedAt: text("started_at").notNull(),
@@ -133,6 +135,7 @@ export const analyticsSessions = pgTable("analytics_sessions", {
   index("idx_analytics_sessions_last_seen_at").on(table.lastSeenAt),
   index("idx_analytics_sessions_ended_at").on(table.endedAt),
   index("idx_analytics_sessions_source_started").on(table.source, table.startedAt),
+  index("idx_analytics_sessions_traffic_class_started").on(table.trafficClass, table.startedAt),
   check("analytics_sessions_counts_nonnegative", sql`${table.pageViews} >= 0 AND ${table.eventCount} >= 0`),
   check("analytics_sessions_exit_duration_nonnegative", sql`${table.exitDurationMs} IS NULL OR ${table.exitDurationMs} >= 0`),
 ]);

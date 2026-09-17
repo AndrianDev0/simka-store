@@ -120,6 +120,8 @@ try {
       viewport_height INTEGER,
       pixel_ratio_x100 INTEGER,
       connection_type TEXT,
+      traffic_class TEXT NOT NULL DEFAULT 'HUMAN' CHECK (traffic_class IN ('HUMAN', 'SUSPICIOUS', 'BOT')),
+      traffic_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
       page_views INTEGER NOT NULL DEFAULT 0,
       event_count INTEGER NOT NULL DEFAULT 0,
       started_at TEXT NOT NULL,
@@ -132,8 +134,11 @@ try {
     CREATE INDEX IF NOT EXISTS idx_analytics_sessions_last_seen_at ON analytics_sessions(last_seen_at);
     ALTER TABLE analytics_sessions ADD COLUMN IF NOT EXISTS ended_at TEXT;
     ALTER TABLE analytics_sessions ADD COLUMN IF NOT EXISTS exit_duration_ms INTEGER;
+    ALTER TABLE analytics_sessions ADD COLUMN IF NOT EXISTS traffic_class TEXT NOT NULL DEFAULT 'HUMAN';
+    ALTER TABLE analytics_sessions ADD COLUMN IF NOT EXISTS traffic_reasons JSONB NOT NULL DEFAULT '[]'::jsonb;
     CREATE INDEX IF NOT EXISTS idx_analytics_sessions_ended_at ON analytics_sessions(ended_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_sessions_source_started ON analytics_sessions(source, started_at);
+    CREATE INDEX IF NOT EXISTS idx_analytics_sessions_traffic_class_started ON analytics_sessions(traffic_class, started_at);
 
     CREATE TABLE IF NOT EXISTS analytics_events (
       id TEXT PRIMARY KEY,

@@ -447,6 +447,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
     [{ text: "💰 Выручка и прибыль", callback_data: `analytics:revenue:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "👥 Трафик и воронка", callback_data: `analytics:traffic:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
+    [{ text: "🤖 Bot / Fraud", callback_data: `analytics:fraud:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🧭 Модели атрибуции", callback_data: `analytics:attr:last_click:${customRange ? 0 : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
   ];
@@ -684,6 +685,7 @@ function trafficKeyboard(days: number, customRange?: AnalyticsDateRange): Inline
     [button("7 дней", 7), button("14 дней", 14), button("30 дней", 30)],
     [button("90 дней", 90), button("Год", 365), button("Всё время", 0)],
     [{ text: `${customRange ? "✅ " : ""}📅 Свой период`, callback_data: "analytics:traffic_range" }],
+    [{ text: "🤖 Bot / Fraud", callback_data: `analytics:fraud:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : days}` }],
     [{ text: "🔄 Обновить", callback_data: customRange ? `analytics:traffic:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:traffic:${days}` }],
     [{ text: "📈 Общая аналитика", callback_data: `analytics:period:${days || 30}` }, { text: "◀️ В меню", callback_data: "menu" }],
   ] };
@@ -710,7 +712,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const realtimeBoundary = new Date(Date.now() - 5 * 60_000).toISOString();
   const funnelStart = bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
   const paidStatuses = sql.join([...paidOrderStatuses].map((status) => sql`${status}`), sql`, `);
-  const [summaryRows, sourceRows, deviceRows, exitRows, orderedFunnelResult, realtimeRows, recentEvents] = await Promise.all([
+  const [summaryRows, sourceRows, deviceRows, exitRows, orderedFunnelResult, realtimeRows, recentEvents, trafficClassRows] = await Promise.all([
     db.select({
       users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int`,
       newUsers: newUserExpression, pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
@@ -771,6 +773,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     `),
     db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`),
     db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
+    db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.trafficClass),
   ]);
   const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
   const returningUsers = Math.max(0, Number(summary.users) - Number(summary.newUsers));
@@ -798,6 +801,12 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const deviceLines = deviceRows.map((row) => `• ${row.device}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
   const exitLines = exitRows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.exits} выходов · ср. ${Math.round(Number(row.averageSeconds))} сек.`).join("\n") || "• Данных пока нет";
   const recentLines = recentEvents.map((row) => `• ${row.name} · ${compactAnalyticsLabel(row.path)} · ${new Date(row.occurredAt).toLocaleTimeString("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" })} UTC`).join("\n") || "• Событий пока нет";
+  const trafficClasses = ["HUMAN", "SUSPICIOUS", "BOT"] as const;
+  const trafficClassLabels: Record<(typeof trafficClasses)[number], string> = { HUMAN: "Human", SUSPICIOUS: "Suspicious", BOT: "Bot" };
+  const trafficClassLines = trafficClasses.map((trafficClass) => {
+    const row = trafficClassRows.find((item) => item.trafficClass === trafficClass);
+    return `• ${trafficClassLabels[trafficClass]}: ${row?.users ?? 0} польз. · ${row?.sessions ?? 0} сесс.`;
+  }).join("\n");
   const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
   await sendMessage(token, chatId, [
     `👥 Трафик и воронка ${period}`, "",
@@ -809,10 +818,63 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     "", "Воронка по уникальным пользователям:", funnelLines,
     "", "Источники:", sourceLines,
     "", "Устройства:", deviceLines,
+    "", "Bot / Fraud:", trafficClassLines,
     "", "Основные страницы выхода:", exitLines,
     "", "Последние события:", recentLines,
     "", "Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
   ].join("\n"), trafficKeyboard(bounds.days, customRange));
+}
+
+function botFraudKeyboard(days: number, customRange?: AnalyticsDateRange): InlineKeyboard {
+  const button = (label: string, value: number) => ({ text: `${!customRange && days === value ? "✅ " : ""}${label}`, callback_data: `analytics:fraud:${value}` });
+  const target = customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : String(days);
+  return { inline_keyboard: [
+    [button("7 дней", 7), button("14 дней", 14), button("30 дней", 30)],
+    [button("90 дней", 90), button("Год", 365), button("Всё время", 0)],
+    [{ text: "👥 Трафик и воронка", callback_data: `analytics:traffic:${target}` }],
+    [{ text: "🔄 Обновить", callback_data: `analytics:fraud:${target}` }, { text: "◀️ В меню", callback_data: "menu" }],
+  ] };
+}
+
+const trafficClassLabels = { HUMAN: "Human", SUSPICIOUS: "Suspicious", BOT: "Bot" } as const;
+const trafficReasonLabels: Record<string, string> = {
+  automated_user_agent: "автоматический User-Agent",
+  browser_automation: "браузерная автоматизация",
+  event_burst: "слишком частые события",
+  page_view_burst: "слишком быстрые просмотры страниц",
+  missing_user_agent: "User-Agent отсутствует",
+};
+
+async function sendBotFraudAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const sessionTime = sql`${analyticsSessions.startedAt}::timestamptz`;
+  const conditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
+  if (bounds.start) conditions.push(sql`${sessionTime} >= ${bounds.start}::timestamptz`);
+  const flaggedConditions = [...conditions, inArray(analyticsSessions.trafficClass, ["SUSPICIOUS", "BOT"])];
+  const [classificationRows, sourceRows, recentRows] = await Promise.all([
+    db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...conditions)).groupBy(analyticsSessions.trafficClass),
+    db.select({ source: analyticsSessions.source, trafficClass: analyticsSessions.trafficClass, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...flaggedConditions)).groupBy(analyticsSessions.source, analyticsSessions.trafficClass).orderBy(desc(sql`COUNT(*)`)).limit(8),
+    db.select({ trafficClass: analyticsSessions.trafficClass, trafficReasons: analyticsSessions.trafficReasons, source: analyticsSessions.source, entryPath: analyticsSessions.entryPath }).from(analyticsSessions).where(and(...flaggedConditions)).orderBy(desc(analyticsSessions.startedAt)).limit(8),
+  ]);
+  const classes = ["HUMAN", "SUSPICIOUS", "BOT"] as const;
+  const classLines = classes.map((trafficClass) => {
+    const row = classificationRows.find((item) => item.trafficClass === trafficClass);
+    return `• ${trafficClassLabels[trafficClass]}: ${row?.users ?? 0} польз. · ${row?.sessions ?? 0} сесс.`;
+  }).join("\n");
+  const sourceLines = sourceRows.map((row) => `• ${trafficClassLabels[row.trafficClass]} · ${compactAnalyticsLabel(row.source || "direct", 42)}: ${row.sessions} сесс.`).join("\n") || "• Нет подозрительного трафика";
+  const recentLines = recentRows.map((row) => {
+    const reasons = row.trafficReasons.map((reason) => trafficReasonLabels[reason] || reason).join(", ") || "без дополнительного сигнала";
+    return `• ${trafficClassLabels[row.trafficClass]} · ${compactAnalyticsLabel(row.source || "direct", 28)} · ${compactAnalyticsLabel(row.entryPath, 32)}\n  ${reasons}`;
+  }).join("\n") || "• Нет подозрительных сессий";
+  const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
+  await sendMessage(token, chatId, [
+    `🤖 Bot / Fraud ${period}`,
+    "",
+    "Классификация:", classLines,
+    "", "Подозрительные источники:", sourceLines,
+    "", "Последние сигналы:", recentLines,
+    "", "Bot — явная автоматизация. Suspicious — аномальная скорость событий. Классификация не блокирует клиента автоматически; IP и полный User-Agent не сохраняются.",
+  ].join("\n"), botFraudKeyboard(bounds.days, customRange));
 }
 
 const attributionModelLabels: Record<AttributionModel, string> = {
@@ -1857,6 +1919,14 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   }
   if (scope === "analytics" && action === "traffic_range") {
     await sendMessage(token, chatId, "[ANALYTICS_TRAFFIC_RANGE]\nВведите начало и конец периода трафика через |\n\nФормат: YYYY-MM-DD | YYYY-MM-DD\nПример: 2026-09-01 | 2026-09-17", { force_reply: true, selective: true, input_field_placeholder: "2026-09-01 | 2026-09-17" });
+    return;
+  }
+  if (scope === "analytics" && action === "fraud" && first) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first) && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendBotFraudAnalytics(db, token, chatId, 0, range); return; }
+    }
+    await sendBotFraudAnalytics(db, token, chatId, Number(first));
     return;
   }
   if (scope === "analytics" && action === "attr" && first && second && isAttributionModel(first)) {

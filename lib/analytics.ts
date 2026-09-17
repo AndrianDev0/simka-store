@@ -115,6 +115,7 @@ function trackFirstParty(name: string, params: AnalyticsParams, path = window.lo
       screenWidth: window.screen.width, screenHeight: window.screen.height,
       viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
       pixelRatio: window.devicePixelRatio, connectionType: connection?.effectiveType,
+      automation: navigator.webdriver === true,
     },
   };
   const serialized = JSON.stringify(body);
