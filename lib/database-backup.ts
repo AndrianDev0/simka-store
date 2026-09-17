@@ -30,6 +30,7 @@ export const BACKUP_TABLES = [
   "product_categories",
   "admin_audit_log",
   "store_settings",
+  "app_migrations",
   "operational_events",
   "search_analytics",
   "seo_redirects",
@@ -62,6 +63,7 @@ export const RESTORE_INSERT_ORDER = [
   "operational_events",
   "search_analytics",
   "store_settings",
+  "app_migrations",
   "seo_redirects",
 ] as const;
 
