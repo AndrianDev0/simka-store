@@ -1,0 +1,30 @@
+name: Daily encrypted database backup
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: simka-database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create, verify and deliver encrypted backup
+        env:
+          BACKUP_CRON_SECRET: ${{ secrets.BACKUP_CRON_SECRET }}
+        run: |
+          test -n "$BACKUP_CRON_SECRET"
+          curl --fail-with-body --silent --show-error \
+            --retry 2 --retry-delay 10 \
+            --request POST \
+            --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
+            https://simka-store.onrender.com/api/operations/backup
+

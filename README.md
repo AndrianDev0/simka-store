@@ -36,6 +36,9 @@ npm run start:render
 - `TELEGRAM_BOT_TOKEN` — токен административного бота;
 - `TELEGRAM_ADMIN_IDS` — список ID администраторов через запятую;
 - `TELEGRAM_ADMIN_ROLES` — необязательные роли в формате `123:owner,456:sales,789:support`. Первый ID из `TELEGRAM_ADMIN_IDS` по умолчанию — Owner, остальные — Admin;
+- `BACKUP_ENCRYPTION_KEY` — отдельный ключ длиной не менее 32 символов для шифрования резервных копий; если не задан, используется `FULFILLMENT_ENCRYPTION_KEY`;
+- `BACKUP_CRON_SECRET` — случайный секрет длиной не менее 32 символов, одинаковый в Render и GitHub Actions; защищает endpoint ежедневной резервной копии;
+- `BACKUP_TELEGRAM_CHAT_ID` — необязательный ID закрытого чата для резервных копий; по умолчанию используется первый ID владельца из `TELEGRAM_ADMIN_IDS`;
 - `TELEGRAM_WEBHOOK_SECRET` — секрет проверки webhook;
 - `PARTNER_ATTRIBUTION_SECRET` — необязательный отдельный секрет подписи партнёрской атрибуции; если не задан, используется `TELEGRAM_WEBHOOK_SECRET`;
 - `FULFILLMENT_ENCRYPTION_KEY` — отдельный ключ длиной не менее 32 символов для шифрования реквизитов и кодов eSIM.
