@@ -796,7 +796,7 @@ async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: str
     id: orders.id, clientId: orders.firstPartyClientId, amount: orders.totalAmount, currency: orders.currency,
     convertedAt: sql<string>`COALESCE(${orders.paidAt}, ${orders.createdAt})`, fallbackSource: orders.analyticsSource,
     fallbackCampaign: orders.analyticsCampaign,
-  }).from(orders).where(and(...conditions)).orderBy(desc(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})`)).limit(5_000);
+  }).from(orders).where(and(...conditions)).orderBy(desc(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})`));
   const clientIds = [...new Set(paidOrders.flatMap((order) => order.clientId ? [order.clientId] : []))];
   const sessions = clientIds.length ? await db.select({
     clientId: analyticsSessions.clientId, source: analyticsSessions.source, campaign: analyticsSessions.campaign,
@@ -826,14 +826,12 @@ async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: str
     return [`${currency}:`, ...lines, ""];
   });
   const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
-  const limitNote = paidOrders.length === 5_000 ? "\n⚠️ Показаны последние 5000 оплаченных заказов." : "";
   await sendMessage(token, chatId, [
     `🧭 Атрибуция · ${attributionModelLabels[model]} ${period}`, "",
     `Оплаченных заказов: ${paidOrders.length}`,
     `Касаний в цепочках: ${attributionOrders.reduce((sum, order) => sum + order.touches.length, 0)}`,
     "", ...(sections.length ? sections : ["Данных для атрибуции пока нет."]),
     model === "time_decay" ? "Time Decay: период полураспада касания — 7 дней." : "Выручка распределена между источниками по выбранной модели.",
-    limitNote,
   ].join("\n"), attributionKeyboard(model, bounds.days, customRange));
 }
 
