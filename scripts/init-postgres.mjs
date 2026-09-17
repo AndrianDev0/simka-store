@@ -270,6 +270,11 @@ try {
       inventory_reserved BOOLEAN NOT NULL DEFAULT FALSE,
       payment_instructions_sent_at TEXT,
       paid_at TEXT,
+      refunded_at TEXT,
+      partner_commission_bps_snapshot INTEGER CHECK (partner_commission_bps_snapshot IS NULL OR (partner_commission_bps_snapshot >= 0 AND partner_commission_bps_snapshot <= 10000)),
+      delivery_expense_amount INTEGER CHECK (delivery_expense_amount IS NULL OR delivery_expense_amount >= 0),
+      payment_fee_amount INTEGER CHECK (payment_fee_amount IS NULL OR payment_fee_amount >= 0),
+      other_expense_amount INTEGER CHECK (other_expense_amount IS NULL OR other_expense_amount >= 0),
       analytics_client_id TEXT,
       analytics_source TEXT,
       analytics_medium TEXT,
@@ -297,6 +302,11 @@ try {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_instructions_sent_at TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS refunded_at TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS partner_commission_bps_snapshot INTEGER;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_expense_amount INTEGER;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_fee_amount INTEGER;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS other_expense_amount INTEGER;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_client_id TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_source TEXT;
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS analytics_medium TEXT;
@@ -310,6 +320,7 @@ try {
     CREATE INDEX IF NOT EXISTS idx_orders_customer_account_id ON orders(customer_account_id);
     CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_orders_paid_at ON orders(paid_at);
+    CREATE INDEX IF NOT EXISTS idx_orders_refunded_at ON orders(refunded_at);
     CREATE INDEX IF NOT EXISTS idx_orders_partner_code ON orders(partner_code);
     CREATE INDEX IF NOT EXISTS idx_orders_first_party_client_id ON orders(first_party_client_id);
 

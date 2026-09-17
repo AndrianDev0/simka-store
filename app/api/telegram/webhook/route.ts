@@ -380,14 +380,15 @@ async function partnerStats(db: ReturnType<typeof getDb>, code: string, commissi
   const [clickRows, registrations, partnerOrders] = await Promise.all([
     db.select({ clickCount: partnerClicks.clickCount }).from(partnerClicks).where(eq(partnerClicks.partnerCode, code)),
     db.select({ id: customerAccounts.id }).from(customerAccounts).where(eq(customerAccounts.partnerCode, code)),
-    db.select({ status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency }).from(orders).where(eq(orders.partnerCode, code)),
+    db.select({ status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, partnerCommissionBpsSnapshot: orders.partnerCommissionBpsSnapshot }).from(orders).where(eq(orders.partnerCode, code)),
   ]);
   const paid = partnerOrders.filter((order) => successfulPromoStatuses.has(order.status));
   const revenue = new Map<string, number>();
   const commission = new Map<string, number>();
   for (const order of paid) {
     revenue.set(order.currency, (revenue.get(order.currency) ?? 0) + order.totalAmount);
-    commission.set(order.currency, (commission.get(order.currency) ?? 0) + partnerCommission(order.totalAmount, commissionBps));
+    const effectiveBps = order.partnerCommissionBpsSnapshot ?? commissionBps;
+    commission.set(order.currency, (commission.get(order.currency) ?? 0) + partnerCommission(order.totalAmount, effectiveBps));
   }
   return { clicks: clickRows.reduce((sum, row) => sum + row.clickCount, 0), uniqueClicks: clickRows.length, registrations: registrations.length, orders: partnerOrders.length, paidOrders: paid.length, revenue, commission };
 }
@@ -621,12 +622,14 @@ function revenueKeyboard(days: number, customRange?: AnalyticsDateRange): Inline
 async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const conditions = [inArray(orders.status, [...paidOrderStatuses, "REFUNDED"])];
-  const paymentTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
-  if (bounds.start) conditions.push(sql`${paymentTime} >= ${bounds.start}::timestamptz`);
-  if (bounds.end) conditions.push(sql`${paymentTime} <= ${bounds.end}::timestamptz`);
+  const financialTime = sql`CASE WHEN ${orders.status} = 'REFUNDED' THEN COALESCE(${orders.refundedAt}, ${orders.updatedAt}, ${orders.paidAt}, ${orders.createdAt})::timestamptz ELSE COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz END`;
+  if (bounds.start) conditions.push(sql`${financialTime} >= ${bounds.start}::timestamptz`);
+  if (bounds.end) conditions.push(sql`${financialTime} <= ${bounds.end}::timestamptz`);
   const financialOrders = await db.select({
     id: orders.id, status: orders.status, subtotalAmount: orders.subtotalAmount, discountAmount: orders.discountAmount,
     deliveryAmount: orders.deliveryAmount, totalAmount: orders.totalAmount, currency: orders.currency, partnerCode: orders.partnerCode,
+    partnerCommissionBpsSnapshot: orders.partnerCommissionBpsSnapshot, deliveryExpenseAmount: orders.deliveryExpenseAmount,
+    paymentFeeAmount: orders.paymentFeeAmount, otherExpenseAmount: orders.otherExpenseAmount,
   }).from(orders).where(and(...conditions));
   const [items, partnerRows, costRows] = await Promise.all([
     financialOrders.length ? db.select({ orderId: orderItems.orderId, unitCost: orderItems.unitCost, quantity: orderItems.quantity }).from(orderItems).where(inArray(orderItems.orderId, financialOrders.map((order) => order.id))) : Promise.resolve([]),
@@ -638,7 +641,7 @@ async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string,
   const blocks = rows.slice(0, 6).map((row) => {
     const money = (value: number) => `${value.toLocaleString("ru-RU")} ${row.currency}`;
     const coverage = row.totalCostItems ? row.knownCostItems / row.totalCostItems * 100 : 100;
-    const approximate = coverage < 100;
+    const approximate = coverage < 100 || row.missingDeliveryExpenseOrders > 0 || row.missingPaymentFeeOrders > 0 || row.missingOtherExpenseOrders > 0 || row.estimatedPartnerCommissionOrders > 0;
     return [
       `💱 ${row.currency} · заказов: ${row.orders}`,
       `Валовый товарный оборот: ${money(row.grossRevenue)}`,
@@ -649,11 +652,15 @@ async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string,
       `Себестоимость: −${money(row.costOfGoods)}`,
       `Партнёрские комиссии: −${money(row.partnerCommission)}`,
       `Реклама: −${money(row.marketingCost)}`,
+      `Расходы на доставку: −${money(row.deliveryExpense)}`,
+      `Комиссии оплаты: −${money(row.paymentFees)}`,
+      `Прочие расходы: −${money(row.otherExpenses)}`,
       `${approximate ? "Оценочная" : "Чистая"} прибыль: ${money(row.profit)}`,
       `Маржинальность: ${row.marginPercent === null ? "—" : `${row.marginPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
       `ROAS: ${row.roas === null ? "—" : `${row.roas.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}×`}`,
       `ROI: ${row.roiPercent === null ? "—" : `${row.roiPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
       `Себестоимость заполнена: ${row.knownCostItems}/${row.totalCostItems} ед. (${coverage.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%)`,
+      `Полнота расходов: ${row.missingDeliveryExpenseOrders || row.missingPaymentFeeOrders || row.missingOtherExpenseOrders || row.estimatedPartnerCommissionOrders ? "неполная" : "полная"}`,
     ].join("\n");
   });
   await sendMessage(token, chatId, [
@@ -663,7 +670,9 @@ async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string,
     ...(rows.length > 6 ? ["", `Показаны первые 6 валют из ${rows.length}. Валюты не смешиваются.`] : []),
     "",
     "Расходы на рекламу распределяются пропорционально дням пересечения кампании с периодом.",
-    "Себестоимость возвратов считается понесённым расходом. Комиссия платёжного провайдера появится после выбора и подключения сервиса.",
+    "Себестоимость возвратов считается понесённым расходом. Возвраты попадают в период по фактической дате возврата.",
+    "Пустые расходы не считаются нулевыми: прибыль помечается оценочной, пока менеджер не внесёт доставку, комиссии оплаты и прочие расходы.",
+    "Для старых заказов без сохранённого тарифа партнёра комиссия помечается оценочной; новые заказы фиксируют тариф на момент покупки.",
   ].join("\n"), revenueKeyboard(bounds.days, customRange));
 }
 
@@ -1023,6 +1032,7 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
   if (canWrite && ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING", "PAID", "PROCESSING"].includes(order.status)) actions.push([{ text: "❌ Отменить заказ", callback_data: `order:cancel_prompt:${order.orderNumber}` }]);
   if (canWrite && ["NEW", "WAITING_FOR_MANAGER", "WAITING_PAYMENT", "PAYMENT_PENDING"].includes(order.status)) actions.push([{ text: "⚠️ Закрыть с ошибкой", callback_data: `order:fail_prompt:${order.orderNumber}` }]);
   if (canWrite && ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(order.status)) actions.push([{ text: "↩️ Отметить возврат", callback_data: `order:refund_prompt:${order.orderNumber}` }]);
+  if (canWrite && !["CANCELLED", "FAILED"].includes(order.status)) actions.push([{ text: "💰 Указать расходы", callback_data: `order:expenses_prompt:${order.orderNumber}` }]);
   actions.push([{ text: "◀️ К заказам", callback_data: "orders:list" }]);
   const text = [
     `🛒 ${order.orderNumber}`,
@@ -1039,6 +1049,7 @@ async function sendOrderDetails(db: ReturnType<typeof getDb>, token: string, cha
     order.promoCode ? `Промокод: ${order.promoCode} · скидка ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
     order.partnerCode ? `Partner ID: ${order.partnerCode}` : "",
     order.deliveryAmount ? `Доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : "",
+    `Фактические расходы: доставка ${order.deliveryExpenseAmount === null ? "не заданы" : `${order.deliveryExpenseAmount.toLocaleString("ru-RU")} ${order.currency}`} · оплата ${order.paymentFeeAmount === null ? "не задана" : `${order.paymentFeeAmount.toLocaleString("ru-RU")} ${order.currency}`} · прочие ${order.otherExpenseAmount === null ? "не заданы" : `${order.otherExpenseAmount.toLocaleString("ru-RU")} ${order.currency}`}`,
     `Итого: ${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`,
     "",
     lines,
@@ -1442,6 +1453,28 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     await deleteSensitiveMessage(token, chatId, messageId);
     await audit(db, adminId, "settings.payment_requisites", PAYMENT_REQUISITES_KEY, { configured: true });
     await sendMessage(token, chatId, "Реквизиты зашифрованы и сохранены. Их можно отправлять клиенту кнопкой в карточке заказа.", { inline_keyboard: [[{ text: "💳 Открыть реквизиты", callback_data: "settings:payment" }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    return true;
+  }
+  const expenseReply = replyContext.match(/^\[ORDER_EXPENSES:([0-9a-f-]{36})\]/i);
+  if (expenseReply) {
+    const parts = text.split("|").map((value) => value.trim());
+    if (parts.length !== 3) {
+      await sendMessage(token, chatId, "Нужно указать три суммы через |: доставка | комиссия оплаты | прочие расходы. Только целые неотрицательные числа.");
+      return true;
+    }
+    const amounts = parts.map((value) => Number(value));
+    if (amounts.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      await sendMessage(token, chatId, "Суммы должны быть целыми неотрицательными числами в валюте заказа.");
+      return true;
+    }
+    const now = new Date().toISOString();
+    const [updated] = await db.update(orders).set({ deliveryExpenseAmount: amounts[0], paymentFeeAmount: amounts[1], otherExpenseAmount: amounts[2], updatedAt: now }).where(eq(orders.id, expenseReply[1])).returning({ orderNumber: orders.orderNumber, currency: orders.currency });
+    if (!updated) {
+      await sendMessage(token, chatId, "Заказ не найден.", backKeyboard());
+      return true;
+    }
+    await audit(db, adminId, "order.expenses.update", expenseReply[1], { deliveryExpenseAmount: amounts[0], paymentFeeAmount: amounts[1], otherExpenseAmount: amounts[2] });
+    await sendMessage(token, chatId, `Расходы по заказу ${updated.orderNumber} сохранены: доставка ${amounts[0].toLocaleString("ru-RU")}, комиссия оплаты ${amounts[1].toLocaleString("ru-RU")}, прочие ${amounts[2].toLocaleString("ru-RU")} ${updated.currency}.`, orderBackKeyboard(updated.orderNumber));
     return true;
   }
   const costReply = replyContext.match(/^\[DELIVERY_COST:([0-9a-f-]{36})\]/i);
@@ -2121,11 +2154,18 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     await sendMessage(token, chatId, `Подтвердите, что деньги по заказу ${first} уже фактически возвращены клиенту. Эта кнопка сама не переводит деньги.`, { inline_keyboard: [[{ text: "↩️ Деньги возвращены", callback_data: `order:refund_confirm:${first}` }], [{ text: "Отмена", callback_data: `order:view:${first}` }]] });
     return;
   }
+  if (scope === "order" && action === "expenses_prompt" && first) {
+    const [order] = await db.select({ id: orders.id, currency: orders.currency }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
+    if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
+    await sendMessage(token, chatId, `[ORDER_EXPENSES:${order.id}]\nВведите фактические расходы через |:\nдоставка | комиссия оплаты | прочие расходы\n\nПример: 300 | 210 | 90\nВсе суммы — целые числа в ${order.currency}.`, { force_reply: true, selective: true, input_field_placeholder: "300 | 210 | 90" });
+    return;
+  }
   if (scope === "order" && action === "refund_confirm" && first) {
     const refundable = ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"];
     const [order] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, customerName: orders.customerName, customerEmail: orders.customerEmail }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
     if (!order || !refundable.includes(order.status)) { await sendMessage(token, chatId, "Заказ уже изменился или возврат недоступен.", orderBackKeyboard(first)); return; }
-    const [changed] = await db.update(orders).set({ status: "REFUNDED", updatedAt: new Date().toISOString() }).where(and(eq(orders.id, order.id), eq(orders.status, order.status))).returning({ id: orders.id });
+    const refundedAt = new Date().toISOString();
+    const [changed] = await db.update(orders).set({ status: "REFUNDED", refundedAt, updatedAt: refundedAt }).where(and(eq(orders.id, order.id), eq(orders.status, order.status))).returning({ id: orders.id });
     if (!changed) { await sendMessage(token, chatId, "Статус заказа уже изменился. Обновите карточку.", orderBackKeyboard(first)); return; }
     await db.update(orderItems).set({ fulfillmentStatus: "REFUNDED", updatedAt: new Date().toISOString() }).where(eq(orderItems.orderId, order.id));
     const customerEmailDelivered = (await sendOrderStatusEmail(order, "REFUNDED")).delivered;

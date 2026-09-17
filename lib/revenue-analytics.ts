@@ -7,6 +7,12 @@ export type RevenueOrder = {
   totalAmount: number;
   currency: string;
   partnerCode: string | null;
+  /** Commission rate captured on the order. Null means a legacy order. */
+  partnerCommissionBpsSnapshot?: number | null;
+  /** Actual costs are nullable until an operator records them. */
+  deliveryExpenseAmount?: number | null;
+  paymentFeeAmount?: number | null;
+  otherExpenseAmount?: number | null;
 };
 
 export type RevenueOrderItem = {
@@ -29,12 +35,20 @@ export type RevenueAnalyticsRow = {
   costOfGoods: number;
   partnerCommission: number;
   marketingCost: number;
+  deliveryExpense: number;
+  paymentFees: number;
+  otherExpenses: number;
+  totalExpenses: number;
   profit: number;
   marginPercent: number | null;
   roas: number | null;
   roiPercent: number | null;
   knownCostItems: number;
   totalCostItems: number;
+  missingDeliveryExpenseOrders: number;
+  missingPaymentFeeOrders: number;
+  missingOtherExpenseOrders: number;
+  estimatedPartnerCommissionOrders: number;
 };
 
 const DAY_MS = 86_400_000;
@@ -74,8 +88,11 @@ export function calculateRevenueAnalytics(
     if (existing) return existing;
     const row: RevenueAnalyticsRow = {
       currency, orders: 0, grossRevenue: 0, discounts: 0, refunds: 0, netProductRevenue: 0,
-      deliveryRevenue: 0, costOfGoods: 0, partnerCommission: 0, marketingCost: 0, profit: 0,
+      deliveryRevenue: 0, costOfGoods: 0, partnerCommission: 0, marketingCost: 0,
+      deliveryExpense: 0, paymentFees: 0, otherExpenses: 0, totalExpenses: 0, profit: 0,
       marginPercent: null, roas: null, roiPercent: null, knownCostItems: 0, totalCostItems: 0,
+      missingDeliveryExpenseOrders: 0, missingPaymentFeeOrders: 0, missingOtherExpenseOrders: 0,
+      estimatedPartnerCommissionOrders: 0,
     };
     byCurrency.set(currency, row);
     return row;
@@ -92,8 +109,20 @@ export function calculateRevenueAnalytics(
     else {
       row.netProductRevenue += discountedProductRevenue;
       row.deliveryRevenue += order.deliveryAmount;
-      if (order.partnerCode) row.partnerCommission += Math.round(order.totalAmount * (partnerBps.get(order.partnerCode) ?? 0) / 10_000);
+      if (order.partnerCode) {
+        const snapshot = order.partnerCommissionBpsSnapshot;
+        const commissionBps = snapshot === null || snapshot === undefined ? partnerBps.get(order.partnerCode) ?? 0 : snapshot;
+        if (snapshot === null || snapshot === undefined) row.estimatedPartnerCommissionOrders += 1;
+        row.partnerCommission += Math.round(order.totalAmount * commissionBps / 10_000);
+      }
     }
+    if (order.deliveryExpenseAmount === null || order.deliveryExpenseAmount === undefined) {
+      if (order.deliveryAmount > 0) row.missingDeliveryExpenseOrders += 1;
+    } else row.deliveryExpense += Math.max(0, order.deliveryExpenseAmount);
+    if (order.paymentFeeAmount === null || order.paymentFeeAmount === undefined) row.missingPaymentFeeOrders += 1;
+    else row.paymentFees += Math.max(0, order.paymentFeeAmount);
+    if (order.otherExpenseAmount === null || order.otherExpenseAmount === undefined) row.missingOtherExpenseOrders += 1;
+    else row.otherExpenses += Math.max(0, order.otherExpenseAmount);
     for (const item of itemRows.get(order.id) ?? []) {
       row.totalCostItems += item.quantity;
       if (item.unitCost !== null) {
@@ -107,7 +136,8 @@ export function calculateRevenueAnalytics(
 
   for (const row of byCurrency.values()) {
     const realizedRevenue = row.netProductRevenue + row.deliveryRevenue;
-    row.profit = realizedRevenue - row.costOfGoods - row.partnerCommission - row.marketingCost;
+    row.totalExpenses = row.costOfGoods + row.partnerCommission + row.marketingCost + row.deliveryExpense + row.paymentFees + row.otherExpenses;
+    row.profit = realizedRevenue - row.totalExpenses;
     row.marginPercent = realizedRevenue > 0 ? row.profit / realizedRevenue * 100 : null;
     row.roas = row.marketingCost > 0 ? row.netProductRevenue / row.marketingCost : null;
     row.roiPercent = row.marketingCost > 0 ? row.profit / row.marketingCost * 100 : null;

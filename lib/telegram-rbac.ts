@@ -145,7 +145,7 @@ export function telegramReplyPermission(replyContext: string): TelegramPermissio
   if (/^\[(?:BLOCK_CUSTOMER|EDIT_CUSTOMER):/i.test(replyContext)) return "customers.write";
   if (replyContext.startsWith("[TEST_EMAIL]")) return "settings.write";
   if (replyContext.startsWith("[EDIT_PAYMENT_REQUISITES]")) return "settings.write";
-  if (/^\[(?:DELIVERY_COST|FULFILL_ESIM|SHIP_ITEM):/i.test(replyContext)) return "orders.write";
+  if (/^\[(?:DELIVERY_COST|ORDER_EXPENSES|FULFILL_ESIM|SHIP_ITEM):/i.test(replyContext)) return "orders.write";
   if (replyContext.startsWith("[CREATE_PROMO]")) return "promocodes.write";
   if (replyContext.startsWith("[CREATE_PARTNER]")) return "partners.write";
   if (replyContext.startsWith("[CREATE_MARKETING_COST]")) return "marketing_costs.write";

@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { analyticsSessions, catalogProducts, cryptoPayments, orderItems, orders, productVariants, promoCodes } from "@/db/schema";
+import { analyticsSessions, catalogProducts, cryptoPayments, orderItems, orders, partners, productVariants, promoCodes } from "@/db/schema";
 import { getCatalogProducts } from "@/lib/catalog-repository";
 import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } from "@/lib/crypto-payments";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
@@ -197,6 +197,10 @@ export async function POST(request: Request) {
     // customer so the personal cabinet can show a private order history.
     const account = await getCurrentAccount();
     const attributedPartnerCode = partnerCodeFromRequest(request) ?? account?.partnerCode ?? null;
+    const [attributedPartner] = attributedPartnerCode
+      ? await db.select({ commissionBps: partners.commissionBps }).from(partners).where(eq(partners.code, attributedPartnerCode)).limit(1)
+      : [];
+    const partnerCommissionBpsSnapshot = attributedPartner?.commissionBps ?? null;
     const [firstPartyAttribution] = parsed.data.analytics?.clientId
       ? await db.select({ source: analyticsSessions.source, medium: analyticsSessions.medium, campaign: analyticsSessions.campaign, content: analyticsSessions.content, term: analyticsSessions.term }).from(analyticsSessions).where(eq(analyticsSessions.clientId, parsed.data.analytics.clientId)).orderBy(desc(analyticsSessions.lastSeenAt)).limit(1)
       : [];
@@ -330,7 +334,7 @@ export async function POST(request: Request) {
         }).where(and(eq(productVariants.id, variantId), gte(productVariants.stockQuantity, quantity))).returning({ id: productVariants.id });
         if (!updated[0]) throw new Error("INSUFFICIENT_STOCK");
       }
-      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, promoCode: appliedPromoCode, partnerCode: attributedPartnerCode, discountAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), firstPartyClientId: parsed.data.analytics?.clientId || null, analyticsSource: parsed.data.analytics?.source || firstPartyAttribution?.source || null, analyticsMedium: parsed.data.analytics?.medium || firstPartyAttribution?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || firstPartyAttribution?.campaign || null, analyticsContent: parsed.data.analytics?.content || firstPartyAttribution?.content || null, analyticsTerm: parsed.data.analytics?.term || firstPartyAttribution?.term || null });
+      await tx.insert(orders).values({ id, requestId: parsed.data.requestId, orderNumber: number, customerAccountId: account?.id ?? null, customerName: parsed.data.customerName, customerEmail: parsed.data.customerEmail.toLowerCase(), customerContact: parsed.data.customerContact, deliveryAddress: parsed.data.deliveryAddress, customerComment: parsed.data.customerComment, paymentMethod: parsed.data.paymentMethod, status, subtotalAmount, promoCode: appliedPromoCode, partnerCode: attributedPartnerCode, partnerCommissionBpsSnapshot, discountAmount, deliveryAmount, totalAmount, currency, inventoryReserved: true, analyticsClientId: analyticsClientId(request), firstPartyClientId: parsed.data.analytics?.clientId || null, analyticsSource: parsed.data.analytics?.source || firstPartyAttribution?.source || null, analyticsMedium: parsed.data.analytics?.medium || firstPartyAttribution?.medium || null, analyticsCampaign: parsed.data.analytics?.campaign || firstPartyAttribution?.campaign || null, analyticsContent: parsed.data.analytics?.content || firstPartyAttribution?.content || null, analyticsTerm: parsed.data.analytics?.term || firstPartyAttribution?.term || null });
       await tx.insert(orderItems).values(itemRows);
       if (parsed.data.paymentMethod === "crypto" && cryptoConfig) {
         await tx.insert(cryptoPayments).values({ id: crypto.randomUUID(), orderId: id, provider: cryptoConfig.provider, requestedAmount: totalAmount, requestedCurrency: currency.toUpperCase() });

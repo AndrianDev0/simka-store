@@ -236,6 +236,11 @@ export const orders = pgTable("orders", {
   inventoryReserved: boolean("inventory_reserved").notNull().default(false),
   paymentInstructionsSentAt: text("payment_instructions_sent_at"),
   paidAt: text("paid_at"),
+  refundedAt: text("refunded_at"),
+  partnerCommissionBpsSnapshot: integer("partner_commission_bps_snapshot"),
+  deliveryExpenseAmount: integer("delivery_expense_amount"),
+  paymentFeeAmount: integer("payment_fee_amount"),
+  otherExpenseAmount: integer("other_expense_amount"),
   analyticsClientId: text("analytics_client_id"),
   analyticsSource: text("analytics_source"),
   analyticsMedium: text("analytics_medium"),
@@ -255,6 +260,7 @@ export const orders = pgTable("orders", {
   index("idx_orders_customer_account_id").on(table.customerAccountId),
   index("idx_orders_status_created_at").on(table.status, table.createdAt),
   index("idx_orders_paid_at").on(table.paidAt),
+  index("idx_orders_refunded_at").on(table.refundedAt),
   index("idx_orders_partner_code").on(table.partnerCode),
   index("idx_orders_first_party_client_id").on(table.firstPartyClientId),
   check("orders_subtotal_amount_nonnegative", sql`${table.subtotalAmount} >= 0`),
@@ -263,6 +269,10 @@ export const orders = pgTable("orders", {
   check("orders_delivery_amount_nonnegative", sql`${table.deliveryAmount} >= 0`),
   check("orders_total_amount_nonnegative", sql`${table.totalAmount} >= 0`),
   check("orders_total_amount_consistent", sql`${table.totalAmount} = ${table.subtotalAmount} - ${table.discountAmount} + ${table.deliveryAmount}`),
+  check("orders_partner_commission_snapshot_valid", sql`${table.partnerCommissionBpsSnapshot} IS NULL OR (${table.partnerCommissionBpsSnapshot} >= 0 AND ${table.partnerCommissionBpsSnapshot} <= 10000)`),
+  check("orders_delivery_expense_nonnegative", sql`${table.deliveryExpenseAmount} IS NULL OR ${table.deliveryExpenseAmount} >= 0`),
+  check("orders_payment_fee_nonnegative", sql`${table.paymentFeeAmount} IS NULL OR ${table.paymentFeeAmount} >= 0`),
+  check("orders_other_expense_nonnegative", sql`${table.otherExpenseAmount} IS NULL OR ${table.otherExpenseAmount} >= 0`),
 ]);
 
 export const orderItems = pgTable("order_items", {
