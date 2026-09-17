@@ -1,6 +1,7 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { analyticsEvents, analyticsSessions, analyticsVisitors, cryptoPayments, customerAccounts, customerSessions, orderItems, orders, privacyConsentEvents } from "@/db/schema";
+import { collectAccountAnalyticsClientIds } from "@/lib/account-data-export";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -47,6 +48,13 @@ export async function GET(request: Request) {
     deliveryAmount: orders.deliveryAmount,
     totalAmount: orders.totalAmount,
     currency: orders.currency,
+    analyticsClientId: orders.analyticsClientId,
+    firstPartyClientId: orders.firstPartyClientId,
+    analyticsSource: orders.analyticsSource,
+    analyticsMedium: orders.analyticsMedium,
+    analyticsCampaign: orders.analyticsCampaign,
+    analyticsContent: orders.analyticsContent,
+    analyticsTerm: orders.analyticsTerm,
     createdAt: orders.createdAt,
     paidAt: orders.paidAt,
     updatedAt: orders.updatedAt,
@@ -82,13 +90,17 @@ export async function GET(request: Request) {
   const sessions = await db.select({ createdAt: customerSessions.createdAt, lastUsedAt: customerSessions.lastUsedAt, expiresAt: customerSessions.expiresAt })
     .from(customerSessions).where(eq(customerSessions.accountId, account.id)).orderBy(asc(customerSessions.createdAt));
   const consentHistory = await db.select({
+    consentId: privacyConsentEvents.consentId,
     decision: privacyConsentEvents.decision,
     source: privacyConsentEvents.source,
     policyVersion: privacyConsentEvents.policyVersion,
     createdAt: privacyConsentEvents.createdAt,
   }).from(privacyConsentEvents).where(eq(privacyConsentEvents.accountId, account.id)).orderBy(asc(privacyConsentEvents.createdAt));
-  const analyticsVisitorRows = await db.select().from(analyticsVisitors).where(eq(analyticsVisitors.accountId, account.id)).orderBy(asc(analyticsVisitors.firstSeenAt));
-  const analyticsClientIds = analyticsVisitorRows.map((visitor) => visitor.clientId);
+  const referencedClientIds = collectAccountAnalyticsClientIds([], consentHistory, accountOrders);
+  const analyticsVisitorRows = await db.select().from(analyticsVisitors).where(referencedClientIds.length
+    ? or(eq(analyticsVisitors.accountId, account.id), inArray(analyticsVisitors.clientId, referencedClientIds))
+    : eq(analyticsVisitors.accountId, account.id)).orderBy(asc(analyticsVisitors.firstSeenAt));
+  const analyticsClientIds = collectAccountAnalyticsClientIds(analyticsVisitorRows, consentHistory, accountOrders);
   const analyticsSessionRows = analyticsClientIds.length
     ? await db.select().from(analyticsSessions).where(inArray(analyticsSessions.clientId, analyticsClientIds)).orderBy(asc(analyticsSessions.startedAt))
     : [];
@@ -96,7 +108,9 @@ export async function GET(request: Request) {
     id: analyticsEvents.id, sessionId: analyticsEvents.sessionId, clientId: analyticsEvents.clientId,
     name: analyticsEvents.name, path: analyticsEvents.path, params: analyticsEvents.params,
     occurredAt: analyticsEvents.occurredAt,
-  }).from(analyticsEvents).where(eq(analyticsEvents.accountId, account.id)).orderBy(asc(analyticsEvents.occurredAt));
+  }).from(analyticsEvents).where(analyticsClientIds.length
+    ? or(eq(analyticsEvents.accountId, account.id), inArray(analyticsEvents.clientId, analyticsClientIds))
+    : eq(analyticsEvents.accountId, account.id)).orderBy(asc(analyticsEvents.occurredAt));
 
   const payload = {
     exportedAt: new Date().toISOString(),
