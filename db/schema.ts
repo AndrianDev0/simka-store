@@ -126,11 +126,15 @@ export const analyticsSessions = pgTable("analytics_sessions", {
   eventCount: integer("event_count").notNull().default(0),
   startedAt: text("started_at").notNull(),
   lastSeenAt: text("last_seen_at").notNull(),
+  endedAt: text("ended_at"),
+  exitDurationMs: integer("exit_duration_ms"),
 }, (table) => [
   index("idx_analytics_sessions_client_started").on(table.clientId, table.startedAt),
   index("idx_analytics_sessions_last_seen_at").on(table.lastSeenAt),
+  index("idx_analytics_sessions_ended_at").on(table.endedAt),
   index("idx_analytics_sessions_source_started").on(table.source, table.startedAt),
   check("analytics_sessions_counts_nonnegative", sql`${table.pageViews} >= 0 AND ${table.eventCount} >= 0`),
+  check("analytics_sessions_exit_duration_nonnegative", sql`${table.exitDurationMs} IS NULL OR ${table.exitDurationMs} >= 0`),
 ]);
 
 export const analyticsEvents = pgTable("analytics_events", {

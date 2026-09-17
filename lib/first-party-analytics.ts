@@ -32,6 +32,15 @@ export function preserveWebVitalValue(value: number) {
   return Number.isFinite(value) ? value : 0;
 }
 
+export function analyticsSessionExitState(name: string, params: SafeAnalyticsParams, occurredAt: string) {
+  if (name !== "page_exit") return { endedAt: null, exitDurationMs: null };
+  const rawDuration = params.duration_ms;
+  const exitDurationMs = typeof rawDuration === "number" && Number.isFinite(rawDuration)
+    ? Math.round(Math.max(0, Math.min(rawDuration, 24 * 60 * 60_000)))
+    : 0;
+  return { endedAt: occurredAt, exitDurationMs };
+}
+
 function sanitizeItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 20).flatMap((raw) => {

@@ -695,15 +695,18 @@ function compactAnalyticsLabel(value: string | null, maximum = 64) {
 async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const sessionTime = sql`${analyticsSessions.startedAt}::timestamptz`;
+  const exitTime = sql`${analyticsSessions.endedAt}::timestamptz`;
   const eventTime = sql`${analyticsEvents.occurredAt}::timestamptz`;
   const orderCreatedTime = sql`${orders.createdAt}::timestamptz`;
   const orderPaidTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
   const sessionConditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
+  const exitConditions = [sql`${analyticsSessions.endedAt} IS NOT NULL`, sql`${exitTime} <= ${bounds.end}::timestamptz`];
   const eventConditions = [sql`${eventTime} <= ${bounds.end}::timestamptz`];
   const createdOrderConditions = [sql`${orderCreatedTime} <= ${bounds.end}::timestamptz`, sql`${orders.firstPartyClientId} IS NOT NULL`];
   const paidOrderConditions = [sql`${orderPaidTime} <= ${bounds.end}::timestamptz`, sql`${orders.firstPartyClientId} IS NOT NULL`, inArray(orders.status, [...paidOrderStatuses])];
   if (bounds.start) {
     sessionConditions.push(sql`${sessionTime} >= ${bounds.start}::timestamptz`);
+    exitConditions.push(sql`${exitTime} >= ${bounds.start}::timestamptz`);
     eventConditions.push(sql`${eventTime} >= ${bounds.start}::timestamptz`);
     createdOrderConditions.push(sql`${orderCreatedTime} >= ${bounds.start}::timestamptz`);
     paidOrderConditions.push(sql`${orderPaidTime} >= ${bounds.start}::timestamptz`);
@@ -723,7 +726,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     }).from(analyticsSessions).innerJoin(analyticsVisitors, eq(analyticsSessions.clientId, analyticsVisitors.clientId)).where(and(...sessionConditions)),
     db.select({ source: analyticsSessions.source, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.source).orderBy(desc(sql`COUNT(*)`)).limit(8),
     db.select({ device: analyticsSessions.deviceType, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.deviceType).orderBy(desc(sql`COUNT(*)`)),
-    db.select({ path: analyticsSessions.exitPath, exits: sql<number>`COUNT(*)::int`, averageSeconds: sql<number>`COALESCE(AVG(GREATEST(0, LEAST(86400, EXTRACT(EPOCH FROM (${analyticsSessions.lastSeenAt}::timestamptz - ${analyticsSessions.startedAt}::timestamptz)))), 0)::float` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.exitPath).orderBy(desc(sql`COUNT(*)`)).limit(8),
+    db.select({ path: analyticsSessions.exitPath, exits: sql<number>`COUNT(*)::int`, averageSeconds: sql<number>`COALESCE(AVG(${analyticsSessions.exitDurationMs} / 1000.0), 0)::float` }).from(analyticsSessions).where(and(...exitConditions)).groupBy(analyticsSessions.exitPath).orderBy(desc(sql`COUNT(*)`)).limit(8),
     db.select({ name: analyticsEvents.name, users: sql<number>`COUNT(DISTINCT ${analyticsEvents.clientId})::int` }).from(analyticsEvents).where(and(...eventConditions, inArray(analyticsEvents.name, funnelNames))).groupBy(analyticsEvents.name),
     db.select({ users: sql<number>`COUNT(DISTINCT ${orders.firstPartyClientId})::int`, orders: sql<number>`COUNT(*)::int` }).from(orders).where(and(...createdOrderConditions)),
     db.select({ users: sql<number>`COUNT(DISTINCT ${orders.firstPartyClientId})::int`, orders: sql<number>`COUNT(*)::int` }).from(orders).where(and(...paidOrderConditions)),

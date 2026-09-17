@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
-import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageExit, trackPageView } from "@/lib/analytics";
 import { reportTechnicalEvent } from "@/lib/client-telemetry";
 import { preserveWebVitalValue } from "@/lib/first-party-analytics";
 
@@ -101,6 +101,7 @@ export function AnalyticsProvider() {
   const pathname = usePathname();
   const consent = useSyncExternalStore(subscribeToConsent, consentSnapshot, () => "declined");
   const choosingConsent = useRef(false);
+  const activePage = useRef({ path: "/", startedAt: 0, eventId: "", exitSent: false });
 
   useReportWebVitals(useCallback((metric) => {
     trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: preserveWebVitalValue(metric.value) });
@@ -133,9 +134,30 @@ export function AnalyticsProvider() {
 
   useEffect(() => {
     if (consent !== "accepted" || !pathname) return;
-    const startedAt = Date.now();
-    return () => { trackEvent("page_exit", { duration_ms: Math.min(Date.now() - startedAt, 24 * 60 * 60_000) }); };
+    activePage.current = { path: pathname, startedAt: Date.now(), eventId: crypto.randomUUID(), exitSent: false };
   }, [consent, pathname]);
+
+  useEffect(() => {
+    if (consent !== "accepted") return;
+    const sendExit = () => {
+      const page = activePage.current;
+      if (!page.eventId || page.exitSent) return;
+      page.exitSent = true;
+      trackPageExit(page.path, Date.now() - page.startedAt, page.eventId);
+    };
+    const restorePage = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      const page = activePage.current;
+      activePage.current = { path: page.path, startedAt: Date.now(), eventId: crypto.randomUUID(), exitSent: false };
+      trackPageView(page.path);
+    };
+    window.addEventListener("pagehide", sendExit);
+    window.addEventListener("pageshow", restorePage);
+    return () => {
+      window.removeEventListener("pagehide", sendExit);
+      window.removeEventListener("pageshow", restorePage);
+    };
+  }, [consent]);
 
   useEffect(() => {
     if (consent !== "accepted") return;

@@ -4,7 +4,7 @@ import { getDb } from "@/db";
 import { analyticsEvents, analyticsSessions, analyticsVisitors, privacyConsentEvents } from "@/db/schema";
 import { allowsAnalytics } from "@/lib/analytics-policy";
 import { getCurrentAccount, sameOrigin } from "@/lib/customer-auth";
-import { parseAnalyticsUserAgent, safeAnalyticsPath, safeHeaderLocation, sanitizeAnalyticsParams, validAnalyticsEventName } from "@/lib/first-party-analytics";
+import { analyticsSessionExitState, parseAnalyticsUserAgent, safeAnalyticsPath, safeHeaderLocation, sanitizeAnalyticsParams, validAnalyticsEventName } from "@/lib/first-party-analytics";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -62,6 +62,7 @@ export async function POST(request: Request) {
   const occurredAt = boundedOccurrence(parsed.data.occurredAt, now);
   const path = safeAnalyticsPath(parsed.data.path);
   const params = sanitizeAnalyticsParams(parsed.data.params);
+  const exitState = analyticsSessionExitState(parsed.data.name, params, occurredAt);
   const attribution = parsed.data.attribution;
   const detected = parseAnalyticsUserAgent(request.headers.get("user-agent") || "");
   const countryCode = safeHeaderLocation(request.headers.get("cf-ipcountry") || request.headers.get("x-vercel-ip-country") || request.headers.get("x-country"), 8)?.toUpperCase() ?? null;
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
       viewportWidth: device?.viewportWidth, viewportHeight: device?.viewportHeight,
       pixelRatio: device?.pixelRatio ? Math.round(device.pixelRatio * 100) : null,
       connectionType: device?.connectionType || null, pageViews: 0, eventCount: 0,
-      startedAt: occurredAt, lastSeenAt: occurredAt,
+      startedAt: occurredAt, lastSeenAt: occurredAt, ...exitState,
     }).onConflictDoNothing({ target: analyticsSessions.id }).returning({ id: analyticsSessions.id });
     const inserted = await tx.insert(analyticsEvents).values({
       id: parsed.data.eventId, sessionId: parsed.data.sessionId, clientId: parsed.data.clientId,
@@ -99,6 +100,7 @@ export async function POST(request: Request) {
     if (!inserted[0]) return false;
     await tx.update(analyticsSessions).set({
       exitPath: path, lastSeenAt: occurredAt,
+      ...exitState,
       eventCount: sql`${analyticsSessions.eventCount} + 1`,
       pageViews: parsed.data.name === "page_view" ? sql`${analyticsSessions.pageViews} + 1` : analyticsSessions.pageViews,
     }).where(and(eq(analyticsSessions.id, parsed.data.sessionId), eq(analyticsSessions.clientId, parsed.data.clientId)));

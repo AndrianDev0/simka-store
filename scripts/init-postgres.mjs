@@ -124,10 +124,15 @@ try {
       event_count INTEGER NOT NULL DEFAULT 0,
       started_at TEXT NOT NULL,
       last_seen_at TEXT NOT NULL,
+      ended_at TEXT,
+      exit_duration_ms INTEGER CHECK (exit_duration_ms IS NULL OR exit_duration_ms >= 0),
       CONSTRAINT analytics_sessions_counts_nonnegative CHECK (page_views >= 0 AND event_count >= 0)
     );
     CREATE INDEX IF NOT EXISTS idx_analytics_sessions_client_started ON analytics_sessions(client_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_sessions_last_seen_at ON analytics_sessions(last_seen_at);
+    ALTER TABLE analytics_sessions ADD COLUMN IF NOT EXISTS ended_at TEXT;
+    ALTER TABLE analytics_sessions ADD COLUMN IF NOT EXISTS exit_duration_ms INTEGER;
+    CREATE INDEX IF NOT EXISTS idx_analytics_sessions_ended_at ON analytics_sessions(ended_at);
     CREATE INDEX IF NOT EXISTS idx_analytics_sessions_source_started ON analytics_sessions(source, started_at);
 
     CREATE TABLE IF NOT EXISTS analytics_events (

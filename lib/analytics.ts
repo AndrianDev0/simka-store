@@ -113,12 +113,12 @@ function analyticsAttribution(): Attribution {
   return value;
 }
 
-function trackFirstParty(name: string, params: AnalyticsParams, path = window.location.pathname) {
+function trackFirstParty(name: string, params: AnalyticsParams, path = window.location.pathname, options: { beacon?: boolean; eventId?: string } = {}) {
   const clientId = getAnalyticsClientId();
   if (!clientId) return false;
   const connection = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection;
   const body = {
-    eventId: crypto.randomUUID(), clientId, sessionId: analyticsSessionId(), name, path,
+    eventId: options.eventId || crypto.randomUUID(), clientId, sessionId: analyticsSessionId(), name, path,
     occurredAt: new Date().toISOString(), params, attribution: analyticsAttribution(),
     device: {
       language: navigator.language, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -127,9 +127,15 @@ function trackFirstParty(name: string, params: AnalyticsParams, path = window.lo
       pixelRatio: window.devicePixelRatio, connectionType: connection?.effectiveType,
     },
   };
+  const serialized = JSON.stringify(body);
+  if (options.beacon && typeof navigator.sendBeacon === "function") {
+    try {
+      if (navigator.sendBeacon("/api/analytics/events", new Blob([serialized], { type: "application/json" }))) return true;
+    } catch { /* Fall back to keepalive fetch. */ }
+  }
   void fetch("/api/analytics/events", {
     method: "POST", credentials: "same-origin", keepalive: true,
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" }, body: serialized,
   }).catch(() => undefined);
   return true;
 }
@@ -162,6 +168,17 @@ export function trackPageView(path: string) {
   let sent = trackFirstParty("page_view", {}, safePath);
   if (window.__simkaAnalyticsInitialised && gaMeasurementId && window.gtag) { window.gtag("event", "page_view", { page_path: safePath, page_location: pageLocation }); sent = true; }
   if (window.__simkaAnalyticsInitialised && yandexMetrikaId && window.ym) { window.ym(Number(yandexMetrikaId), "hit", safePath, { title: document.title }); sent = true; }
+  return sent;
+}
+
+export function trackPageExit(path: string, durationMs: number, eventId: string) {
+  if (!analyticsConsentGranted()) return false;
+  const safePath = path.startsWith("/") ? path.split(/[?#]/, 1)[0] : "/";
+  const payload = { duration_ms: Math.round(Math.max(0, Math.min(durationMs, 24 * 60 * 60_000))), page_path: safePath };
+  let sent = trackFirstParty("page_exit", payload, safePath, { beacon: true, eventId });
+  if (window.__simkaAnalyticsInitialised && gaMeasurementId && window.gtag) { window.gtag("event", "page_exit", { ...payload, transport_type: "beacon" }); sent = true; }
+  if (window.__simkaAnalyticsInitialised && yandexMetrikaId && window.ym) { window.ym(Number(yandexMetrikaId), "reachGoal", "page_exit", payload); sent = true; }
+  if (plausibleDomain && window.plausible) { window.plausible("page_exit", { props: payload }); sent = true; }
   return sent;
 }
 
