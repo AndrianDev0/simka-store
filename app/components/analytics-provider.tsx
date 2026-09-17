@@ -102,7 +102,7 @@ export function AnalyticsProvider() {
   const choosingConsent = useRef(false);
 
   useReportWebVitals(useCallback((metric) => {
-    trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: Math.round(metric.value) });
+    trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: metric.value });
   }, []));
 
   useEffect(() => {
