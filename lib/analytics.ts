@@ -1,4 +1,5 @@
 import { ANALYTICS_POLICY_VERSION } from "@/lib/analytics-policy";
+import { reusableAnalyticsSession, resolveLandingAttribution, type AnalyticsAttribution } from "@/lib/analytics-attribution";
 
 export type AnalyticsItem = {
   item_id: string;
@@ -68,58 +69,47 @@ export function getAnalyticsClientId() {
   } catch { return null; }
 }
 
-function analyticsSessionId() {
+let activeAnalyticsSession: { id: string; attribution: AnalyticsAttribution; lastSeen: number } | null = null;
+
+function analyticsSession() {
   const now = Date.now();
-  try {
-    const stored = JSON.parse(window.sessionStorage.getItem(ANALYTICS_SESSION_KEY) || "null") as { id?: unknown; lastSeen?: unknown } | null;
-    const id = typeof stored?.id === "string" && uuidPattern.test(stored.id) ? stored.id : null;
-    const lastSeen = typeof stored?.lastSeen === "number" ? stored.lastSeen : 0;
-    const sessionId = id && now - lastSeen <= SESSION_TIMEOUT_MS ? id : crypto.randomUUID();
-    window.sessionStorage.setItem(ANALYTICS_SESSION_KEY, JSON.stringify({ id: sessionId, lastSeen: now }));
-    return sessionId;
-  } catch { return crypto.randomUUID(); }
-}
-
-type Attribution = { source?: string; medium?: string; campaign?: string; content?: string; term?: string; referrerHost?: string };
-
-function bounded(value: string | null, maximum: number) {
-  return value?.trim().slice(0, maximum) || undefined;
-}
-
-function analyticsAttribution(): Attribution {
-  const url = new URL(window.location.href);
-  const hasCampaign = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"].some((key) => url.searchParams.has(key));
-  if (hasCampaign) {
-    const value = {
-      source: bounded(url.searchParams.get("utm_source"), 120), medium: bounded(url.searchParams.get("utm_medium"), 120),
-      campaign: bounded(url.searchParams.get("utm_campaign"), 160), content: bounded(url.searchParams.get("utm_content"), 160),
-      term: bounded(url.searchParams.get("utm_term"), 160),
-    };
-    try { window.localStorage.setItem(ANALYTICS_ATTRIBUTION_KEY, JSON.stringify(value)); } catch { /* Best effort. */ }
-    return value;
+  if (activeAnalyticsSession) {
+    if (now - activeAnalyticsSession.lastSeen > SESSION_TIMEOUT_MS) {
+      activeAnalyticsSession = { id: crypto.randomUUID(), attribution: { source: "direct", medium: "none" }, lastSeen: now };
+    } else activeAnalyticsSession.lastSeen = now;
+    try { window.sessionStorage.setItem(ANALYTICS_SESSION_KEY, JSON.stringify(activeAnalyticsSession)); } catch { /* Best effort. */ }
+    return activeAnalyticsSession;
   }
   try {
-    const stored = JSON.parse(window.localStorage.getItem(ANALYTICS_ATTRIBUTION_KEY) || "null") as Attribution | null;
-    if (stored?.source) return stored;
-  } catch { /* Fall through to referrer attribution. */ }
-  let referrerHost: string | undefined;
-  try {
-    const referrer = document.referrer ? new URL(document.referrer) : null;
-    if (referrer && referrer.origin !== window.location.origin) referrerHost = bounded(referrer.hostname.toLowerCase(), 255);
-  } catch { /* Invalid referrers are ignored. */ }
-  const search = referrerHost?.match(/(^|\.)(google|bing|yandex)\./)?.[2];
-  const value: Attribution = referrerHost ? { source: search || referrerHost, medium: search ? "organic" : "referral", referrerHost } : { source: "direct", medium: "none" };
-  try { window.localStorage.setItem(ANALYTICS_ATTRIBUTION_KEY, JSON.stringify(value)); } catch { /* Best effort. */ }
-  return value;
+    const stored = JSON.parse(window.sessionStorage.getItem(ANALYTICS_SESSION_KEY) || "null") as { id?: unknown; lastSeen?: unknown; attribution?: AnalyticsAttribution } | null;
+    const landing = resolveLandingAttribution(window.location.href, document.referrer, window.location.origin);
+    const reuse = reusableAnalyticsSession(stored?.id, stored?.lastSeen, now, landing.explicitTouch, SESSION_TIMEOUT_MS);
+    let legacyAttribution: AnalyticsAttribution | undefined;
+    try {
+      legacyAttribution = JSON.parse(window.localStorage.getItem(ANALYTICS_ATTRIBUTION_KEY) || "null") as AnalyticsAttribution | undefined;
+      window.localStorage.removeItem(ANALYTICS_ATTRIBUTION_KEY);
+    } catch { /* Legacy attribution is optional. */ }
+    activeAnalyticsSession = {
+      id: reuse ? stored!.id as string : crypto.randomUUID(),
+      attribution: reuse ? stored?.attribution || legacyAttribution || landing.attribution : landing.attribution,
+      lastSeen: now,
+    };
+    window.sessionStorage.setItem(ANALYTICS_SESSION_KEY, JSON.stringify(activeAnalyticsSession));
+    return activeAnalyticsSession;
+  } catch {
+    activeAnalyticsSession = { id: crypto.randomUUID(), attribution: resolveLandingAttribution(window.location.href, document.referrer, window.location.origin).attribution, lastSeen: now };
+    return activeAnalyticsSession;
+  }
 }
 
 function trackFirstParty(name: string, params: AnalyticsParams, path = window.location.pathname, options: { beacon?: boolean; eventId?: string } = {}) {
   const clientId = getAnalyticsClientId();
   if (!clientId) return false;
+  const session = analyticsSession();
   const connection = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection;
   const body = {
-    eventId: options.eventId || crypto.randomUUID(), clientId, sessionId: analyticsSessionId(), name, path,
-    occurredAt: new Date().toISOString(), params, attribution: analyticsAttribution(),
+    eventId: options.eventId || crypto.randomUUID(), clientId, sessionId: session.id, name, path,
+    occurredAt: new Date().toISOString(), params, attribution: session.attribution,
     device: {
       language: navigator.language, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       screenWidth: window.screen.width, screenHeight: window.screen.height,
