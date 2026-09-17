@@ -84,6 +84,22 @@ export function telegramRoleCan(role: TelegramRole, permission: TelegramPermissi
   return permissionsByRole[role].has(permission);
 }
 
+const readAuditActions: Partial<Record<TelegramPermission, string>> = {
+  "catalog.read": "catalog.view",
+  "orders.read": "orders.view",
+  "customers.read": "customers.view",
+  "analytics.read": "analytics.view",
+  "promocodes.read": "promocodes.view",
+  "partners.read": "partners.view",
+  "settings.read": "settings.view",
+  "operations.read": "operations.view",
+  "audit.read": "audit.view",
+};
+
+export function telegramReadAuditAction(permission: TelegramPermission | null) {
+  return permission ? readAuditActions[permission] ?? null : null;
+}
+
 function catalogCallbackPermission(scope: string, action: string): TelegramPermission | null {
   const catalogScopes = new Set(["products", "product", "variants", "variant", "images", "image", "countries", "country", "operators", "operator", "categories", "category", "delivery", "pc", "cp", "ca"]);
   if (!catalogScopes.has(scope)) return null;

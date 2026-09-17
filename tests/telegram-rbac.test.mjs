@@ -5,6 +5,7 @@ import {
   resolveTelegramRole,
   telegramCallbackPermission,
   telegramCommandPermission,
+  telegramReadAuditAction,
   telegramReplyPermission,
   telegramRoleCan,
 } from "../lib/telegram-rbac.ts";
@@ -13,6 +14,16 @@ test("the first allow-listed administrator is owner and remaining administrators
   assert.equal(resolveTelegramRole(10, "10,20", undefined), "owner");
   assert.equal(resolveTelegramRole(20, "10,20", undefined), "admin");
   assert.equal(resolveTelegramRole(30, "10,20", "30:support"), null);
+});
+
+test("read permissions map to stable audit actions while writes and exports do not", () => {
+  assert.equal(telegramReadAuditAction("catalog.read"), "catalog.view");
+  assert.equal(telegramReadAuditAction("orders.read"), "orders.view");
+  assert.equal(telegramReadAuditAction("analytics.read"), "analytics.view");
+  assert.equal(telegramReadAuditAction("audit.read"), "audit.view");
+  assert.equal(telegramReadAuditAction("orders.write"), null);
+  assert.equal(telegramReadAuditAction("analytics.export"), null);
+  assert.equal(telegramReadAuditAction(null), null);
 });
 
 test("explicit assignments override safe defaults and malformed assignments are ignored", () => {

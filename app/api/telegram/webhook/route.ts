@@ -29,6 +29,7 @@ import {
   resolveTelegramRole,
   telegramCallbackPermission,
   telegramCommandPermission,
+  telegramReadAuditAction,
   telegramReplyPermission,
   telegramRoleCan,
   telegramRoleLabels,
@@ -1118,6 +1119,20 @@ async function audit(db: ReturnType<typeof getDb>, adminId: number, action: stri
     entityType: action.split(".")[0] || "admin",
     entityId,
     metadata: JSON.stringify(metadata),
+  });
+}
+
+function callbackHasDetailedReadAudit(data: string) {
+  return data.startsWith("analytics:search:") || data.startsWith("errors:") || data.startsWith("audit:");
+}
+
+async function auditTelegramRead(adminId: number, role: TelegramRole, permission: TelegramPermission | null, target: string) {
+  const action = telegramReadAuditAction(permission);
+  if (!action) return;
+  await audit(getDb(), adminId, action, null, {
+    role,
+    permission,
+    target: target.slice(0, 128),
   });
 }
 
@@ -2401,6 +2416,9 @@ export async function POST(request: Request) {
           await denyTelegramAccess(token, chatId, from.id, role, permission, callback.data);
           return Response.json({ ok: true });
         }
+        if (!callbackHasDetailedReadAudit(callback.data)) {
+          await auditTelegramRead(from.id, role, permission, callback.data);
+        }
         await handleCallback(token, chatId, from.id, callback.data, role);
       }
       return Response.json({ ok: true });
@@ -2445,18 +2463,25 @@ export async function POST(request: Request) {
       return Response.json({ ok: true });
     }
     if (command === "/start" || command === "/help") {
+      await audit(getDb(), from.id, "auth.login", null, { role, entry: command });
       await sendAdminMenu(token, chatId, role);
     } else if (command === "/payment_requisites") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await handleCallback(token, chatId, from.id, "settings:payment", role);
     } else if (command === "/email") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await handleCallback(token, chatId, from.id, "settings:email", role);
     } else if (command === "/products") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "products:list");
     } else if (command === "/countries") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "countries:list");
     } else if (command === "/operators") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await handleCatalogAdminCallback({ token, chatId, adminId: from.id }, "operators:list");
     } else if (command === "/status") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await handleCallback(token, chatId, from.id, "status", role);
     } else if (command === "/backup") {
       await handleCallback(token, chatId, from.id, "backup:prompt", role);
@@ -2465,14 +2490,19 @@ export async function POST(request: Request) {
     } else if (command === "/errors") {
       await sendOperationalErrors(getDb(), token, chatId, from.id, 24);
     } else if (command === "/analytics") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await sendAnalyticsSummary(getDb(), token, chatId, 7, role);
     } else if (command === "/promocodes") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await sendPromoCodes(getDb(), token, chatId, role);
     } else if (command === "/partners") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await sendPartners(getDb(), token, chatId, role);
     } else if (command === "/customers") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await sendCustomersPage(getDb(), token, chatId);
     } else if (command === "/orders") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       await sendOrdersPage(getDb(), token, chatId);
     } else if (command === "/paid") {
       const number = text.trim().split(/\s+/)[1]?.toUpperCase();
@@ -2505,6 +2535,7 @@ export async function POST(request: Request) {
         }
       }
     } else if (command === "/categories") {
+      await auditTelegramRead(from.id, role, commandPermission, command);
       const db = getDb();
       const list = await db.select({ name: categories.name, slug: categories.slug, isPublished: categories.isPublished, noindex: categories.noindex, archivedAt: categories.archivedAt, sortOrder: categories.sortOrder }).from(categories).orderBy(categories.sortOrder, categories.name);
       const lines = list.length ? list.map((category) => `${category.sortOrder}. ${category.name} (${category.slug}) · ${category.archivedAt ? "ARCHIVED" : category.isPublished ? "PUBLISHED" : "DRAFT"} · ${category.noindex ? "NOINDEX" : "INDEX"}`).join("\n") : "Категорий пока нет.";
