@@ -3,6 +3,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { privacyConsentEvents, searchAnalytics } from "@/db/schema";
+import { allowsAnalytics } from "@/lib/analytics-policy";
 import { sameOrigin } from "@/lib/customer-auth";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 import { normalizeSearchQuery } from "@/lib/search-analytics";
@@ -28,8 +29,8 @@ export async function POST(request: Request) {
   const rateLimit = await consumeRateLimit({ request, action: "search-analytics", subject: parsed.data.consentId, limit: 120, windowMs: 60 * 60 * 1000 });
   if (!rateLimit.allowed) return tooManyRequests(rateLimit.retryAfterSeconds);
   const db = getDb();
-  const [latestConsent] = await db.select({ decision: privacyConsentEvents.decision }).from(privacyConsentEvents).where(eq(privacyConsentEvents.consentId, parsed.data.consentId)).orderBy(desc(privacyConsentEvents.createdAt)).limit(1);
-  if (latestConsent?.decision !== "accepted") return new Response(null, { status: 403 });
+  const [latestConsent] = await db.select({ decision: privacyConsentEvents.decision, policyVersion: privacyConsentEvents.policyVersion }).from(privacyConsentEvents).where(eq(privacyConsentEvents.consentId, parsed.data.consentId)).orderBy(desc(privacyConsentEvents.createdAt)).limit(1);
+  if (!allowsAnalytics(latestConsent)) return new Response(null, { status: 403 });
 
   const now = new Date().toISOString();
   const day = now.slice(0, 10);
@@ -46,4 +47,3 @@ export async function POST(request: Request) {
   });
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 }
-

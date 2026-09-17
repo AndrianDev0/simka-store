@@ -2,7 +2,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { analyticsEvents, analyticsSessions, analyticsVisitors, privacyConsentEvents } from "@/db/schema";
-import { ANALYTICS_POLICY_VERSION } from "@/lib/analytics";
+import { allowsAnalytics } from "@/lib/analytics-policy";
 import { getCurrentAccount, sameOrigin } from "@/lib/customer-auth";
 import { parseAnalyticsUserAgent, safeAnalyticsPath, safeHeaderLocation, sanitizeAnalyticsParams, validAnalyticsEventName } from "@/lib/first-party-analytics";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     db.select({ clientId: analyticsSessions.clientId }).from(analyticsSessions).where(eq(analyticsSessions.id, parsed.data.sessionId)).limit(1),
     getCurrentAccount(),
   ]);
-  if (consent[0]?.decision !== "accepted" || consent[0]?.policyVersion !== ANALYTICS_POLICY_VERSION) {
+  if (!allowsAnalytics(consent[0])) {
     return Response.json({ error: "Нет актуального согласия на аналитику" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
   if (existingSession[0] && existingSession[0].clientId !== parsed.data.clientId) return Response.json({ error: "Некорректная сессия" }, { status: 409, headers: { "Cache-Control": "no-store" } });

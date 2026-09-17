@@ -1,6 +1,7 @@
+import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { privacyConsentEvents } from "@/db/schema";
-import { ANALYTICS_POLICY_VERSION } from "@/lib/analytics";
+import { orders, privacyConsentEvents } from "@/db/schema";
+import { ANALYTICS_POLICY_VERSION } from "@/lib/analytics-policy";
 import { getCurrentAccount, sameOrigin } from "@/lib/customer-auth";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
@@ -33,14 +34,19 @@ export async function POST(request: Request) {
   const rateLimit = await consumeRateLimit({ request, action: "privacy-consent", subject: consentId, limit: 30, windowMs: 24 * 60 * 60 * 1000 });
   if (!rateLimit.allowed) return tooManyRequests(rateLimit.retryAfterSeconds);
   const account = await getCurrentAccount();
-  await getDb().insert(privacyConsentEvents).values({
-    id: eventId,
-    consentId,
-    accountId: account?.id ?? null,
-    decision: decision as "accepted" | "declined" | "withdrawn",
-    source: source as "banner" | "settings",
-    policyVersion: ANALYTICS_POLICY_VERSION,
-  }).onConflictDoNothing({ target: privacyConsentEvents.id });
+  await getDb().transaction(async (tx) => {
+    await tx.insert(privacyConsentEvents).values({
+      id: eventId,
+      consentId,
+      accountId: account?.id ?? null,
+      decision: decision as "accepted" | "declined" | "withdrawn",
+      source: source as "banner" | "settings",
+      policyVersion: ANALYTICS_POLICY_VERSION,
+    }).onConflictDoNothing({ target: privacyConsentEvents.id });
+    if (decision !== "accepted") {
+      await tx.update(orders).set({ analyticsClientId: null }).where(eq(orders.firstPartyClientId, consentId));
+    }
+  });
 
   return Response.json({ recorded: true }, { status: 201, headers: { "Cache-Control": "no-store" } });
 }

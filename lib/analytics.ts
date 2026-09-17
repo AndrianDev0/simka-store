@@ -1,3 +1,5 @@
+import { ANALYTICS_POLICY_VERSION } from "@/lib/analytics-policy";
+
 export type AnalyticsItem = {
   item_id: string;
   item_name: string;
@@ -26,7 +28,7 @@ declare global {
 export const ANALYTICS_CONSENT_KEY = "simka-analytics-consent";
 export const ANALYTICS_CONSENT_ID_KEY = "simka-analytics-consent-id";
 export const ANALYTICS_CONSENT_VERSION_KEY = "simka-analytics-consent-version";
-export const ANALYTICS_POLICY_VERSION = "2026-09-17";
+export { ANALYTICS_POLICY_VERSION } from "@/lib/analytics-policy";
 export const ANALYTICS_READY_EVENT = "simka-analytics-ready";
 const ANALYTICS_SESSION_KEY = "simka-analytics-session";
 const ANALYTICS_ATTRIBUTION_KEY = "simka-analytics-attribution";

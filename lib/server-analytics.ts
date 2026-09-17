@@ -1,6 +1,7 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import { orderItems, orders } from "@/db/schema";
+import { orderItems, orders, privacyConsentEvents } from "@/db/schema";
+import { allowsAnalytics } from "@/lib/analytics-policy";
 
 type TrackedStatus = "PAID" | "CANCELLED" | "REFUNDED";
 
@@ -22,12 +23,22 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
     orderNumber: orders.orderNumber,
     customerAccountId: orders.customerAccountId,
     analyticsClientId: orders.analyticsClientId,
+    firstPartyClientId: orders.firstPartyClientId,
     totalAmount: orders.totalAmount,
     promoCode: orders.promoCode,
     currency: orders.currency,
     sentAt: config.sentAt,
   }).from(orders).where(eq(orders.id, orderId)).limit(1);
-  if (!order?.analyticsClientId || order.sentAt) return false;
+  if (!order?.analyticsClientId || !order.firstPartyClientId || order.sentAt) return false;
+
+  const [latestConsent] = await db.select({
+    decision: privacyConsentEvents.decision,
+    policyVersion: privacyConsentEvents.policyVersion,
+  }).from(privacyConsentEvents)
+    .where(eq(privacyConsentEvents.consentId, order.firstPartyClientId))
+    .orderBy(desc(privacyConsentEvents.createdAt))
+    .limit(1);
+  if (!allowsAnalytics(latestConsent)) return false;
 
   const items = await db.select({
     sku: orderItems.sku,

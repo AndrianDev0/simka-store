@@ -219,7 +219,7 @@ export function AnalyticsProvider() {
 export function AnalyticsConsentReset() {
   const reset = async () => {
     try {
-      if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY)) void recordConsent("withdrawn", "settings");
+      if (window.localStorage.getItem(ANALYTICS_CONSENT_KEY)) await recordConsent("withdrawn", "settings");
       window.localStorage.removeItem(ANALYTICS_CONSENT_KEY);
       for (const key of Object.keys(window.localStorage)) {
         if (key.startsWith("simka-analytics-") && key !== ANALYTICS_CONSENT_ID_KEY) window.localStorage.removeItem(key);
