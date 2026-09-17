@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { createSession, hashPassword, passwordHashNeedsUpgrade, sameOrigin, setSessionCookie, verifyPasswordWithFallback } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
+import { safeAccountReturnPath } from "@/lib/account-return";
 
 function redirect(path: string) {
   return NextResponse.redirect(absoluteUrl(path), 303);
@@ -25,8 +26,8 @@ export async function POST(request: Request) {
     const form = await request.formData();
     const email = String(form.get("email") || "").trim().toLowerCase();
     const password = String(form.get("password") || "");
-    const returnTo = String(form.get("returnTo") || "/account");
-    const safeReturn = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/account";
+    const requestedReturn = new URL(request.url).searchParams.get("returnTo") ?? form.get("returnTo");
+    const safeReturn = safeAccountReturnPath(requestedReturn);
     const [account] = await getDb().select({ id: customerAccounts.id, passwordHash: customerAccounts.passwordHash, isBlocked: customerAccounts.isBlocked }).from(customerAccounts).where(eq(customerAccounts.email, email)).limit(1);
     const passwordAccepted = await verifyPasswordWithFallback(password, account && !account.isBlocked ? account.passwordHash : undefined);
     if (!account || account.isBlocked || !passwordAccepted) return redirect(`/account/login?error=Неверный%20email%20или%20пароль&returnTo=${encodeURIComponent(safeReturn)}`);
