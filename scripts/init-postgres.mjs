@@ -10,7 +10,7 @@ if (!connectionString) {
 
 const client = new Client({
   connectionString,
-  ssl: { rejectUnauthorized: false },
+  ssl: /(?:localhost|127\.0\.0\.1)/.test(connectionString) ? false : { rejectUnauthorized: false },
 });
 
 await client.connect();

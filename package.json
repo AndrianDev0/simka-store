@@ -17,6 +17,7 @@
     "test:security": "node --experimental-strip-types --test tests/request-security.test.mjs",
     "db:restore": "node --experimental-strip-types scripts/restore-postgres.mjs",
     "db:backup": "node --experimental-strip-types scripts/backup-postgres.mjs",
+    "db:init:empty": "node scripts/init-empty-postgres.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

@@ -549,6 +549,11 @@ export const storeSettings = pgTable("store_settings", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const appMigrations = pgTable("app_migrations", {
+  id: text("id").primaryKey(),
+  appliedAt: text("applied_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const requestRateLimits = pgTable("request_rate_limits", {
   key: text("key").primaryKey(),
   action: text("action").notNull(),
