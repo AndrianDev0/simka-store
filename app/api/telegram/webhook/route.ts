@@ -5,7 +5,7 @@ import { getDb } from "@/db";
 import { adminAuditLog, analyticsEvents, analyticsSessions, analyticsVisitors, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
 import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
-import { calculateAttribution, isAttributionModel, type AttributionModel, type AttributionOrder } from "@/lib/attribution";
+import { calculateAttribution, calculateAttributionPaths, isAttributionModel, type AttributionModel, type AttributionOrder } from "@/lib/attribution";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
@@ -843,21 +843,22 @@ function attributionKeyboard(model: AttributionModel, days: number, customRange?
 
 async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, model: AttributionModel, days: number, customRange?: AnalyticsDateRange) {
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
-  const conversionTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
+  const conversionTime = sql`${orders.paidAt}::timestamptz`;
   const conditions = [
     inArray(orders.status, [...paidOrderStatuses]),
     sql`${orders.firstPartyClientId} IS NOT NULL`,
+    sql`${orders.paidAt} IS NOT NULL`,
     sql`${conversionTime} <= ${bounds.end}::timestamptz`,
   ];
   if (bounds.start) conditions.push(sql`${conversionTime} >= ${bounds.start}::timestamptz`);
   const paidOrders = await db.select({
     id: orders.id, clientId: orders.firstPartyClientId, amount: orders.totalAmount, currency: orders.currency,
-    convertedAt: sql<string>`COALESCE(${orders.paidAt}, ${orders.createdAt})`, fallbackSource: orders.analyticsSource,
-    fallbackCampaign: orders.analyticsCampaign,
-  }).from(orders).where(and(...conditions)).orderBy(desc(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})`));
+    convertedAt: sql<string>`${orders.paidAt}`, fallbackSource: orders.analyticsSource,
+    fallbackMedium: orders.analyticsMedium, fallbackCampaign: orders.analyticsCampaign,
+  }).from(orders).where(and(...conditions)).orderBy(desc(orders.paidAt));
   const clientIds = [...new Set(paidOrders.flatMap((order) => order.clientId ? [order.clientId] : []))];
   const sessions = clientIds.length ? await db.select({
-    clientId: analyticsSessions.clientId, source: analyticsSessions.source, campaign: analyticsSessions.campaign,
+    clientId: analyticsSessions.clientId, source: analyticsSessions.source, medium: analyticsSessions.medium, campaign: analyticsSessions.campaign,
     occurredAt: analyticsSessions.startedAt,
   }).from(analyticsSessions).where(and(inArray(analyticsSessions.clientId, clientIds), sql`${analyticsSessions.startedAt}::timestamptz <= ${bounds.end}::timestamptz`)).orderBy(asc(analyticsSessions.startedAt)) : [];
   const sessionsByClient = new Map<string, typeof sessions>();
@@ -870,25 +871,28 @@ async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: str
     const beforeConversion = (sessionsByClient.get(order.clientId!) || []).filter((session) => new Date(session.occurredAt).getTime() <= new Date(order.convertedAt).getTime());
     return {
       id: order.id, amount: order.amount, currency: order.currency, convertedAt: order.convertedAt,
-      touches: beforeConversion.length ? beforeConversion : [{ source: order.fallbackSource || "direct", campaign: order.fallbackCampaign, occurredAt: order.convertedAt }],
+      touches: beforeConversion.length ? beforeConversion : [{ source: order.fallbackSource || "direct", medium: order.fallbackMedium, campaign: order.fallbackCampaign, occurredAt: order.convertedAt }],
     };
   });
   const rows = calculateAttribution(attributionOrders, model);
+  const paths = calculateAttributionPaths(attributionOrders);
   const currencies = [...new Set(rows.map((row) => row.currency))].sort();
   const sections = currencies.flatMap((currency) => {
     const currencyRows = rows.filter((row) => row.currency === currency);
     const visible = currencyRows.slice(0, 10);
     const omitted = currencyRows.slice(10);
-    const lines = visible.map((row, index) => `${index + 1}. ${compactAnalyticsLabel(row.source, 36)}${row.campaign ? ` / ${compactAnalyticsLabel(row.campaign, 30)}` : ""}\n   ${row.conversions.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} конв. · ${row.revenue.toLocaleString("ru-RU")} ${currency}`);
+    const lines = visible.map((row, index) => `${index + 1}. ${compactAnalyticsLabel(row.source, 30)}${row.medium ? ` / ${compactAnalyticsLabel(row.medium, 22)}` : ""}${row.campaign ? ` / ${compactAnalyticsLabel(row.campaign, 26)}` : ""}\n   ${row.conversions.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} конв. · ${row.revenue.toLocaleString("ru-RU")} ${currency}`);
     if (omitted.length) lines.push(`Остальные: ${omitted.reduce((sum, row) => sum + row.conversions, 0).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} конв. · ${omitted.reduce((sum, row) => sum + row.revenue, 0).toLocaleString("ru-RU")} ${currency}`);
     return [`${currency}:`, ...lines, ""];
   });
+  const pathLines = paths.slice(0, 5).map((row, index) => `${index + 1}. ${compactAnalyticsLabel(row.path, 120)}\n   ${row.orders} заказ. · ${row.revenue.toLocaleString("ru-RU")} ${row.currency}`).join("\n") || "Данных о путях пока нет.";
   const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
   await sendMessage(token, chatId, [
     `🧭 Атрибуция · ${attributionModelLabels[model]} ${period}`, "",
     `Оплаченных заказов: ${paidOrders.length}`,
     `Касаний в цепочках: ${attributionOrders.reduce((sum, order) => sum + order.touches.length, 0)}`,
     "", ...(sections.length ? sections : ["Данных для атрибуции пока нет."]),
+    "Основные пути до оплаты:", pathLines, "",
     model === "time_decay" ? "Time Decay: период полураспада касания — 7 дней." : "Выручка распределена между источниками по выбранной модели.",
   ].join("\n"), attributionKeyboard(model, bounds.days, customRange));
 }

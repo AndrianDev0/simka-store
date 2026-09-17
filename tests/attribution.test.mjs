@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attributionWeights, calculateAttribution, isAttributionModel } from "../lib/attribution.ts";
+import { attributionWeights, calculateAttribution, calculateAttributionPaths, isAttributionModel } from "../lib/attribution.ts";
 
 const touches = [
-  { source: "google", campaign: "brand", occurredAt: "2026-09-01T00:00:00.000Z" },
-  { source: "telegram", campaign: "launch", occurredAt: "2026-09-05T00:00:00.000Z" },
+  { source: "google", medium: "cpc", campaign: "brand", occurredAt: "2026-09-01T00:00:00.000Z" },
+  { source: "telegram", medium: "social", campaign: "launch", occurredAt: "2026-09-05T00:00:00.000Z" },
   { source: "direct", campaign: null, occurredAt: "2026-09-08T00:00:00.000Z" },
 ];
 
@@ -33,5 +33,16 @@ test("revenue is preserved exactly in minor units and repeated sources are group
   assert.equal(rows.reduce((sum, row) => sum + row.revenue, 0), 1001);
   assert.ok(Math.abs(rows.reduce((sum, row) => sum + row.conversions, 0) - 1) < 1e-10);
   const grouped = calculateAttribution([{ id: "order-2", amount: 500, currency: "RUB", convertedAt: "2026-09-09T00:00:00.000Z", touches: [touches[0], { ...touches[0], occurredAt: "2026-09-08T00:00:00.000Z" }] }], "linear");
-  assert.deepEqual(grouped, [{ source: "google", campaign: "brand", currency: "RUB", conversions: 1, revenue: 500 }]);
+  assert.deepEqual(grouped, [{ source: "google", medium: "cpc", campaign: "brand", currency: "RUB", conversions: 1, revenue: 500 }]);
+});
+
+test("conversion paths preserve ordered touches and collapse only consecutive repeats", () => {
+  const rows = calculateAttributionPaths([
+    { id: "order-1", amount: 1000, currency: "RUB", convertedAt: "2026-09-09T00:00:00.000Z", touches: [touches[0], { ...touches[0], occurredAt: "2026-09-02T00:00:00.000Z" }, touches[1], touches[2]] },
+    { id: "order-2", amount: 500, currency: "RUB", convertedAt: "2026-09-09T00:00:00.000Z", touches: [touches[0], touches[1], touches[2]] },
+  ]);
+  assert.deepEqual(rows, [
+    { path: "google / cpc [brand] ×2 → telegram / social [launch] → direct", currency: "RUB", orders: 1, revenue: 1000 },
+    { path: "google / cpc [brand] → telegram / social [launch] → direct", currency: "RUB", orders: 1, revenue: 500 },
+  ]);
 });
