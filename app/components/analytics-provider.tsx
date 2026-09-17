@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
 import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageView } from "@/lib/analytics";
 import { reportTechnicalEvent } from "@/lib/client-telemetry";
+import { preserveWebVitalValue } from "@/lib/first-party-analytics";
 
 type Consent = "accepted" | "declined" | null;
 type ConsentDecision = Exclude<Consent, null> | "withdrawn";
@@ -102,7 +103,7 @@ export function AnalyticsProvider() {
   const choosingConsent = useRef(false);
 
   useReportWebVitals(useCallback((metric) => {
-    trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: metric.value });
+    trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: preserveWebVitalValue(metric.value) });
   }, []));
 
   useEffect(() => {

@@ -27,6 +27,11 @@ function safeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1_000_000_000_000 ? value : null;
 }
 
+/** Keep Web Vitals in their native units; CLS must not be rounded to an integer. */
+export function preserveWebVitalValue(value: number) {
+  return Number.isFinite(value) ? value : 0;
+}
+
 function sanitizeItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 20).flatMap((raw) => {
