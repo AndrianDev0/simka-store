@@ -11,6 +11,7 @@ import { csvCell } from "@/lib/csv";
 import { escapeHtml, getEmailConfigurationStatus, sendTransactionalEmail } from "@/lib/email";
 import { getEmailValidationError } from "@/lib/email-validation";
 import { decryptFulfillmentSecret, encryptFulfillmentSecret } from "@/lib/fulfillment-secrets";
+import { monotonicFunnelCounts } from "@/lib/funnel-analytics";
 import { releaseReservedInventory } from "@/lib/order-inventory";
 import { recordOperationalEvent } from "@/lib/operational-events";
 import { isIgnoredOperationalPath } from "@/lib/operational-event-shape";
@@ -696,27 +697,19 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const sessionTime = sql`${analyticsSessions.startedAt}::timestamptz`;
   const exitTime = sql`${analyticsSessions.endedAt}::timestamptz`;
-  const eventTime = sql`${analyticsEvents.occurredAt}::timestamptz`;
-  const orderCreatedTime = sql`${orders.createdAt}::timestamptz`;
-  const orderPaidTime = sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz`;
   const sessionConditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
   const exitConditions = [sql`${analyticsSessions.endedAt} IS NOT NULL`, sql`${exitTime} <= ${bounds.end}::timestamptz`];
-  const eventConditions = [sql`${eventTime} <= ${bounds.end}::timestamptz`];
-  const createdOrderConditions = [sql`${orderCreatedTime} <= ${bounds.end}::timestamptz`, sql`${orders.firstPartyClientId} IS NOT NULL`];
-  const paidOrderConditions = [sql`${orderPaidTime} <= ${bounds.end}::timestamptz`, sql`${orders.firstPartyClientId} IS NOT NULL`, inArray(orders.status, [...paidOrderStatuses])];
   if (bounds.start) {
     sessionConditions.push(sql`${sessionTime} >= ${bounds.start}::timestamptz`);
     exitConditions.push(sql`${exitTime} >= ${bounds.start}::timestamptz`);
-    eventConditions.push(sql`${eventTime} >= ${bounds.start}::timestamptz`);
-    createdOrderConditions.push(sql`${orderCreatedTime} >= ${bounds.start}::timestamptz`);
-    paidOrderConditions.push(sql`${orderPaidTime} >= ${bounds.start}::timestamptz`);
   }
   const newUserExpression = bounds.start
     ? sql<number>`COUNT(DISTINCT CASE WHEN ${analyticsVisitors.firstSeenAt}::timestamptz >= ${bounds.start}::timestamptz THEN ${analyticsSessions.clientId} END)::int`
     : sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`;
   const realtimeBoundary = new Date(Date.now() - 5 * 60_000).toISOString();
-  const funnelNames = ["view_item", "add_to_cart", "begin_checkout"];
-  const [summaryRows, sourceRows, deviceRows, exitRows, funnelRows, createdOrderRows, paidOrderRows, realtimeRows, recentEvents] = await Promise.all([
+  const funnelStart = bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
+  const paidStatuses = sql.join([...paidOrderStatuses].map((status) => sql`${status}`), sql`, `);
+  const [summaryRows, sourceRows, deviceRows, exitRows, orderedFunnelResult, realtimeRows, recentEvents] = await Promise.all([
     db.select({
       users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int`,
       newUsers: newUserExpression, pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
@@ -727,19 +720,72 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     db.select({ source: analyticsSessions.source, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.source).orderBy(desc(sql`COUNT(*)`)).limit(8),
     db.select({ device: analyticsSessions.deviceType, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.deviceType).orderBy(desc(sql`COUNT(*)`)),
     db.select({ path: analyticsSessions.exitPath, exits: sql<number>`COUNT(*)::int`, averageSeconds: sql<number>`COALESCE(AVG(${analyticsSessions.exitDurationMs} / 1000.0), 0)::float` }).from(analyticsSessions).where(and(...exitConditions)).groupBy(analyticsSessions.exitPath).orderBy(desc(sql`COUNT(*)`)).limit(8),
-    db.select({ name: analyticsEvents.name, users: sql<number>`COUNT(DISTINCT ${analyticsEvents.clientId})::int` }).from(analyticsEvents).where(and(...eventConditions, inArray(analyticsEvents.name, funnelNames))).groupBy(analyticsEvents.name),
-    db.select({ users: sql<number>`COUNT(DISTINCT ${orders.firstPartyClientId})::int`, orders: sql<number>`COUNT(*)::int` }).from(orders).where(and(...createdOrderConditions)),
-    db.select({ users: sql<number>`COUNT(DISTINCT ${orders.firstPartyClientId})::int`, orders: sql<number>`COUNT(*)::int` }).from(orders).where(and(...paidOrderConditions)),
+    db.execute<{
+      visits: number; product_views: number; carts: number; checkouts: number; orders: number; payments: number;
+    }>(sql`
+      WITH visits AS (
+        SELECT s.client_id, MIN(s.started_at::timestamptz) AS visit_at
+        FROM analytics_sessions s
+        WHERE s.started_at::timestamptz <= ${bounds.end}::timestamptz ${funnelStart}
+        GROUP BY s.client_id
+      ), viewed AS (
+        SELECT v.*, (
+          SELECT MIN(e.occurred_at::timestamptz) FROM analytics_events e
+          WHERE e.client_id = v.client_id AND e.name = 'view_item'
+            AND e.occurred_at::timestamptz >= v.visit_at AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
+        ) AS product_view_at FROM visits v
+      ), carted AS (
+        SELECT v.*, (
+          SELECT MIN(e.occurred_at::timestamptz) FROM analytics_events e
+          WHERE v.product_view_at IS NOT NULL AND e.client_id = v.client_id AND e.name = 'add_to_cart'
+            AND e.occurred_at::timestamptz >= v.product_view_at AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
+        ) AS cart_at FROM viewed v
+      ), checked AS (
+        SELECT c.*, (
+          SELECT MIN(e.occurred_at::timestamptz) FROM analytics_events e
+          WHERE c.cart_at IS NOT NULL AND e.client_id = c.client_id AND e.name = 'begin_checkout'
+            AND e.occurred_at::timestamptz >= c.cart_at AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
+        ) AS checkout_at FROM carted c
+      ), completed AS (
+        SELECT c.*,
+          EXISTS (
+            SELECT 1 FROM orders o WHERE c.checkout_at IS NOT NULL AND o.first_party_client_id = c.client_id
+              AND o.created_at::timestamptz >= c.checkout_at AND o.created_at::timestamptz <= ${bounds.end}::timestamptz
+          ) AS ordered,
+          EXISTS (
+            SELECT 1 FROM orders o WHERE c.checkout_at IS NOT NULL AND o.first_party_client_id = c.client_id
+              AND o.created_at::timestamptz >= c.checkout_at AND o.created_at::timestamptz <= ${bounds.end}::timestamptz
+              AND o.paid_at IS NOT NULL AND o.paid_at::timestamptz >= o.created_at::timestamptz
+              AND o.paid_at::timestamptz <= ${bounds.end}::timestamptz AND o.status IN (${paidStatuses})
+          ) AS paid
+        FROM checked c
+      )
+      SELECT COUNT(*)::int AS visits,
+        COUNT(*) FILTER (WHERE product_view_at IS NOT NULL)::int AS product_views,
+        COUNT(*) FILTER (WHERE cart_at IS NOT NULL)::int AS carts,
+        COUNT(*) FILTER (WHERE checkout_at IS NOT NULL)::int AS checkouts,
+        COUNT(*) FILTER (WHERE ordered)::int AS orders,
+        COUNT(*) FILTER (WHERE paid)::int AS payments
+      FROM completed
+    `),
     db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`),
     db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
   ]);
   const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
   const returningUsers = Math.max(0, Number(summary.users) - Number(summary.newUsers));
   const bounceRate = Number(summary.sessions) ? Number(summary.bounces) / Number(summary.sessions) * 100 : 0;
-  const funnel = new Map(funnelRows.map((row) => [row.name, Number(row.users)]));
+  const rawFunnel = orderedFunnelResult.rows[0];
+  const funnel = monotonicFunnelCounts({
+    visits: rawFunnel?.visits,
+    productViews: rawFunnel?.product_views,
+    carts: rawFunnel?.carts,
+    checkouts: rawFunnel?.checkouts,
+    orders: rawFunnel?.orders,
+    payments: rawFunnel?.payments,
+  });
   const stages = [
-    ["Посещение", Number(summary.users)], ["Товар", funnel.get("view_item") ?? 0], ["Корзина", funnel.get("add_to_cart") ?? 0],
-    ["Checkout", funnel.get("begin_checkout") ?? 0], ["Заказ", Number(createdOrderRows[0]?.users ?? 0)], ["Оплата", Number(paidOrderRows[0]?.users ?? 0)],
+    ["Посещение", funnel.visits], ["Товар", funnel.productViews], ["Корзина", funnel.carts],
+    ["Checkout", funnel.checkouts], ["Заказ", funnel.orders], ["Оплата", funnel.payments],
   ] as const;
   const funnelLines = stages.map(([label, value], index) => {
     const previous = index ? stages[index - 1][1] : value;
