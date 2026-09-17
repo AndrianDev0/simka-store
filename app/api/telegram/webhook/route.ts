@@ -713,7 +713,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   }
   const newUserExpression = bounds.start
     ? sql<number>`COUNT(DISTINCT CASE WHEN ${analyticsVisitors.firstSeenAt}::timestamptz >= ${bounds.start}::timestamptz THEN ${analyticsSessions.clientId} END)::int`
-    : sql<number>`COUNT(DISTINCT CASE WHEN ${analyticsVisitors.sessionsCount} <= 1 THEN ${analyticsSessions.clientId} END)::int`;
+    : sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`;
   const realtimeBoundary = new Date(Date.now() - 5 * 60_000).toISOString();
   const funnelNames = ["view_item", "add_to_cart", "begin_checkout"];
   const [summaryRows, sourceRows, deviceRows, exitRows, funnelRows, createdOrderRows, paidOrderRows, realtimeRows, recentEvents] = await Promise.all([
