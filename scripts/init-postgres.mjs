@@ -385,13 +385,14 @@ try {
       checkout_url TEXT,
       requested_amount INTEGER NOT NULL CHECK (requested_amount > 0),
       requested_currency TEXT NOT NULL,
-      received_amount INTEGER CHECK (received_amount IS NULL OR received_amount >= 0),
+      received_amount NUMERIC(36, 18) CHECK (received_amount IS NULL OR received_amount >= 0),
       received_currency TEXT,
       transaction_id TEXT,
       paid_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    ALTER TABLE crypto_payments ALTER COLUMN received_amount TYPE NUMERIC(36, 18) USING received_amount::NUMERIC;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_payments_provider_payment ON crypto_payments(provider, provider_payment_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_payments_provider_transaction ON crypto_payments(provider, transaction_id);
     CREATE INDEX IF NOT EXISTS idx_crypto_payments_status ON crypto_payments(status);

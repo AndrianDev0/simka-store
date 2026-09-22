@@ -63,17 +63,17 @@ npm run start:render
 
 После изменения переменных дождитесь deploy и в Telegram-боте откройте `✉️ Почта` → `📨 Отправить тест`. Ключи нельзя отправлять в чат, хранить в репозитории или использовать как публичные `NEXT_PUBLIC_*` переменные.
 
-Криптовалютная оплата включается только после подключения и проверки конкретного провайдера:
+Криптовалютная оплата подключена через Plisio и включается только после добавления серверного секрета:
 
-- `CRYPTO_PAYMENT_PROVIDER` — короткий идентификатор адаптера провайдера;
-- `CRYPTO_PAYMENT_CREATE_URL` — HTTPS endpoint адаптера для создания платежа;
-- `CRYPTO_PAYMENT_API_KEY` — серверный ключ адаптера;
-- `CRYPTO_PAYMENT_WEBHOOK_SECRET` — отдельный секрет HMAC-SHA256 для webhook длиной не менее 32 символов;
-- `NEXT_PUBLIC_CRYPTO_PAYMENT_ENABLED=true` — включает вариант оплаты в интерфейсе только после настройки остальных переменных.
+- `CRYPTO_PAYMENT_PROVIDER=plisio` — включает адаптер Plisio;
+- `PLISIO_SECRET_KEY` — секретный ключ магазина из Plisio API settings; он используется сервером для создания счёта и проверки `verify_hash` callback;
+- `NEXT_PUBLIC_CRYPTO_PAYMENT_ENABLED=true` — показывает вариант оплаты в интерфейсе после настройки секрета.
 
 Для формирования доверенных `return_url` и `webhook_url` также обязателен канонический HTTPS-адрес в `NEXT_PUBLIC_SITE_URL` без пути, например `https://example.com`.
 
-Endpoint создания платежа получает JSON с `order_id`, `order_number`, `amount`, `currency`, `return_url`, `webhook_url` и должен вернуть `payment_id`, `status`, `checkout_url`. Webhook отправляется на указанный `webhook_url` с заголовками `X-Payment-Timestamp` и `X-Payment-Signature`; подпись — HMAC-SHA256 от строки `<timestamp>.<raw JSON body>`. Тело содержит `event_id`, `event_type`, `payment_id`, `order_id`, `status`, `amount`, `currency` и, для подтверждённой оплаты, `transaction_id`, `paid_at`. Возврат клиента по `return_url` никогда не меняет статус заказа.
+Сервер создаёт invoice через официальный endpoint Plisio, передаёт уникальный номер заказа, исходную сумму и валюту, а клиент получает только доверенную HTTPS-ссылку `plisio.net`. Status callback принимается как JSON, его `verify_hash` проверяется секретным ключом. Заказ переводится в `PAID` только при статусе `completed`, совпадении номера заказа, исходной суммы и исходной валюты. `txn_id`, выбранная криптовалюта, полученная сумма и время подтверждения сохраняются. Повторные callback обрабатываются идемпотентно. Возврат клиента на сайт никогда не меняет статус заказа.
+
+В Plisio можно оставить глобальный Status URL пустым: для каждого invoice сервер передаёт собственный `https://<домен>/api/payments/crypto/webhook/plisio?json=true`. Если Status URL задаётся вручную, он должен совпадать с этим адресом. Секрет нельзя отправлять в чат, хранить в репозитории или объявлять как `NEXT_PUBLIC_*`.
 
 Для аналитики задаются только нужные интеграции (значения встраиваются в клиентскую сборку):
 

@@ -206,6 +206,7 @@ export async function POST(request: Request) {
       : [];
     const [existing] = await db.select({ id: orders.id, orderNumber: orders.orderNumber, paymentMethod: orders.paymentMethod, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount }).from(orders).where(eq(orders.requestId, parsed.data.requestId)).limit(1);
     if (existing) {
+      if (existing.status === "FAILED") return Response.json({ error: "Предыдущая попытка оплаты не удалась. Повторите создание платежа.", retryWithNewRequestId: true }, { status: 409, headers: { "Cache-Control": "no-store" } });
       const canContinueCryptoPayment = existing.paymentMethod === "crypto" && ["WAITING_PAYMENT", "PAYMENT_PENDING"].includes(existing.status);
       const [existingPayment] = canContinueCryptoPayment ? await db.select({ checkoutUrl: cryptoPayments.checkoutUrl }).from(cryptoPayments).where(eq(cryptoPayments.orderId, existing.id)).limit(1) : [];
       return Response.json({ order: { orderNumber: existing.orderNumber, paymentMethod: existing.paymentMethod, status: existing.status, totalAmount: existing.totalAmount, currency: existing.currency, promoCode: existing.promoCode, discountAmount: existing.discountAmount, checkoutUrl: existingPayment?.checkoutUrl ?? undefined, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
@@ -346,14 +347,14 @@ export async function POST(request: Request) {
       try {
         createdPayment = await createCryptoPayment({ config: cryptoConfig, orderId: id, orderNumber: number, amount: totalAmount, currency: currency.toUpperCase(), requestId: parsed.data.requestId, siteOrigin: getPaymentSiteOrigin() });
       } catch (providerError) {
-        await db.update(cryptoPayments).set({ status: "CREATE_FAILED", updatedAt: new Date().toISOString() }).where(eq(cryptoPayments.orderId, id));
-        await releaseReservedInventory(id, "FAILED", ["WAITING_PAYMENT"]);
+        const [failedPayment] = await db.update(cryptoPayments).set({ status: "CREATE_FAILED", updatedAt: new Date().toISOString() }).where(and(eq(cryptoPayments.orderId, id), eq(cryptoPayments.status, "CREATING"))).returning({ id: cryptoPayments.id });
+        if (failedPayment) await releaseReservedInventory(id, "FAILED", ["WAITING_PAYMENT"]);
         console.error("crypto_payment_creation_failed", { name: providerError instanceof Error ? providerError.name : "UnknownError" });
         await recordOperationalEvent({ kind: "payment_error", severity: "critical", area: "checkout", path: "/api/orders", code: "crypto_payment_creation_failed" });
         throw new Error("CRYPTO_PAYMENT_CREATION_FAILED");
       }
       checkoutUrl = createdPayment.checkoutUrl;
-      await db.update(cryptoPayments).set({ providerPaymentId: createdPayment.providerPaymentId, status: "PENDING", checkoutUrl, updatedAt: new Date().toISOString() }).where(eq(cryptoPayments.orderId, id));
+      await db.update(cryptoPayments).set({ providerPaymentId: createdPayment.providerPaymentId, status: sql`CASE WHEN ${cryptoPayments.status} = 'CREATING' THEN 'PENDING' ELSE ${cryptoPayments.status} END`, checkoutUrl, updatedAt: new Date().toISOString() }).where(eq(cryptoPayments.orderId, id));
     }
     let managerNotified = false;
     let customerNotified = false;
@@ -396,6 +397,7 @@ export async function POST(request: Request) {
       try {
         const db = getDb();
         const [existing] = await db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, promoCode: orders.promoCode, discountAmount: orders.discountAmount }).from(orders).where(eq(orders.requestId, validatedRequestId)).limit(1);
+        if (existing?.status === "FAILED") return Response.json({ error: "Предыдущая попытка оплаты не удалась. Повторите создание платежа.", retryWithNewRequestId: true }, { status: 409, headers: { "Cache-Control": "no-store" } });
         if (existing) return Response.json({ order: { ...existing, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
       } catch (lookupError) {
         console.error("duplicate_order_lookup_failed", { name: lookupError instanceof Error ? lookupError.name : "UnknownError" });
@@ -411,7 +413,7 @@ export async function POST(request: Request) {
     if (error instanceof Error && error.message === "DELIVERY_CURRENCY_MISMATCH") return Response.json({ error: "Способ доставки указан в другой валюте. Оформите заказ отдельно." }, { status: 409 });
     if (error instanceof Error && error.message === "DELIVERY_REQUIRES_MANAGER") return Response.json({ error: "Эту доставку должен подтвердить менеджер. Выберите оплату через менеджера." }, { status: 409 });
     if (error instanceof PromoCodeError) return Response.json({ error: error.message }, { status: 409 });
-    if (error instanceof Error && error.message === "CRYPTO_PAYMENT_CREATION_FAILED") return Response.json({ error: "Платёжный провайдер временно недоступен. Заказ не оплачен." }, { status: 502 });
+    if (error instanceof Error && error.message === "CRYPTO_PAYMENT_CREATION_FAILED") return Response.json({ error: "Платёжный провайдер временно недоступен. Заказ не оплачен.", retryWithNewRequestId: true }, { status: 502 });
     console.error("order_creation_failed", { name: error instanceof Error ? error.name : "UnknownError" });
     await recordOperationalEvent({ kind: "api_error", severity: "critical", area: "checkout", path: "/api/orders", code: "order_creation_failed" });
     return Response.json({ error: "Не удалось создать заказ. Попробуйте ещё раз." }, { status: 500 });

@@ -1,0 +1,1 @@
+ALTER TABLE "crypto_payments" ALTER COLUMN "received_amount" SET DATA TYPE numeric(36, 18);
