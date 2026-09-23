@@ -126,10 +126,13 @@ export async function POST(request: Request, context: { params: Promise<{ provid
 
   if (!positiveDecimal(event.amount)) return Response.json({ error: "Missing payment confirmation" }, { status: 400 });
   const result = await db.transaction(async (tx) => {
+    const [currentPayment] = await tx.select().from(cryptoPayments).where(eq(cryptoPayments.id, payment.id)).for("update");
     const [inserted] = await tx.insert(cryptoPaymentEvents).values(eventRecord).onConflictDoNothing().returning({ id: cryptoPaymentEvents.id });
     if (!inserted) return { duplicate: true, changed: false, reviewRequired: false };
+    if (currentPayment?.status === "PAID") return { duplicate: true, changed: false, reviewRequired: false };
     const [updated] = await tx.update(orders).set({ status: "PAID", paidAt: now, updatedAt: now }).where(and(eq(orders.id, order.id), inArray(orders.status, ["WAITING_PAYMENT", "PAYMENT_PENDING"]))).returning({ id: orders.id });
-    const paymentStatus = updated || order.status === "PAID" ? "PAID" : "REVIEW_REQUIRED";
+    const [currentOrder] = await tx.select({ status: orders.status }).from(orders).where(eq(orders.id, order.id));
+    const paymentStatus = updated || ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED", "REFUNDED"].includes(currentOrder?.status ?? "") ? "PAID" : "REVIEW_REQUIRED";
     await tx.update(cryptoPayments).set({ providerPaymentId: event.txn_id, status: paymentStatus, receivedAmount: event.amount, receivedCurrency: event.currency.toUpperCase(), transactionId: event.txn_id, paidAt: now, updatedAt: now }).where(eq(cryptoPayments.id, payment.id));
     return { duplicate: false, changed: Boolean(updated), reviewRequired: paymentStatus === "REVIEW_REQUIRED" };
   });

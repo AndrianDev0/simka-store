@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { splitTelegramText } from "@/lib/telegram-text";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -89,13 +90,16 @@ type ReplyMarkup = InlineKeyboard | ReplyKeyboard | { force_reply: true; selecti
 const PAYMENT_REQUISITES_KEY = "manager_payment_requisites";
 
 async function sendMessage(token: string, chatId: number, text: string, replyMarkup?: ReplyMarkup) {
+  const chunks = splitTelegramText(text);
+  for (const [index, chunk] of chunks.entries()) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
+    body: JSON.stringify({ chat_id: chatId, text: chunk, ...(replyMarkup && index === chunks.length - 1 ? { reply_markup: replyMarkup } : {}) }),
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error("TELEGRAM_SEND_FAILED");
+  }
 }
 
 async function sendDocument(token: string, chatId: number, data: Buffer, filename: string, caption: string, mimeType = "application/json") {
@@ -450,7 +454,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [{ text: "📦 Воронка товаров", callback_data: `analytics:products:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }, { text: "⚡ Скорость сайта", callback_data: `analytics:vitals:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🌍 По странам", callback_data: `analytics:countries:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }, { text: "🔎 Поиск", callback_data: `analytics:search:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🤖 Bot / Fraud", callback_data: `analytics:fraud:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
-    [{ text: "🧭 Модели атрибуции", callback_data: `analytics:attr:last_click:${customRange ? 0 : selectedDays}` }],
+    [{ text: "🧭 Модели атрибуции", callback_data: `analytics:attr:last_click:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
   ];
   if (customRange) {
@@ -2691,7 +2695,7 @@ export async function POST(request: Request) {
     const callback = parsed.data.callback_query;
     const from = message?.from ?? callback?.from;
     const chatId = message?.chat.id ?? callback?.message?.chat.id;
-    if (!from || chatId === undefined) return Response.json({ ok: true });
+    if (!from || chatId === undefined || chatId !== from.id) return Response.json({ ok: true });
     const role = resolveTelegramRole(from.id, botEnv.TELEGRAM_ADMIN_IDS, botEnv.TELEGRAM_ADMIN_ROLES);
     if (!role) return Response.json({ ok: true });
 

@@ -83,19 +83,19 @@ async function scheduledReport(kind: "daily" | "weekly") {
     db.execute<{ created: number; paid: number; buyers: number; refunds: number; converted: number }>(sql`
       SELECT
         (SELECT COUNT(*)::int FROM orders WHERE created_at::timestamptz >= ${range.start}::timestamptz AND created_at::timestamptz < ${range.end}::timestamptz) AS created,
-        (SELECT COUNT(*)::int FROM orders WHERE status IN ('PAID','PROCESSING','SHIPPED','DELIVERED','COMPLETED')
+        (SELECT COUNT(*)::int FROM orders WHERE paid_at IS NOT NULL
           AND paid_at::timestamptz >= ${range.start}::timestamptz AND paid_at::timestamptz < ${range.end}::timestamptz) AS paid,
-        (SELECT COUNT(DISTINCT first_party_client_id)::int FROM orders WHERE status IN ('PAID','PROCESSING','SHIPPED','DELIVERED','COMPLETED')
+        (SELECT COUNT(DISTINCT first_party_client_id)::int FROM orders WHERE paid_at IS NOT NULL
           AND paid_at::timestamptz >= ${range.start}::timestamptz AND paid_at::timestamptz < ${range.end}::timestamptz) AS buyers,
         (SELECT COUNT(*)::int FROM orders WHERE refunded_at::timestamptz >= ${range.start}::timestamptz AND refunded_at::timestamptz < ${range.end}::timestamptz) AS refunds,
-        (SELECT COUNT(DISTINCT o.first_party_client_id)::int FROM orders o WHERE o.status IN ('PAID','PROCESSING','SHIPPED','DELIVERED','COMPLETED')
+        (SELECT COUNT(DISTINCT o.first_party_client_id)::int FROM orders o WHERE o.paid_at IS NOT NULL
           AND o.paid_at::timestamptz >= ${range.start}::timestamptz AND o.paid_at::timestamptz < ${range.end}::timestamptz
           AND EXISTS (SELECT 1 FROM analytics_sessions s WHERE s.client_id = o.first_party_client_id AND s.traffic_class = 'HUMAN'
             AND s.started_at::timestamptz >= ${range.start}::timestamptz AND s.started_at::timestamptz <= o.created_at::timestamptz)) AS converted
     `),
     db.execute<{ currency: string; amount: number }>(sql`
       SELECT currency, COALESCE(SUM(total_amount), 0)::float AS amount FROM orders
-      WHERE status IN ('PAID','PROCESSING','SHIPPED','DELIVERED','COMPLETED')
+      WHERE paid_at IS NOT NULL
         AND paid_at::timestamptz >= ${range.start}::timestamptz AND paid_at::timestamptz < ${range.end}::timestamptz
       GROUP BY currency
     `),
@@ -131,9 +131,9 @@ async function retryGaEvents() {
   const pending = await db.select({ id: orders.id, status: orders.status, paidAt: orders.paidAt,
     purchaseSentAt: orders.analyticsPurchaseSentAt, cancellationSentAt: orders.analyticsCancellationSentAt,
     refundSentAt: orders.analyticsRefundSentAt }).from(orders).where(and(or(
-    and(isNotNull(orders.paidAt), isNull(orders.analyticsPurchaseSentAt)),
-    and(eq(orders.status, "CANCELLED"), isNull(orders.analyticsCancellationSentAt)),
-    and(eq(orders.status, "REFUNDED"), isNull(orders.analyticsRefundSentAt)),
+    and(isNotNull(orders.paidAt), isNull(orders.analyticsPurchaseSentAt), sql`${orders.paidAt}::timestamptz >= now() - interval '72 hours'`),
+    and(eq(orders.status, "CANCELLED"), isNull(orders.analyticsCancellationSentAt), sql`${orders.updatedAt}::timestamptz >= now() - interval '72 hours'`),
+    and(eq(orders.status, "REFUNDED"), isNull(orders.analyticsRefundSentAt), sql`${orders.refundedAt}::timestamptz >= now() - interval '72 hours'`),
   ), isNotNull(orders.analyticsClientId), isNotNull(orders.firstPartyClientId), sql`(
     SELECT (p.decision = 'accepted' AND p.policy_version = ${ANALYTICS_POLICY_VERSION})
     FROM privacy_consent_events p WHERE p.consent_id = ${orders.firstPartyClientId}
@@ -182,6 +182,9 @@ async function hourlyAlerts() {
   }));
   const [previous, current] = metrics;
   const alerts: Array<{ code: string; text: string }> = [];
+  if (Number(previous.sessions) >= 20 && Number(previous.events) >= 40 && Number(current.events) === 0) {
+    alerts.push({ code: "events_stopped", text: "За последние 2 часа не получено ни одного события после активного предыдущего периода. Возможны остановка трекера или отсутствие трафика; проверьте доступность сайта и сбор событий." });
+  }
   if (Number(current.payment_failures) >= 3 && Number(current.payment_failures) / Math.max(1, Number(current.payment_failures) + Number(current.paid)) >= 0.3) {
     alerts.push({ code: "payments", text: `Проблемы с криптооплатой: ${current.payment_failures} неуспешных/требующих проверки платежей за 2 часа, оплачено ${current.paid}.` });
   }

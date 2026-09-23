@@ -682,7 +682,10 @@ try {
     $accounts$;
   `);
 
+  const seedDemo = process.env.SEED_DEMO_DATA === "true";
   await client.query(`
+    DO $demo_countries$ BEGIN
+    IF ${seedDemo} AND NOT EXISTS (SELECT 1 FROM app_migrations WHERE id = 'demo_seed_v1') THEN
     INSERT INTO countries (id, name, slug, iso_code, flag, region, description, publication_status, noindex, sort_order)
     VALUES
       (1, 'Турция', 'turkey', 'TR', '🇹🇷', 'Европа', 'SIM и eSIM для поездок в Турцию.', 'PUBLISHED', FALSE, 10),
@@ -718,9 +721,12 @@ try {
       (6, 'Япония: eSIM и SIM для путешествий', 'Сравните опубликованные SIM и eSIM для поездки в Японию: операторы, объём интернета, срок действия, цены и наличие.', 'SIM и eSIM для Японии', 'На странице собраны доступные тарифы для поездки в Японию. Сравните формат SIM, оператора, пакет интернета, срок действия и условия активации до оформления заказа.')
     ) AS seed(id, seo_title, seo_description, h1, seo_text)
     WHERE country.id = seed.id;
+    END IF; END $demo_countries$;
   `);
 
   await client.query(`
+    DO $demo_products$ BEGIN
+    IF ${seedDemo} AND NOT EXISTS (SELECT 1 FROM app_migrations WHERE id = 'demo_seed_v1') THEN
     INSERT INTO products (
       id, name, sku, slug, country_id, operator_id, sim_type, price, old_price, currency,
       short_description, full_description, characteristics, validity_days, data_volume, data_mb,
@@ -814,6 +820,8 @@ try {
     ) AS seed(id, old_description, new_description)
     WHERE product.id = seed.id AND (product.og_description IS NULL OR product.og_description = seed.old_description);
 
+    END IF; END $demo_products$;
+
     -- One-time compatibility migration. The marker prevents later restarts from
     -- overwriting legitimate zero subtotals or administrator-edited product data.
     DO $fulfillment_v1$
@@ -898,6 +906,8 @@ try {
     END
     $fulfillment_constraints$;
 
+    DO $demo_variants$ BEGIN
+    IF ${seedDemo} AND NOT EXISTS (SELECT 1 FROM app_migrations WHERE id = 'demo_seed_v1') THEN
     INSERT INTO product_variants (
       id, product_id, name, sku, slug, price, currency, data_volume, validity_days,
       characteristics, available, availability_status, stock_quantity, sort_order
@@ -908,6 +918,8 @@ try {
     FROM products
     WHERE id BETWEEN 1 AND 6
     ON CONFLICT DO NOTHING;
+    INSERT INTO app_migrations (id) VALUES ('demo_seed_v1') ON CONFLICT DO NOTHING;
+    END IF; END $demo_variants$;
 
     SELECT setval(pg_get_serial_sequence('countries', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM countries), 1), 1), TRUE);
     SELECT setval(pg_get_serial_sequence('operators', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM operators), 1), 1), TRUE);

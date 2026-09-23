@@ -173,12 +173,12 @@ function safeParams(params: AnalyticsParams) {
   return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined));
 }
 
-export function trackEvent(name: string, params: AnalyticsParams = {}) {
+export function trackEvent(name: string, params: AnalyticsParams = {}, options: { skipGa?: boolean } = {}) {
   if (!analyticsConsentGranted()) return false;
   const payload = safeParams(params);
   let sent = trackFirstParty(name, payload);
 
-  if (window.__simkaAnalyticsInitialised && gaMeasurementId && window.gtag) { window.gtag("event", name, payload); sent = true; }
+  if (!options.skipGa && window.__simkaAnalyticsInitialised && gaMeasurementId && window.gtag) { window.gtag("event", name, payload); sent = true; }
   if (window.__simkaAnalyticsInitialised && yandexMetrikaId && window.ym) { window.ym(Number(yandexMetrikaId), "reachGoal", name, payload); sent = true; }
   if (plausibleDomain) {
     const props: Record<string, string | number | boolean> = {};
@@ -222,7 +222,7 @@ export function trackPageExit(path: string, durationMs: number, eventId: string,
   return sent;
 }
 
-export function trackPurchase(orderNumber: string, params: AnalyticsParams) {
+export function trackPurchase(orderNumber: string, params: AnalyticsParams, options: { skipGa?: boolean } = {}) {
   if (!browserAvailable() || !orderNumber) return;
   const storageKey = `simka-analytics-purchase:${orderNumber}`;
   try {
@@ -230,11 +230,11 @@ export function trackPurchase(orderNumber: string, params: AnalyticsParams) {
   } catch {
     // Analytics must never block checkout when storage is unavailable.
   }
-  if (!trackEvent("purchase", { transaction_id: orderNumber, ...params })) return;
+  if (!trackEvent("purchase", { transaction_id: orderNumber, ...params }, options)) return;
   try { window.localStorage.setItem(storageKey, "1"); } catch { /* Best-effort deduplication. */ }
 }
 
-export function trackOnce(key: string, name: string, params: AnalyticsParams = {}) {
+export function trackOnce(key: string, name: string, params: AnalyticsParams = {}, options: { skipGa?: boolean } = {}) {
   if (!browserAvailable() || !key) return;
   const storageKey = `simka-analytics-event:${key}`;
   try {
@@ -242,6 +242,6 @@ export function trackOnce(key: string, name: string, params: AnalyticsParams = {
   } catch {
     // The event may still be sent when persistent storage is unavailable.
   }
-  if (!trackEvent(name, params)) return;
+  if (!trackEvent(name, params, options)) return;
   try { window.localStorage.setItem(storageKey, "1"); } catch { /* Best-effort deduplication. */ }
 }

@@ -69,9 +69,10 @@ export function OrderStatusAnalytics({ orderNumber, status, value, currency, cou
   useEffect(() => {
     if (!ready) return;
     const params = { transaction_id: orderNumber, value, currency, ...(coupon ? { coupon } : {}), items };
-    if (!serverTracked && ["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(status)) trackPurchase(orderNumber, params);
-    if (!serverTracked && status === "CANCELLED") trackOnce(`cancel:${orderNumber}`, "order_cancelled", params);
-    if (!serverTracked && status === "REFUNDED") trackOnce(`refund:${orderNumber}`, "refund", params);
+    const options = { skipGa: serverTracked };
+    if (["PAID", "PROCESSING", "SHIPPED", "DELIVERED", "COMPLETED"].includes(status)) trackPurchase(orderNumber, params, options);
+    if (status === "CANCELLED") trackOnce(`cancel:${orderNumber}`, "order_cancelled", params, options);
+    if (status === "REFUNDED") trackOnce(`refund:${orderNumber}`, "refund", params, options);
   }, [coupon, currency, items, orderNumber, ready, serverTracked, status, value]);
   return null;
 }

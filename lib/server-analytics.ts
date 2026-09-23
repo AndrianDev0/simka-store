@@ -34,12 +34,18 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
     currency: orders.currency,
     status: orders.status,
     paidAt: orders.paidAt,
+    refundedAt: orders.refundedAt,
+    updatedAt: orders.updatedAt,
     sentAt: config.sentAt,
     }).from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order?.analyticsClientId || !order.firstPartyClientId || order.sentAt) return false;
     if (status === "PAID" && !order.paidAt) return false;
     if (status === "CANCELLED" && order.status !== "CANCELLED") return false;
     if (status === "REFUNDED" && order.status !== "REFUNDED") return false;
+    const occurredAt = status === "PAID" ? order.paidAt : status === "REFUNDED" ? order.refundedAt : order.updatedAt;
+    const eventTime = Date.parse(occurredAt ?? "");
+    // Do not rewrite old transactions as sales today when the provider's backdating window expires.
+    if (!Number.isFinite(eventTime) || Date.now() - eventTime > 72 * 60 * 60 * 1000) return false;
 
     const [latestConsent] = await tx.select({
     decision: privacyConsentEvents.decision,
@@ -66,6 +72,7 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       client_id: order.analyticsClientId,
+      timestamp_micros: eventTime * 1000,
       ...(order.customerAccountId ? { user_id: order.customerAccountId } : {}),
       events: [{
         name: config.event,

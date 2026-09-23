@@ -79,7 +79,7 @@ try {
       }
       const columns = Object.keys(row);
       if (!columns.length || columns.some((column) => !/^[a-z0-9_]+$/.test(column))) throw new Error(`Недопустимые колонки: ${table}`);
-      await client.query(`INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(", ")}) VALUES (${columns.map((_, index) => `$${index + 1}`).join(", ")})`, columns.map((column) => row[column]));
+      await client.query(`INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(", ")}) SELECT ${columns.map((column) => `"${column}"`).join(", ")} FROM json_populate_record(NULL::"${table}", $1::json)`, [JSON.stringify(row)]);
     }
   }
 

@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { customerAccounts, customerPasswordResets, customerSessions } from "@/db/schema";
 import { getDb } from "@/db";
-import { createSession, findPasswordReset, hashPassword, sameOrigin, setSessionCookie, validatePassword } from "@/lib/customer-auth";
+import { createSession, findPasswordReset, hashPassword, sameOrigin, setAnalyticsIdentityCookie, setSessionCookie, validatePassword } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 
@@ -24,12 +24,19 @@ export async function POST(request: Request) {
   if (!validatePassword(password) || password !== confirmation) return redirect(`/account/reset?error=Пароли%20должны%20совпадать%20и%20содержать%20не%20менее%2012%20символов&token=${encodeURIComponent(token)}`);
   const now = new Date().toISOString();
   const db = getDb();
-  await db.transaction(async (tx) => {
-    await tx.update(customerAccounts).set({ passwordHash: await hashPassword(password), updatedAt: now }).where(eq(customerAccounts.id, reset.accountId));
+  const passwordHash = await hashPassword(password);
+  const changed = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM customer_accounts WHERE id = ${reset.accountId} FOR UPDATE`);
+    const [consumed] = await tx.delete(customerPasswordResets).where(and(eq(customerPasswordResets.id, reset.id), eq(customerPasswordResets.accountId, reset.accountId), sql`${customerPasswordResets.expiresAt}::timestamptz > now()`)).returning({ id: customerPasswordResets.id });
+    if (!consumed) return false;
+    await tx.update(customerAccounts).set({ passwordHash, updatedAt: now }).where(eq(customerAccounts.id, reset.accountId));
     await tx.delete(customerSessions).where(eq(customerSessions.accountId, reset.accountId));
-    await tx.delete(customerPasswordResets).where(and(eq(customerPasswordResets.id, reset.id), eq(customerPasswordResets.accountId, reset.accountId)));
+    await tx.delete(customerPasswordResets).where(eq(customerPasswordResets.accountId, reset.accountId));
+    return true;
   });
+  if (!changed) return redirect("/account/reset?error=Ссылка%20недействительна%20или%20истекла");
   const response = redirect("/account?analytics=password_reset");
   setSessionCookie(response, await createSession(reset.accountId));
+  setAnalyticsIdentityCookie(response, "account-switch");
   return response;
 }
