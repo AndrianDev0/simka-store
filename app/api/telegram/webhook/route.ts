@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { adminAuditLog, analyticsEvents, analyticsSessions, analyticsVisitors, catalogProducts, categories, countries, customerAccounts, customerPasswordResets, customerSessions, marketingCosts, operationalEvents, orderItems, orders, partnerClicks, partners, productCategories, productVariants, promoCodes, searchAnalytics, storeSettings } from "@/db/schema";
 import { formatPercentage, formatRelativeChange, percentage } from "@/lib/analytics-comparison";
-import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, formatAnalyticsDateRange, normalizeAnalyticsDays, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
+import { buildAnalyticsPeriodBounds, calendarAnalyticsDateRange, formatAnalyticsDateRange, parseAnalyticsDateRange, type AnalyticsDateRange } from "@/lib/analytics-period";
 import { calculateAttribution, calculateAttributionPaths, isAttributionModel, type AttributionModel, type AttributionOrder } from "@/lib/attribution";
 import { createEncryptedDatabaseBackup } from "@/lib/database-backup";
 import { csvCell } from "@/lib/csv";
@@ -448,6 +448,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [{ text: "💰 Выручка и прибыль", callback_data: `analytics:revenue:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "👥 Трафик и воронка", callback_data: `analytics:traffic:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "📦 Воронка товаров", callback_data: `analytics:products:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }, { text: "⚡ Скорость сайта", callback_data: `analytics:vitals:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
+    [{ text: "🌍 По странам", callback_data: `analytics:countries:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }, { text: "🔎 Поиск", callback_data: `analytics:search:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🤖 Bot / Fraud", callback_data: `analytics:fraud:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🧭 Модели атрибуции", callback_data: `analytics:attr:last_click:${customRange ? 0 : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
@@ -459,8 +460,6 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
   } else {
     rows.splice(4, 0,
       [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
-      [{ text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
-      [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
     );
   }
   if (telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }]);
@@ -616,20 +615,22 @@ async function sendWebVitalsAnalytics(db: ReturnType<typeof getDb>, token: strin
   await sendMessage(token, chatId, `⚡ Скорость сайта ${period}\n\n75-й процентиль по страницам и устройствам:\n${lines}\n\nПорог: LCP 2,5 с · INP 200 мс · CLS 0,1 · FCP 1,8 с · TTFB 800 мс. Малые выборки нестабильны.`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 
-async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
-  const normalizedDays = normalizeAnalyticsDays(days);
+async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const conditions = [inArray(orders.status, [...paidOrderStatuses])];
-  if (normalizedDays) conditions.push(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`);
+  conditions.push(sql`${orders.paidAt}::timestamptz <= ${bounds.end}::timestamptz`);
+  if (bounds.start) conditions.push(sql`${orders.paidAt}::timestamptz >= ${bounds.start}::timestamptz`);
   const rows = await db.select({ country: countries.name, quantity: orderItems.quantity, revenue: sql<number>`${orderItems.unitPrice} * ${orderItems.quantity}`, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).innerJoin(catalogProducts, eq(orderItems.productId, catalogProducts.id)).innerJoin(countries, eq(catalogProducts.countryId, countries.id)).where(and(...conditions));
   const lines = formatSalesByCurrency(rows.map((row) => ({ label: row.country, currency: row.currency, quantity: row.quantity, revenue: Number(row.revenue) || 0 })), "Оплаченных продаж по странам пока нет.");
-  await sendMessage(token, chatId, `🌍 Продажи по странам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+  await sendMessage(token, chatId, `🌍 Продажи по странам ${customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 
-async function sendSearchAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
-  const normalizedDays = normalizeAnalyticsDays(days);
-  const boundary = normalizedDays ? new Date(Date.now() - normalizedDays * 86_400_000).toISOString() : null;
+async function sendSearchAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const baseQuery = db.select({ query: searchAnalytics.query, searches: searchAnalytics.searches, noResultSearches: searchAnalytics.noResultSearches, totalResults: searchAnalytics.totalResults }).from(searchAnalytics);
-  const rows = boundary ? await baseQuery.where(gte(searchAnalytics.lastSeenAt, boundary)) : await baseQuery;
+  const conditions = [sql`${searchAnalytics.day} <= ${bounds.end.slice(0, 10)}`];
+  if (bounds.start) conditions.push(sql`${searchAnalytics.day} >= ${bounds.start.slice(0, 10)}`);
+  const rows = await baseQuery.where(and(...conditions));
   const grouped = new Map<string, { searches: number; noResults: number; totalResults: number }>();
   for (const row of rows) {
     const current = grouped.get(row.query) || { searches: 0, noResults: 0, totalResults: 0 };
@@ -643,8 +644,10 @@ async function sendSearchAnalytics(db: ReturnType<typeof getDb>, token: string, 
     const average = value.searches ? (value.totalResults / value.searches).toFixed(1).replace(".", ",") : "0";
     return `${index + 1}. ${query}\n   ${value.searches} запр. · без результатов: ${value.noResults} · среднее: ${average}`;
   }).join("\n\n") || "Посковых запросов за период пока нет.";
-  await sendMessage(token, chatId, `🔎 Внутренний поиск ${analyticsPeriod(normalizedDays)}\n\nВсего поисков: ${totals.searches}\nБез результатов: ${totals.noResults}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "🔄 Обновить", callback_data: `analytics:search:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
-  await audit(db, adminId, "analytics.search.view", null, { days: normalizedDays, searches: totals.searches });
+  const period = customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days);
+  const callbackPeriod = customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : String(bounds.days);
+  await sendMessage(token, chatId, `🔎 Внутренний поиск ${period}\n\nВсего поисков: ${totals.searches}\nБез результатов: ${totals.noResults}\n\n${lines}\n\nПоиск агрегируется по календарным дням UTC; границы внутри дня приблизительны.`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "🔄 Обновить", callback_data: `analytics:search:${callbackPeriod}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+  await audit(db, adminId, "analytics.search.view", null, { days: bounds.days, customRange, searches: totals.searches });
 }
 
 async function sendOperationalErrors(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, hours: number) {
@@ -2173,10 +2176,18 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "analytics" && action === "countries") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first || "") && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendCountryAnalytics(db, token, chatId, 0, range); return; }
+    }
     await sendCountryAnalytics(db, token, chatId, Number(first));
     return;
   }
   if (scope === "analytics" && action === "search") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first || "") && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendSearchAnalytics(db, token, chatId, adminId, 0, range); return; }
+    }
     await sendSearchAnalytics(db, token, chatId, adminId, Number(first));
     return;
   }
