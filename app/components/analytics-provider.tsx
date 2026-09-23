@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
-import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, syncAnalyticsIdentity, trackEvent, trackPageExit, trackPageView } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, syncAnalyticsIdentity, trackEvent, trackPageEngagement, trackPageExit, trackPageView, trackSessionHeartbeat } from "@/lib/analytics";
 import { reportTechnicalEvent } from "@/lib/client-telemetry";
 import { preserveWebVitalValue } from "@/lib/first-party-analytics";
 
@@ -103,7 +103,7 @@ export function AnalyticsProvider() {
   const choosingConsent = useRef(false);
   const identityCheckStarted = useRef(false);
   const [identityReady, setIdentityReady] = useState(false);
-  const activePage = useRef({ path: "/", startedAt: 0, eventId: "", exitSent: false });
+  const activePage = useRef({ path: "/", startedAt: 0, pageId: "", eventId: "", exitSent: false });
 
   useEffect(() => {
     if (identityCheckStarted.current) return;
@@ -141,31 +141,70 @@ export function AnalyticsProvider() {
   }, [consent, identityReady]);
 
   useEffect(() => {
-    if (identityReady && consent === "accepted" && pathname) trackPageView(pathname);
-  }, [consent, identityReady, pathname]);
-
-  useEffect(() => {
-    if (!identityReady || consent !== "accepted" || !pathname) return;
-    activePage.current = { path: pathname, startedAt: Date.now(), eventId: crypto.randomUUID(), exitSent: false };
+    if (!identityReady || consent !== "accepted" || !pathname) {
+      activePage.current.eventId = "";
+      return;
+    }
+    const previous = activePage.current;
+    const now = Date.now();
+    if (previous.eventId && !previous.exitSent && document.visibilityState === "visible") {
+      trackPageEngagement(previous.path, now - previous.startedAt, previous.pageId);
+    }
+    const pageId = crypto.randomUUID();
+    activePage.current = { path: pathname, startedAt: now, pageId, eventId: crypto.randomUUID(), exitSent: false };
+    trackPageView(pathname, pageId);
   }, [consent, identityReady, pathname]);
 
   useEffect(() => {
     if (!identityReady || consent !== "accepted") return;
+    const flushVisiblePage = () => {
+      const page = activePage.current;
+      if (!page.eventId || page.exitSent || document.visibilityState !== "visible") return;
+      const now = Date.now();
+      trackPageEngagement(page.path, now - page.startedAt, page.pageId);
+      page.startedAt = now;
+    };
     const sendExit = () => {
       const page = activePage.current;
       if (!page.eventId || page.exitSent) return;
       page.exitSent = true;
-      trackPageExit(page.path, Date.now() - page.startedAt, page.eventId);
+      if (Date.now() - page.startedAt > 30 * 60_000) return; // Let the inactive session close by timeout.
+      trackPageExit(page.path, document.visibilityState === "visible" ? Date.now() - page.startedAt : 0, page.eventId, page.pageId);
     };
     const restorePage = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
       const page = activePage.current;
-      activePage.current = { path: page.path, startedAt: Date.now(), eventId: crypto.randomUUID(), exitSent: false };
-      trackPageView(page.path);
+      const pageId = crypto.randomUUID();
+      activePage.current = { path: page.path, startedAt: Date.now(), pageId, eventId: crypto.randomUUID(), exitSent: false };
+      trackPageView(page.path, pageId);
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        const page = activePage.current;
+        if (!page.eventId || page.exitSent) return;
+        const now = Date.now();
+        trackPageEngagement(page.path, now - page.startedAt, page.pageId);
+        page.startedAt = now;
+      } else {
+        const page = activePage.current;
+        const now = Date.now();
+        if (page.eventId && !page.exitSent && now - page.startedAt >= 30 * 60_000) {
+          const pageId = crypto.randomUUID();
+          activePage.current = { path: page.path, startedAt: now, pageId, eventId: crypto.randomUUID(), exitSent: false };
+          trackPageView(page.path, pageId);
+        } else {
+          page.startedAt = now;
+          trackSessionHeartbeat();
+        }
+      }
+    };
+    const timer = window.setInterval(flushVisiblePage, 30_000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pagehide", sendExit);
     window.addEventListener("pageshow", restorePage);
     return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pagehide", sendExit);
       window.removeEventListener("pageshow", restorePage);
     };

@@ -31,5 +31,9 @@ test("web vital values preserve fractional CLS measurements", () => {
 test("only a real page exit closes a session and records page duration", () => {
   const occurredAt = "2026-09-17T06:00:00.000Z";
   assert.deepEqual(analyticsSessionExitState("page_view", {}, occurredAt), { endedAt: null, exitDurationMs: null });
+  assert.equal(validAnalyticsEventName("page_engagement"), true);
+  assert.equal(validAnalyticsEventName("session_heartbeat"), true);
+  assert.deepEqual(sanitizeAnalyticsParams({ page_id: "page-1", duration_ms: 12_345, secret: "private" }), { page_id: "page-1", duration_ms: 12_345 });
+  assert.deepEqual(analyticsSessionExitState("page_engagement", { duration_ms: 12_345 }, occurredAt), { endedAt: null, exitDurationMs: null });
   assert.deepEqual(analyticsSessionExitState("page_exit", { duration_ms: 12_345.6 }, occurredAt), { endedAt: occurredAt, exitDurationMs: 12_346 });
 });

@@ -111,11 +111,24 @@ export async function POST(request: Request) {
       accountId: account?.id ?? null, name: parsed.data.name, path, params, occurredAt,
     }).onConflictDoNothing({ target: analyticsEvents.id }).returning({ id: analyticsEvents.id });
     if (!inserted[0]) return false;
+    const latestEvent = sql`${analyticsSessions.lastSeenAt}::timestamptz <= ${occurredAt}::timestamptz`;
+    const isPageView = parsed.data.name === "page_view";
+    const isPageExit = parsed.data.name === "page_exit";
     await tx.update(analyticsSessions).set({
-      exitPath: path, lastSeenAt: occurredAt,
+      exitPath: isPageView || isPageExit ? sql`CASE WHEN ${latestEvent} THEN ${path} ELSE ${analyticsSessions.exitPath} END` : analyticsSessions.exitPath,
+      lastSeenAt: sql`CASE WHEN ${latestEvent} THEN ${occurredAt} ELSE ${analyticsSessions.lastSeenAt} END`,
       trafficClass: sql`CASE WHEN ${analyticsSessions.trafficClass} = 'BOT' OR ${traffic.trafficClass} = 'BOT' THEN 'BOT' WHEN ${analyticsSessions.trafficClass} = 'SUSPICIOUS' OR ${traffic.trafficClass} = 'SUSPICIOUS' THEN 'SUSPICIOUS' ELSE 'HUMAN' END`,
       trafficReasons: traffic.reasons,
-      ...exitState,
+      endedAt: isPageExit
+        ? sql`CASE WHEN ${latestEvent} THEN ${occurredAt} ELSE ${analyticsSessions.endedAt} END`
+        : isPageView
+          ? sql`CASE WHEN ${analyticsSessions.endedAt} IS NOT NULL AND ${analyticsSessions.endedAt}::timestamptz <= ${occurredAt}::timestamptz THEN NULL ELSE ${analyticsSessions.endedAt} END`
+          : analyticsSessions.endedAt,
+      exitDurationMs: isPageExit
+        ? sql`CASE WHEN ${latestEvent} THEN ${exitState.exitDurationMs} ELSE ${analyticsSessions.exitDurationMs} END`
+        : isPageView
+          ? sql`CASE WHEN ${analyticsSessions.endedAt} IS NOT NULL AND ${analyticsSessions.endedAt}::timestamptz <= ${occurredAt}::timestamptz THEN NULL ELSE ${analyticsSessions.exitDurationMs} END`
+          : analyticsSessions.exitDurationMs,
       eventCount: sql`${analyticsSessions.eventCount} + 1`,
       pageViews: parsed.data.name === "page_view" ? sql`${analyticsSessions.pageViews} + 1` : analyticsSessions.pageViews,
     }).where(and(eq(analyticsSessions.id, parsed.data.sessionId), eq(analyticsSessions.clientId, parsed.data.clientId)));

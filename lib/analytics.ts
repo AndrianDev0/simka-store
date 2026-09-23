@@ -73,6 +73,7 @@ export function getAnalyticsClientId() {
 
 let activeAnalyticsSession: { id: string; attribution: AnalyticsAttribution; lastSeen: number } | null = null;
 let activeAnalyticsClientId: string | null = null;
+let lastAnalyticsEventAt = 0;
 
 export function syncAnalyticsIdentity() {
   try {
@@ -141,10 +142,12 @@ function trackFirstParty(name: string, params: AnalyticsParams, path = window.lo
   }
   activeAnalyticsClientId = clientId;
   const session = analyticsSession();
+  const occurredAt = Math.max(Date.now(), lastAnalyticsEventAt + 1);
+  lastAnalyticsEventAt = occurredAt;
   const connection = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection;
   const body = {
     eventId: options.eventId || crypto.randomUUID(), clientId, sessionId: session.id, name, path,
-    occurredAt: new Date().toISOString(), params, attribution: session.attribution,
+    occurredAt: new Date(occurredAt).toISOString(), params, attribution: session.attribution,
     device: {
       language: navigator.language, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       screenWidth: window.screen.width, screenHeight: window.screen.height,
@@ -187,20 +190,31 @@ export function trackEvent(name: string, params: AnalyticsParams = {}) {
   return sent;
 }
 
-export function trackPageView(path: string) {
+export function trackPageView(path: string, pageId?: string) {
   if (!analyticsConsentGranted()) return false;
   const safePath = path.startsWith("/") ? path.split(/[?#]/, 1)[0] : "/";
   const pageLocation = `${window.location.origin}${safePath}`;
-  let sent = trackFirstParty("page_view", {}, safePath);
+  let sent = trackFirstParty("page_view", pageId ? { page_id: pageId } : {}, safePath);
   if (window.__simkaAnalyticsInitialised && gaMeasurementId && window.gtag) { window.gtag("event", "page_view", { page_path: safePath, page_location: pageLocation }); sent = true; }
   if (window.__simkaAnalyticsInitialised && yandexMetrikaId && window.ym) { window.ym(Number(yandexMetrikaId), "hit", safePath, { title: document.title }); sent = true; }
   return sent;
 }
 
-export function trackPageExit(path: string, durationMs: number, eventId: string) {
+export function trackPageEngagement(path: string, durationMs: number, pageId: string) {
+  if (!analyticsConsentGranted() || durationMs <= 0) return false;
+  const safePath = path.startsWith("/") ? path.split(/[?#]/, 1)[0] : "/";
+  return trackFirstParty("page_engagement", { page_id: pageId, duration_ms: Math.round(Math.min(durationMs, 300_000)) }, safePath, { beacon: true });
+}
+
+export function trackSessionHeartbeat() {
+  if (!analyticsConsentGranted()) return false;
+  return trackFirstParty("session_heartbeat", {});
+}
+
+export function trackPageExit(path: string, durationMs: number, eventId: string, pageId?: string) {
   if (!analyticsConsentGranted()) return false;
   const safePath = path.startsWith("/") ? path.split(/[?#]/, 1)[0] : "/";
-  const payload = { duration_ms: Math.round(Math.max(0, Math.min(durationMs, 24 * 60 * 60_000))), page_path: safePath };
+  const payload = { duration_ms: Math.round(Math.max(0, Math.min(durationMs, 300_000))), page_path: safePath, ...(pageId ? { page_id: pageId } : {}) };
   let sent = trackFirstParty("page_exit", payload, safePath, { beacon: true, eventId });
   if (window.__simkaAnalyticsInitialised && gaMeasurementId && window.gtag) { window.gtag("event", "page_exit", { ...payload, transport_type: "beacon" }); sent = true; }
   if (window.__simkaAnalyticsInitialised && yandexMetrikaId && window.ym) { window.ym(Number(yandexMetrikaId), "reachGoal", "page_exit", payload); sent = true; }

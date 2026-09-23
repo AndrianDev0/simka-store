@@ -699,15 +699,12 @@ function compactAnalyticsLabel(value: string | null, maximum = 64) {
 async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const sessionTime = sql`${analyticsSessions.startedAt}::timestamptz`;
-  const exitTime = sql`${analyticsSessions.endedAt}::timestamptz`;
   const periodSessionConditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
   const sessionConditions = [eq(analyticsSessions.trafficClass, "HUMAN"), ...periodSessionConditions];
-  const exitConditions = [eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.endedAt} IS NOT NULL`, sql`${exitTime} <= ${bounds.end}::timestamptz`];
   if (bounds.start) {
     const startCondition = sql`${sessionTime} >= ${bounds.start}::timestamptz`;
     periodSessionConditions.push(startCondition);
     sessionConditions.push(startCondition);
-    exitConditions.push(sql`${exitTime} >= ${bounds.start}::timestamptz`);
   }
   const newUserExpression = bounds.start
     ? sql<number>`COUNT(DISTINCT CASE WHEN NOT EXISTS (
@@ -717,10 +714,13 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
           AND (previous.started_at::timestamptz, previous.id) < (${analyticsSessions.startedAt}::timestamptz, ${analyticsSessions.id})
       ) THEN ${analyticsSessions.clientId} END)::int`
     : sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`;
-  const realtimeBoundary = new Date(Date.now() - 5 * 60_000).toISOString();
+  const realtimeBoundary = new Date(Date.now() - 90_000).toISOString();
+  const settledExitBoundary = new Date(Date.now() - 90_000).toISOString();
+  const exitStart = bounds.start ? sql`AND closed_at >= ${bounds.start}::timestamptz` : sql``;
+  const pageStart = bounds.start ? sql`AND e.occurred_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
   const funnelStart = bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
   const paidStatuses = sql.join([...paidOrderStatuses].map((status) => sql`${status}`), sql`, `);
-  const [summaryRows, sourceRows, deviceRows, exitRows, orderedFunnelResult, realtimeRows, recentEvents, trafficClassRows] = await Promise.all([
+  const [summaryRows, sourceRows, deviceRows, exitResult, pageTimeResult, orderedFunnelResult, realtimeRows, recentEvents, trafficClassRows] = await Promise.all([
     db.select({
       users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int`,
       newUsers: newUserExpression,
@@ -737,7 +737,40 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     }).from(analyticsSessions).innerJoin(analyticsVisitors, eq(analyticsSessions.clientId, analyticsVisitors.clientId)).where(and(...sessionConditions)),
     db.select({ source: analyticsSessions.source, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.source).orderBy(desc(sql`COUNT(*)`)).limit(8),
     db.select({ device: analyticsSessions.deviceType, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.deviceType).orderBy(desc(sql`COUNT(*)`)),
-    db.select({ path: analyticsSessions.exitPath, exits: sql<number>`COUNT(*)::int`, averageSeconds: sql<number>`COALESCE(AVG(${analyticsSessions.exitDurationMs} / 1000.0), 0)::float` }).from(analyticsSessions).where(and(...exitConditions)).groupBy(analyticsSessions.exitPath).orderBy(desc(sql`COUNT(*)`)).limit(8),
+    db.execute<{ path: string; exits: number; inferred: number }>(sql`
+      SELECT exit_path AS path, COUNT(*)::int AS exits,
+        COUNT(*) FILTER (WHERE ended_at IS NULL)::int AS inferred
+      FROM (
+        SELECT exit_path, ended_at,
+          COALESCE(ended_at::timestamptz, last_seen_at::timestamptz + INTERVAL '30 minutes') AS closed_at
+        FROM analytics_sessions WHERE traffic_class = 'HUMAN'
+      ) closed
+      WHERE closed_at <= ${bounds.end}::timestamptz
+        AND closed_at <= ${settledExitBoundary}::timestamptz ${exitStart}
+      GROUP BY exit_path ORDER BY COUNT(*) DESC LIMIT 8
+    `),
+    db.execute<{ path: string; views: number; average_seconds: number }>(sql`
+      WITH page_views AS (
+        SELECT e.session_id, e.path, e.params->>'page_id' AS page_id
+        FROM analytics_events e JOIN analytics_sessions s ON s.id = e.session_id
+        WHERE s.traffic_class = 'HUMAN' AND e.name = 'page_view'
+          AND e.params->>'page_id' IS NOT NULL
+          AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz ${pageStart}
+      ), durations AS (
+        SELECT e.session_id, e.params->>'page_id' AS page_id,
+          SUM(CASE WHEN jsonb_typeof(e.params->'duration_ms') = 'number'
+            THEN LEAST(300000, GREATEST(0, (e.params->>'duration_ms')::numeric)) ELSE 0 END) AS duration_ms
+        FROM analytics_events e JOIN analytics_sessions s ON s.id = e.session_id
+        WHERE s.traffic_class = 'HUMAN' AND e.name IN ('page_engagement', 'page_exit')
+          AND e.params->>'page_id' IS NOT NULL
+          AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
+        GROUP BY e.session_id, e.params->>'page_id'
+      )
+      SELECT v.path, COUNT(*)::int AS views,
+        AVG(d.duration_ms / 1000.0)::float AS average_seconds
+      FROM page_views v JOIN durations d ON d.session_id = v.session_id AND d.page_id = v.page_id
+      GROUP BY v.path ORDER BY COUNT(*) DESC LIMIT 8
+    `),
     db.execute<{
       visits: number; product_views: number; carts: number; checkouts: number; orders: number; payments: number;
     }>(sql`
@@ -789,7 +822,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
         COUNT(*) FILTER (WHERE paid)::int AS payments
       FROM completed
     `),
-    db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`)),
+    db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.endedAt} IS NULL`, sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`)),
     db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).innerJoin(analyticsSessions, eq(analyticsEvents.sessionId, analyticsSessions.id)).where(eq(analyticsSessions.trafficClass, "HUMAN")).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
     db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...periodSessionConditions)).groupBy(analyticsSessions.trafficClass),
   ]);
@@ -816,7 +849,8 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   }).join("\n");
   const sourceLines = sourceRows.map((row) => `• ${compactAnalyticsLabel(row.source || "direct", 48)}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
   const deviceLines = deviceRows.map((row) => `• ${row.device}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
-  const exitLines = exitRows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.exits} выходов · ср. ${Math.round(Number(row.averageSeconds))} сек.`).join("\n") || "• Данных пока нет";
+  const exitLines = exitResult.rows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.exits} выходов${Number(row.inferred) ? ` · из них ${row.inferred} по тайм-ауту` : ""}`).join("\n") || "• Данных пока нет";
+  const pageTimeLines = pageTimeResult.rows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.views} измеренных просмотров · ср. ${Math.round(Number(row.average_seconds))} сек. в видимой вкладке`).join("\n") || "• Пока нет измеренных просмотров";
   const recentLines = recentEvents.map((row) => `• ${row.name} · ${compactAnalyticsLabel(row.path)} · ${new Date(row.occurredAt).toLocaleTimeString("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" })} UTC`).join("\n") || "• Событий пока нет";
   const trafficClasses = ["HUMAN", "SUSPICIOUS", "BOT"] as const;
   const trafficClassLabels: Record<(typeof trafficClasses)[number], string> = { HUMAN: "Human", SUSPICIOUS: "Suspicious", BOT: "Bot" };
@@ -830,15 +864,16 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     `Пользователи: ${summary.users} · новые: ${summary.newUsers} · возвращающиеся: ${summary.returningUsers}`,
     `Сессии: ${summary.sessions} · просмотры: ${summary.pageViews}`,
     `Глубина: ${Number(summary.averageDepth).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} стр./сессию`,
-    `Средняя сессия: ${Math.round(Number(summary.averageSeconds))} сек. · отказы: ${bounceRate.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`,
-    `Онлайн за 5 минут: ${realtimeRows[0]?.users ?? 0} польз. · ${realtimeRows[0]?.sessions ?? 0} сесс.`,
+    `Интервал между первым и последним событием: ${Math.round(Number(summary.averageSeconds))} сек./сессию · отказы: ${bounceRate.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`,
+    `Активность за 90 секунд: ${realtimeRows[0]?.users ?? 0} польз. · ${realtimeRows[0]?.sessions ?? 0} сесс.`,
     "", "Воронка по уникальным пользователям:", funnelLines,
     "", "Источники:", sourceLines,
     "", "Устройства:", deviceLines,
     "", "Bot / Fraud:", trafficClassLines,
     "", "Основные страницы выхода:", exitLines,
+    "", "Время на страницах:", pageTimeLines,
     "", "Последние события:", recentLines,
-    "", "Основные показатели — только Human; Bot и Suspicious показаны отдельно. Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
+    "", "Время в фоне не учитывается; выход без сигнала браузера предполагается после 30 минут тишины. Основные показатели — только Human; Bot и Suspicious показаны отдельно. Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
   ].join("\n"), trafficKeyboard(bounds.days, customRange));
 }
 

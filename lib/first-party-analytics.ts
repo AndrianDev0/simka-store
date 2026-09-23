@@ -1,5 +1,5 @@
 export const FIRST_PARTY_EVENT_NAMES = new Set([
-  "page_view", "page_exit", "view_item_list", "view_item", "search", "catalog_filter",
+  "page_view", "page_engagement", "page_exit", "session_heartbeat", "view_item_list", "view_item", "search", "catalog_filter",
   "add_to_cart", "remove_from_cart", "view_cart", "begin_checkout", "add_payment_info",
   "generate_lead", "purchase", "order_cancelled", "refund", "promo_code_applied", "checkout_error",
   "login", "sign_up", "password_reset", "partner_referral", "contact", "file_download",
@@ -11,7 +11,7 @@ const PARAM_KEYS = new Set([
   "query_length", "results_count", "no_results", "search_location", "filters", "has_search",
   "region", "sim_type", "filter_location", "payment_type", "error_type", "method", "partner_id",
   "file_extension", "fatal", "error_area", "page_path", "metric_name", "metric_id", "metric_rating",
-  "duration_ms", "items",
+  "duration_ms", "page_id", "items",
 ]);
 
 type JsonScalar = string | number | boolean | null;
