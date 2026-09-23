@@ -447,6 +447,7 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
     [{ text: "💸 LTV и CAC", callback_data: "analytics:unit_economics" }],
     [{ text: "💰 Выручка и прибыль", callback_data: `analytics:revenue:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "👥 Трафик и воронка", callback_data: `analytics:traffic:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
+    [{ text: "📦 Воронка товаров", callback_data: `analytics:products:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }, { text: "⚡ Скорость сайта", callback_data: `analytics:vitals:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🤖 Bot / Fraud", callback_data: `analytics:fraud:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }],
     [{ text: "🧭 Модели атрибуции", callback_data: `analytics:attr:last_click:${customRange ? 0 : selectedDays}` }],
     [{ text: "🔁 Retention и когорты", callback_data: "analytics:retention" }],
@@ -458,19 +459,20 @@ function analyticsKeyboard(selectedDays: number, role: TelegramRole, customRange
   } else {
     rows.splice(4, 0,
       [{ text: "🔄 Обновить", callback_data: `analytics:period:${selectedDays}` }],
-      [{ text: "📦 По товарам", callback_data: `analytics:products:${selectedDays}` }, { text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
+      [{ text: "🌍 По странам", callback_data: `analytics:countries:${selectedDays}` }],
       [{ text: "🔎 Внутренний поиск", callback_data: `analytics:search:${selectedDays}` }],
     );
   }
-  if (!customRange && telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${selectedDays}` }]);
+  if (telegramRoleCan(role, "analytics.export")) rows.push([{ text: "📥 Скачать CSV", callback_data: `analytics:csv:${customRange ? `${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : selectedDays}` }]);
   if (telegramRoleCan(role, "orders.read")) rows.push([{ text: "🛒 Последние заказы", callback_data: "orders:list" }]);
   rows.push([{ text: "◀️ В меню", callback_data: "menu" }]);
   return { inline_keyboard: rows };
 }
 
-async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number) {
-  const normalizedDays = normalizeAnalyticsDays(days);
+async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, chatId: number, adminId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const selection = {
+    id: orders.id,
     orderNumber: orders.orderNumber,
     createdAt: orders.createdAt,
     status: orders.status,
@@ -487,28 +489,131 @@ async function sendAnalyticsCsv(db: ReturnType<typeof getDb>, token: string, cha
     medium: orders.analyticsMedium,
     campaign: orders.analyticsCampaign,
   };
-  const rows = normalizedDays
-    ? await db.select(selection).from(orders).where(sql`${orders.createdAt}::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`).orderBy(desc(orders.createdAt)).limit(5_000)
-    : await db.select(selection).from(orders).orderBy(desc(orders.createdAt)).limit(5_000);
   const header = ["order_number", "created_at_utc", "paid_at_utc", "status", "payment_method", "subtotal", "promo_code", "partner_id", "discount", "delivery", "total", "currency", "utm_source", "utm_medium", "utm_campaign"];
-  const csv = [header.map(csvCell).join(","), ...rows.map((row) => [row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.promoCode, row.partnerCode, row.discountAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(","))].join("\r\n");
-  const suffix = normalizedDays ? `${normalizedDays}d` : "all";
-  await sendDocument(token, chatId, Buffer.from(`\uFEFF${csv}`, "utf8"), `simka-orders-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`, `Обезличенный отчёт SIMKA ${analyticsPeriod(normalizedDays)} · строк: ${rows.length}${rows.length === 5_000 ? " (показаны последние 5000)" : ""}.`, "text/csv; charset=utf-8");
-  await audit(db, adminId, "analytics.export", null, { days: normalizedDays, rows: rows.length, format: "csv" });
+  const suffix = customRange ? `${customRange.start.slice(0, 10)}-${customRange.end.slice(0, 10)}` : bounds.days ? `${bounds.days}d` : "all";
+  const label = customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days);
+  const headerLine = `\uFEFF${header.map(csvCell).join(",")}\r\n`;
+  let chunk = headerLine;
+  let chunkBytes = Buffer.byteLength(chunk);
+  let chunkRows = 0;
+  let totalRows = 0;
+  let part = 0;
+  let cursor: { id: string; createdAt: string } | null = null;
+  const flush = async () => {
+    if (!chunkRows && part) return;
+    part += 1;
+    await sendDocument(token, chatId, Buffer.from(chunk, "utf8"), `simka-orders-${suffix}-part-${part}.csv`, `Заказы SIMKA · ${label} · часть ${part} · строк: ${chunkRows}.`, "text/csv; charset=utf-8");
+    chunk = headerLine;
+    chunkBytes = Buffer.byteLength(chunk);
+    chunkRows = 0;
+  };
+  for (;;) {
+    const conditions = [sql`${orders.createdAt}::timestamptz <= ${bounds.end}::timestamptz`];
+    if (bounds.start) conditions.push(sql`${orders.createdAt}::timestamptz >= ${bounds.start}::timestamptz`);
+    if (cursor) conditions.push(sql`(${orders.createdAt}::timestamptz, ${orders.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id})`);
+    const rows = await db.select(selection).from(orders).where(and(...conditions)).orderBy(desc(sql`${orders.createdAt}::timestamptz`), desc(orders.id)).limit(1_000);
+    for (const row of rows) {
+      const line = `${[row.orderNumber, row.createdAt, row.paidAt, row.status, row.paymentMethod, row.subtotalAmount, row.promoCode, row.partnerCode, row.discountAmount, row.deliveryAmount, row.totalAmount, row.currency, row.source, row.medium, row.campaign].map(csvCell).join(",")}\r\n`;
+      const bytes = Buffer.byteLength(line);
+      if (chunkRows && chunkBytes + bytes > 4_000_000) await flush();
+      chunk += line;
+      chunkBytes += bytes;
+      chunkRows += 1;
+      totalRows += 1;
+    }
+    if (rows.length) cursor = { id: rows[rows.length - 1].id, createdAt: rows[rows.length - 1].createdAt };
+    if (rows.length < 1_000) break;
+  }
+  await flush();
+  await audit(db, adminId, "analytics.export", null, { days: bounds.days, customRange, rows: totalRows, parts: part, format: "csv" });
 }
 
 function analyticsPeriod(days: number) {
   return days === 0 ? "за всё время" : days === 1 ? "за последние 24 часа" : `за последние ${days} дней`;
 }
 
-async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
-  const normalizedDays = normalizeAnalyticsDays(days);
-  const paidStatuses = [...paidOrderStatuses];
-  const conditions = [inArray(orders.status, paidStatuses)];
-  if (normalizedDays) conditions.push(sql`COALESCE(${orders.paidAt}, ${orders.createdAt})::timestamptz >= ${new Date(Date.now() - normalizedDays * 86_400_000).toISOString()}::timestamptz`);
-  const rows = await db.select({ productName: orderItems.productName, sku: orderItems.sku, quantity: orderItems.quantity, unitPrice: orderItems.unitPrice, currency: orders.currency }).from(orderItems).innerJoin(orders, eq(orderItems.orderId, orders.id)).where(and(...conditions));
-  const lines = formatSalesByCurrency(rows.map((row) => ({ label: row.sku || row.productName, currency: row.currency, quantity: row.quantity, revenue: row.unitPrice * row.quantity })), "Оплаченных товаров пока нет.");
-  await sendMessage(token, chatId, `📦 Продажи по товарам ${analyticsPeriod(normalizedDays)}\n\n${lines}`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: `analytics:period:${normalizedDays}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const eventStart = bounds.start ? sql`AND e.occurred_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
+  const orderStart = bounds.start ? sql`AND o.created_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
+  const paidStart = bounds.start ? sql`AND o.paid_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
+  const refundStart = bounds.start ? sql`AND o.refunded_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
+  const paidStatuses = sql.join([...paidOrderStatuses].map((status) => sql`${status}`), sql`, `);
+  const [eventResult, orderResult, conversionResult] = await Promise.all([
+    db.execute<{ sku: string; viewers: number; carts: number }>(sql`
+      SELECT item->>'item_id' AS sku,
+        COUNT(DISTINCT e.client_id) FILTER (WHERE e.name = 'view_item')::int AS viewers,
+        COUNT(DISTINCT e.client_id) FILTER (WHERE e.name = 'add_to_cart')::int AS carts
+      FROM analytics_events e JOIN analytics_sessions s ON s.id = e.session_id
+      CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(e.params->'items') = 'array' THEN e.params->'items' ELSE '[]'::jsonb END) item
+      WHERE s.traffic_class = 'HUMAN' AND e.name IN ('view_item', 'add_to_cart')
+        AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz ${eventStart}
+        AND item->>'item_id' IS NOT NULL
+      GROUP BY item->>'item_id'
+    `),
+    db.execute<{ sku: string; name: string; currency: string; orders: number; paid: number; refunds: number; revenue: number }>(sql`
+      SELECT i.sku, MAX(i.product_name) AS name, o.currency,
+        COUNT(DISTINCT o.id) FILTER (WHERE o.created_at::timestamptz <= ${bounds.end}::timestamptz ${orderStart})::int AS orders,
+        COUNT(DISTINCT o.id) FILTER (WHERE o.status IN (${paidStatuses}) AND o.paid_at IS NOT NULL
+          AND o.paid_at::timestamptz <= ${bounds.end}::timestamptz ${paidStart})::int AS paid,
+        COUNT(DISTINCT o.id) FILTER (WHERE o.status = 'REFUNDED' AND o.refunded_at IS NOT NULL
+          AND o.refunded_at::timestamptz <= ${bounds.end}::timestamptz ${refundStart})::int AS refunds,
+        COALESCE(SUM(i.line_total) FILTER (WHERE o.status IN (${paidStatuses}) AND o.paid_at IS NOT NULL
+          AND o.paid_at::timestamptz <= ${bounds.end}::timestamptz ${paidStart}), 0)::float AS revenue
+      FROM order_items i JOIN orders o ON o.id = i.order_id
+      GROUP BY i.sku, o.currency
+    `),
+    db.execute<{ sku: string; buyers: number }>(sql`
+      SELECT i.sku, COUNT(DISTINCT o.first_party_client_id)::int AS buyers
+      FROM order_items i JOIN orders o ON o.id = i.order_id
+      WHERE o.status IN (${paidStatuses}) AND o.paid_at IS NOT NULL AND o.first_party_client_id IS NOT NULL
+        AND o.paid_at::timestamptz <= ${bounds.end}::timestamptz ${paidStart}
+        AND EXISTS (
+          SELECT 1 FROM analytics_events e JOIN analytics_sessions s ON s.id = e.session_id
+          CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(e.params->'items') = 'array' THEN e.params->'items' ELSE '[]'::jsonb END) item
+          WHERE s.traffic_class = 'HUMAN' AND e.client_id = o.first_party_client_id
+            AND e.name = 'view_item' AND item->>'item_id' = i.sku
+            AND e.occurred_at::timestamptz <= o.created_at::timestamptz
+            AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz ${eventStart}
+        )
+      GROUP BY i.sku
+    `),
+  ]);
+  const bySku = new Map(eventResult.rows.map((row) => [row.sku, row]));
+  const convertedBySku = new Map(conversionResult.rows.map((row) => [row.sku, row.buyers]));
+  const merged = orderResult.rows.map((row) => ({ ...row, viewers: bySku.get(row.sku)?.viewers ?? 0, carts: bySku.get(row.sku)?.carts ?? 0, converted: convertedBySku.get(row.sku) ?? 0 }));
+  const orderSkus = new Set(merged.map((row) => row.sku));
+  for (const row of eventResult.rows) if (!orderSkus.has(row.sku)) merged.push({ sku: row.sku, name: row.sku, currency: "", orders: 0, paid: 0, refunds: 0, revenue: 0, viewers: row.viewers, carts: row.carts, converted: 0 });
+  const lines = merged.filter((row) => row.viewers || row.carts || row.orders || row.paid || row.refunds)
+    .sort((a, b) => b.paid - a.paid || b.viewers - a.viewers).slice(0, 15)
+    .map((row) => `• ${compactAnalyticsLabel(row.name, 45)} (${row.sku})\n  Просмотрели: ${row.viewers} · корзина: ${row.carts} · заказали: ${row.orders} · оплатили: ${row.paid} · возвраты: ${row.refunds}\n  Конверсия просмотр→оплата: ${row.viewers ? formatPercentage(percentage(row.converted, row.viewers)) : "—"} · оборот: ${Number(row.revenue).toLocaleString("ru-RU")} ${row.currency || ""}`).join("\n") || "Данных по товарам пока нет.";
+  await sendMessage(token, chatId, `📦 Воронка товаров ${customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days)}\n\n${lines}\n\nКонверсия — доля посетителей, просмотревших этот товар и затем оплативших его в выбранном периоде. Корзина — уникальные посетители; заказы, оплаты и возвраты — заказы.`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+}
+
+async function sendWebVitalsAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
+  const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
+  const start = bounds.start ? sql`AND e.occurred_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
+  const result = await db.execute<{ path: string; device: string; metric: string; samples: number; p75: number }>(sql`
+    SELECT e.path, COALESCE(s.device_type, 'unknown') AS device, e.params->>'metric_name' AS metric,
+      COUNT(*)::int AS samples,
+      percentile_cont(0.75) WITHIN GROUP (ORDER BY (e.params->>'value')::double precision) AS p75
+    FROM analytics_events e JOIN analytics_sessions s ON s.id = e.session_id
+    WHERE e.name = 'web_vital' AND s.traffic_class = 'HUMAN'
+      AND e.params->>'metric_name' IN ('LCP', 'INP', 'CLS', 'FCP', 'TTFB')
+      AND jsonb_typeof(e.params->'value') = 'number'
+      AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz ${start}
+    GROUP BY e.path, s.device_type, e.params->>'metric_name'
+    ORDER BY COUNT(*) DESC LIMIT 200
+  `);
+  const thresholds: Record<string, number> = { LCP: 2500, INP: 200, CLS: 0.1, FCP: 1800, TTFB: 800 };
+  const rows = result.rows.sort((a, b) => (Number(b.p75) / thresholds[b.metric]) - (Number(a.p75) / thresholds[a.metric])).slice(0, 15);
+  const lines = rows.map((row) => {
+    const value = row.metric === "CLS" ? Number(row.p75).toLocaleString("ru-RU", { maximumFractionDigits: 3 }) : `${Math.round(Number(row.p75))} мс`;
+    const warning = Number(row.p75) > thresholds[row.metric] ? "⚠️ " : "";
+    return `${warning}${row.metric} ${value} · ${row.device} · ${compactAnalyticsLabel(row.path, 60)} · ${row.samples} изм.`;
+  }).join("\n") || "Пока нет измерений.";
+  const period = customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days);
+  await sendMessage(token, chatId, `⚡ Скорость сайта ${period}\n\n75-й процентиль по страницам и устройствам:\n${lines}\n\nПорог: LCP 2,5 с · INP 200 мс · CLS 0,1 · FCP 1,8 с · TTFB 800 мс. Малые выборки нестабильны.`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 
 async function sendCountryAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number) {
@@ -720,7 +825,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const pageStart = bounds.start ? sql`AND e.occurred_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
   const funnelStart = bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
   const paidStatuses = sql.join([...paidOrderStatuses].map((status) => sql`${status}`), sql`, `);
-  const [summaryRows, sourceRows, deviceRows, exitResult, pageTimeResult, orderedFunnelResult, realtimeRows, recentEvents, trafficClassRows] = await Promise.all([
+  const [summaryRows, sourceRows, deviceRows, exitResult, pageTimeResult, orderedFunnelResult, realtimeRows, recentEvents, trafficClassRows, sourceBuyerResult, deviceBuyerResult] = await Promise.all([
     db.select({
       users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int`,
       newUsers: newUserExpression,
@@ -825,6 +930,33 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.endedAt} IS NULL`, sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`)),
     db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).innerJoin(analyticsSessions, eq(analyticsEvents.sessionId, analyticsSessions.id)).where(eq(analyticsSessions.trafficClass, "HUMAN")).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
     db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...periodSessionConditions)).groupBy(analyticsSessions.trafficClass),
+    db.execute<{ source: string; buyers: number; payments: number }>(sql`
+      SELECT COALESCE(NULLIF(o.analytics_source, ''), 'direct') AS source,
+        COUNT(DISTINCT o.first_party_client_id)::int AS buyers, COUNT(*)::int AS payments
+      FROM orders o WHERE o.status IN (${paidStatuses}) AND o.paid_at IS NOT NULL
+        AND o.first_party_client_id IS NOT NULL
+        AND o.paid_at::timestamptz <= ${bounds.end}::timestamptz
+        ${bounds.start ? sql`AND o.paid_at::timestamptz >= ${bounds.start}::timestamptz` : sql``}
+        AND EXISTS (SELECT 1 FROM analytics_sessions s WHERE s.client_id = o.first_party_client_id
+          AND s.traffic_class = 'HUMAN' AND s.started_at::timestamptz <= o.created_at::timestamptz
+          AND COALESCE(NULLIF(s.source, ''), 'direct') = COALESCE(NULLIF(o.analytics_source, ''), 'direct')
+          ${bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``})
+      GROUP BY COALESCE(NULLIF(o.analytics_source, ''), 'direct')
+    `),
+    db.execute<{ device: string; buyers: number; payments: number }>(sql`
+      SELECT latest.device_type AS device,
+        COUNT(DISTINCT o.first_party_client_id)::int AS buyers, COUNT(*)::int AS payments
+      FROM orders o JOIN LATERAL (
+        SELECT s.device_type FROM analytics_sessions s WHERE s.client_id = o.first_party_client_id
+          AND s.traffic_class = 'HUMAN' AND s.started_at::timestamptz <= o.created_at::timestamptz
+          ${bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``}
+        ORDER BY s.started_at DESC LIMIT 1
+      ) latest ON TRUE
+      WHERE o.status IN (${paidStatuses}) AND o.paid_at IS NOT NULL
+        AND o.paid_at::timestamptz <= ${bounds.end}::timestamptz
+        ${bounds.start ? sql`AND o.paid_at::timestamptz >= ${bounds.start}::timestamptz` : sql``}
+      GROUP BY latest.device_type
+    `),
   ]);
   const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, returningUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
   const bounceRate = Number(summary.sessions) ? Number(summary.bounces) / Number(summary.sessions) * 100 : 0;
@@ -847,8 +979,14 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     const totalConversion = stages[0][1] ? value / stages[0][1] * 100 : 0;
     return `${index + 1}. ${label}: ${value}${index ? ` · шаг ${stepConversion.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% · от визита ${totalConversion.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%` : ""}`;
   }).join("\n");
-  const sourceLines = sourceRows.map((row) => `• ${compactAnalyticsLabel(row.source || "direct", 48)}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
-  const deviceLines = deviceRows.map((row) => `• ${row.device}: ${row.users} польз. · ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
+  const sourceLines = sourceRows.map((row) => {
+    const buyers = sourceBuyerResult.rows.find((item) => item.source === (row.source || "direct"));
+    return `• ${compactAnalyticsLabel(row.source || "direct", 48)}: ${row.users} посет. · ${buyers?.buyers ?? 0} покупат. · ${buyers?.payments ?? 0} оплат · ${row.users ? formatPercentage(percentage(Number(buyers?.buyers || 0), Number(row.users))) : "—"}`;
+  }).join("\n") || "• Данных пока нет";
+  const deviceLines = deviceRows.map((row) => {
+    const buyers = deviceBuyerResult.rows.find((item) => item.device === row.device);
+    return `• ${row.device}: ${row.users} посет. · ${buyers?.buyers ?? 0} покупат. · ${buyers?.payments ?? 0} оплат · ${row.users ? formatPercentage(percentage(Number(buyers?.buyers || 0), Number(row.users))) : "—"}`;
+  }).join("\n") || "• Данных пока нет";
   const exitLines = exitResult.rows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.exits} выходов${Number(row.inferred) ? ` · из них ${row.inferred} по тайм-ауту` : ""}`).join("\n") || "• Данных пока нет";
   const pageTimeLines = pageTimeResult.rows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.views} измеренных просмотров · ср. ${Math.round(Number(row.average_seconds))} сек. в видимой вкладке`).join("\n") || "• Пока нет измеренных просмотров";
   const recentLines = recentEvents.map((row) => `• ${row.name} · ${compactAnalyticsLabel(row.path)} · ${new Date(row.occurredAt).toLocaleTimeString("ru-RU", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" })} UTC`).join("\n") || "• Событий пока нет";
@@ -867,8 +1005,8 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     `Интервал между первым и последним событием: ${Math.round(Number(summary.averageSeconds))} сек./сессию · отказы: ${bounceRate.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`,
     `Активность за 90 секунд: ${realtimeRows[0]?.users ?? 0} польз. · ${realtimeRows[0]?.sessions ?? 0} сесс.`,
     "", "Воронка по уникальным пользователям:", funnelLines,
-    "", "Источники:", sourceLines,
-    "", "Устройства:", deviceLines,
+    "", "Источники (покупатели / посетители):", sourceLines,
+    "", "Устройства (покупатели / посетители):", deviceLines,
     "", "Bot / Fraud:", trafficClassLines,
     "", "Основные страницы выхода:", exitLines,
     "", "Время на страницах:", pageTimeLines,
@@ -2019,7 +2157,19 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "analytics" && action === "products") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first || "") && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendProductAnalytics(db, token, chatId, 0, range); return; }
+    }
     await sendProductAnalytics(db, token, chatId, Number(first));
+    return;
+  }
+  if (scope === "analytics" && action === "vitals") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first || "") && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendWebVitalsAnalytics(db, token, chatId, 0, range); return; }
+    }
+    await sendWebVitalsAnalytics(db, token, chatId, Number(first));
     return;
   }
   if (scope === "analytics" && action === "countries") {
@@ -2031,6 +2181,10 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     return;
   }
   if (scope === "analytics" && action === "csv") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(first || "") && second) {
+      const range = parseAnalyticsDateRange(`${first} | ${second}`);
+      if (range) { await sendAnalyticsCsv(db, token, chatId, adminId, 0, range); return; }
+    }
     await sendAnalyticsCsv(db, token, chatId, adminId, Number(first));
     return;
   }

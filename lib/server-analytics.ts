@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { orderItems, orders, privacyConsentEvents } from "@/db/schema";
 import { allowsAnalytics } from "@/lib/analytics-policy";
@@ -18,7 +18,12 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
 
   const db = getDb();
   const config = statusConfig[status];
-  const [order] = await db.select({
+  // Serialize deliveries for one order/event, including concurrent webhook and retry calls.
+  // A timed-out GA request can still have been received, so this is at-least-once delivery;
+  // transaction_id lets GA deduplicate purchase events where supported.
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ga:${orderId}:${status}`}))`);
+    const [order] = await tx.select({
     id: orders.id,
     orderNumber: orders.orderNumber,
     customerAccountId: orders.customerAccountId,
@@ -27,20 +32,25 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
     totalAmount: orders.totalAmount,
     promoCode: orders.promoCode,
     currency: orders.currency,
+    status: orders.status,
+    paidAt: orders.paidAt,
     sentAt: config.sentAt,
-  }).from(orders).where(eq(orders.id, orderId)).limit(1);
-  if (!order?.analyticsClientId || !order.firstPartyClientId || order.sentAt) return false;
+    }).from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order?.analyticsClientId || !order.firstPartyClientId || order.sentAt) return false;
+    if (status === "PAID" && !order.paidAt) return false;
+    if (status === "CANCELLED" && order.status !== "CANCELLED") return false;
+    if (status === "REFUNDED" && order.status !== "REFUNDED") return false;
 
-  const [latestConsent] = await db.select({
+    const [latestConsent] = await tx.select({
     decision: privacyConsentEvents.decision,
     policyVersion: privacyConsentEvents.policyVersion,
-  }).from(privacyConsentEvents)
+    }).from(privacyConsentEvents)
     .where(eq(privacyConsentEvents.consentId, order.firstPartyClientId))
-    .orderBy(desc(privacyConsentEvents.createdAt))
+    .orderBy(desc(privacyConsentEvents.createdAt), desc(privacyConsentEvents.id))
     .limit(1);
-  if (!allowsAnalytics(latestConsent)) return false;
+    if (!allowsAnalytics(latestConsent)) return false;
 
-  const items = await db.select({
+    const items = await tx.select({
     sku: orderItems.sku,
     productName: orderItems.productName,
     simType: orderItems.simType,
@@ -48,10 +58,10 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
     quantity: orderItems.quantity,
   }).from(orderItems).where(eq(orderItems.orderId, order.id));
 
-  const endpoint = new URL("https://www.google-analytics.com/mp/collect");
-  endpoint.searchParams.set("measurement_id", measurementId);
-  endpoint.searchParams.set("api_secret", apiSecret);
-  const response = await fetch(endpoint, {
+    const endpoint = new URL("https://www.google-analytics.com/mp/collect");
+    endpoint.searchParams.set("measurement_id", measurementId);
+    endpoint.searchParams.set("api_secret", apiSecret);
+    const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -69,13 +79,14 @@ export async function sendOrderAnalytics(orderId: string, status: TrackedStatus)
       }],
     }),
     signal: AbortSignal.timeout(5000),
-  });
-  if (!response.ok) throw new Error(`GA_MEASUREMENT_PROTOCOL_${response.status}`);
+    });
+    if (!response.ok) throw new Error(`GA_MEASUREMENT_PROTOCOL_${response.status}`);
 
-  const now = new Date().toISOString();
-  const value = status === "PAID" ? { analyticsPurchaseSentAt: now }
-    : status === "CANCELLED" ? { analyticsCancellationSentAt: now }
-      : { analyticsRefundSentAt: now };
-  await db.update(orders).set(value).where(and(eq(orders.id, order.id), isNull(config.sentAt)));
-  return true;
+    const now = new Date().toISOString();
+    const value = status === "PAID" ? { analyticsPurchaseSentAt: now }
+      : status === "CANCELLED" ? { analyticsCancellationSentAt: now }
+        : { analyticsRefundSentAt: now };
+    await tx.update(orders).set(value).where(and(eq(orders.id, order.id), isNull(config.sentAt)));
+    return true;
+  });
 }

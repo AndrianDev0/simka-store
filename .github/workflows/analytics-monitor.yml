@@ -1,0 +1,66 @@
+name: Analytics summaries and monitoring
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+    - cron: "19 3 * * *"
+    - cron: "31 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Analytics task"
+        required: true
+        type: choice
+        options:
+          - hourly
+          - daily
+          - weekly
+
+permissions:
+  contents: read
+
+jobs:
+  hourly:
+    if: github.event.schedule == '37 * * * *' || (github.event_name == 'workflow_dispatch' && inputs.task == 'hourly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Retry GA events and check anomalies
+        env:
+          BACKUP_CRON_SECRET: ${{ secrets.BACKUP_CRON_SECRET }}
+        run: |
+          test -n "$BACKUP_CRON_SECRET"
+          curl --fail-with-body --silent --show-error --max-time 600 \
+            --retry 2 --retry-delay 10 --request POST \
+            --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
+            'https://simka-store.onrender.com/api/operations/analytics?task=hourly'
+
+  daily:
+    if: github.event.schedule == '19 3 * * *' || (github.event_name == 'workflow_dispatch' && inputs.task == 'daily')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Send previous-day Telegram report
+        env:
+          BACKUP_CRON_SECRET: ${{ secrets.BACKUP_CRON_SECRET }}
+        run: |
+          test -n "$BACKUP_CRON_SECRET"
+          curl --fail-with-body --silent --show-error --max-time 300 \
+            --retry 2 --retry-delay 10 --request POST \
+            --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
+            'https://simka-store.onrender.com/api/operations/analytics?task=daily'
+
+  weekly:
+    if: github.event.schedule == '31 3 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.task == 'weekly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Send previous-week Telegram report
+        env:
+          BACKUP_CRON_SECRET: ${{ secrets.BACKUP_CRON_SECRET }}
+        run: |
+          test -n "$BACKUP_CRON_SECRET"
+          curl --fail-with-body --silent --show-error --max-time 300 \
+            --retry 2 --retry-delay 10 --request POST \
+            --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
+            'https://simka-store.onrender.com/api/operations/analytics?task=weekly'
