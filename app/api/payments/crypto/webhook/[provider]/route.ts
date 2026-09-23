@@ -38,7 +38,7 @@ async function notifyManagers(text: string, orderNumber: string) {
 }
 
 function positiveDecimal(value: string) {
-  return BigInt(value.replace(".", "")) > 0n;
+  return BigInt(value.replace(".", "")) > BigInt(0);
 }
 
 export async function POST(request: Request, context: { params: Promise<{ provider: string }> }) {
