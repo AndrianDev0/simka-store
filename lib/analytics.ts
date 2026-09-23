@@ -1,4 +1,5 @@
 import { ANALYTICS_POLICY_VERSION } from "@/lib/analytics-policy";
+import { shouldRotateAnalyticsClientId } from "@/lib/analytics-identity";
 import { reusableAnalyticsSession, resolveLandingAttribution, type AnalyticsAttribution } from "@/lib/analytics-attribution";
 
 export type AnalyticsItem = {
@@ -33,6 +34,7 @@ export { ANALYTICS_POLICY_VERSION } from "@/lib/analytics-policy";
 export const ANALYTICS_READY_EVENT = "simka-analytics-ready";
 const ANALYTICS_SESSION_KEY = "simka-analytics-session";
 const ANALYTICS_ATTRIBUTION_KEY = "simka-analytics-attribution";
+const ANALYTICS_IDENTITY_BOUNDARY_KEY = "simka-analytics-identity-boundary";
 const SESSION_TIMEOUT_MS = 30 * 60_000;
 
 const gaMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim() || "";
@@ -70,6 +72,34 @@ export function getAnalyticsClientId() {
 }
 
 let activeAnalyticsSession: { id: string; attribution: AnalyticsAttribution; lastSeen: number } | null = null;
+let activeAnalyticsClientId: string | null = null;
+
+export function syncAnalyticsIdentity() {
+  try {
+    const boundary = document.cookie.split(";").map((part) => part.trim())
+      .find((part) => part.startsWith("simka_analytics_identity="))?.slice("simka_analytics_identity=".length) || "guest";
+    const previous = window.localStorage.getItem(ANALYTICS_IDENTITY_BOUNDARY_KEY);
+    if (previous === boundary) return false;
+    window.localStorage.setItem(ANALYTICS_IDENTITY_BOUNDARY_KEY, boundary);
+    if (!shouldRotateAnalyticsClientId(previous, boundary)) return false;
+    window.localStorage.setItem(ANALYTICS_CONSENT_ID_KEY, crypto.randomUUID());
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith("simka-analytics-event:") || key.startsWith("simka-analytics-purchase:") || key === ANALYTICS_ATTRIBUTION_KEY) {
+        window.localStorage.removeItem(key);
+      }
+    }
+    window.sessionStorage.removeItem(ANALYTICS_SESSION_KEY);
+    activeAnalyticsSession = null;
+    activeAnalyticsClientId = null;
+    for (const cookie of document.cookie.split(";")) {
+      const name = cookie.split("=", 1)[0]?.trim();
+      if (!name || !/^(?:_ga(?:_|$)|_gid$|_gat(?:_|$)|_ym_|yandexuid$)/.test(name)) continue;
+      document.cookie = `${name}=; Max-Age=0; path=/; SameSite=Lax`;
+      document.cookie = `${name}=; Max-Age=0; path=/; domain=${window.location.hostname}; SameSite=Lax`;
+    }
+    return true;
+  } catch { return false; }
+}
 
 function analyticsSession() {
   const now = Date.now();
@@ -105,6 +135,11 @@ function analyticsSession() {
 function trackFirstParty(name: string, params: AnalyticsParams, path = window.location.pathname, options: { beacon?: boolean; eventId?: string } = {}) {
   const clientId = getAnalyticsClientId();
   if (!clientId) return false;
+  if (activeAnalyticsClientId && activeAnalyticsClientId !== clientId) {
+    activeAnalyticsSession = null;
+    try { window.sessionStorage.removeItem(ANALYTICS_SESSION_KEY); } catch { /* Best effort. */ }
+  }
+  activeAnalyticsClientId = clientId;
   const session = analyticsSession();
   const connection = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection;
   const body = {

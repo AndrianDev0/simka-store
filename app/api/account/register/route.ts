@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { customerAccounts } from "@/db/schema";
 import { getDb } from "@/db";
-import { createSession, hashPassword, sameOrigin, setSessionCookie, validatePassword } from "@/lib/customer-auth";
+import { createSession, hashPassword, sameOrigin, setAnalyticsIdentityCookie, setSessionCookie, validatePassword } from "@/lib/customer-auth";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { getEmailValidationError } from "@/lib/email-validation";
 import { absoluteUrl } from "@/lib/seo";
@@ -46,6 +46,7 @@ export async function POST(request: Request) {
     if (!delivery.delivered) console.warn("customer_welcome_email_not_delivered", { reason: delivery.reason });
     const response = redirect("/account?analytics=sign_up");
     setSessionCookie(response, await createSession(account.id));
+    setAnalyticsIdentityCookie(response, "account");
     return response;
   } catch (error) {
     console.error("customer_register_failed", { name: error instanceof Error ? error.name : "UnknownError" });

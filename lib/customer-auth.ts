@@ -10,6 +10,7 @@ export { hashPassword, passwordHashNeedsUpgrade, validatePassword, verifyPasswor
 
 export const CUSTOMER_SESSION_COOKIE = "simka_customer_session";
 export const CUSTOMER_SESSION_MAX_AGE = 60 * 60 * 24 * 30;
+export const ANALYTICS_IDENTITY_COOKIE = "simka_analytics_identity";
 
 export type CustomerAccount = {
   id: string;
@@ -86,6 +87,16 @@ export function clearSessionCookie(response: NextResponse) {
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 0,
+  });
+}
+
+export function setAnalyticsIdentityCookie(response: NextResponse, identity: "account" | "account-switch" | "guest") {
+  response.cookies.set(ANALYTICS_IDENTITY_COOKIE, `${identity}-${randomUUID()}`, {
+    httpOnly: false,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: CUSTOMER_SESSION_MAX_AGE,
   });
 }
 

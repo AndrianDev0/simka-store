@@ -1,7 +1,7 @@
-import { asc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { analyticsEvents, analyticsSessions, analyticsVisitors, cryptoPayments, customerAccounts, customerSessions, orderItems, orders, privacyConsentEvents } from "@/db/schema";
-import { collectAccountAnalyticsClientIds } from "@/lib/account-data-export";
+import { collectAccountAnalyticsClientIds, exclusivelyOwnedAnalyticsClientIds } from "@/lib/account-data-export";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -89,28 +89,53 @@ export async function GET(request: Request) {
   }).from(cryptoPayments).where(inArray(cryptoPayments.orderId, orderIds)) : [];
   const sessions = await db.select({ createdAt: customerSessions.createdAt, lastUsedAt: customerSessions.lastUsedAt, expiresAt: customerSessions.expiresAt })
     .from(customerSessions).where(eq(customerSessions.accountId, account.id)).orderBy(asc(customerSessions.createdAt));
-  const consentHistory = await db.select({
-    consentId: privacyConsentEvents.consentId,
-    decision: privacyConsentEvents.decision,
-    source: privacyConsentEvents.source,
-    policyVersion: privacyConsentEvents.policyVersion,
-    createdAt: privacyConsentEvents.createdAt,
-  }).from(privacyConsentEvents).where(eq(privacyConsentEvents.accountId, account.id)).orderBy(asc(privacyConsentEvents.createdAt));
-  const referencedClientIds = collectAccountAnalyticsClientIds([], consentHistory, accountOrders);
-  const analyticsVisitorRows = await db.select().from(analyticsVisitors).where(referencedClientIds.length
-    ? or(eq(analyticsVisitors.accountId, account.id), inArray(analyticsVisitors.clientId, referencedClientIds))
-    : eq(analyticsVisitors.accountId, account.id)).orderBy(asc(analyticsVisitors.firstSeenAt));
-  const analyticsClientIds = collectAccountAnalyticsClientIds(analyticsVisitorRows, consentHistory, accountOrders);
-  const analyticsSessionRows = analyticsClientIds.length
-    ? await db.select().from(analyticsSessions).where(inArray(analyticsSessions.clientId, analyticsClientIds)).orderBy(asc(analyticsSessions.startedAt))
-    : [];
-  const analyticsEventRows = await db.select({
-    id: analyticsEvents.id, sessionId: analyticsEvents.sessionId, clientId: analyticsEvents.clientId,
-    name: analyticsEvents.name, path: analyticsEvents.path, params: analyticsEvents.params,
-    occurredAt: analyticsEvents.occurredAt,
-  }).from(analyticsEvents).where(analyticsClientIds.length
-    ? or(eq(analyticsEvents.accountId, account.id), inArray(analyticsEvents.clientId, analyticsClientIds))
-    : eq(analyticsEvents.accountId, account.id)).orderBy(asc(analyticsEvents.occurredAt));
+  const { consentHistory, analyticsVisitorRows, analyticsSessionRows, analyticsEventRows } = await db.transaction(async (tx) => {
+    const consentHistory = await tx.select({
+      consentId: privacyConsentEvents.consentId,
+      decision: privacyConsentEvents.decision,
+      source: privacyConsentEvents.source,
+      policyVersion: privacyConsentEvents.policyVersion,
+      createdAt: privacyConsentEvents.createdAt,
+    }).from(privacyConsentEvents).where(eq(privacyConsentEvents.accountId, account.id)).orderBy(asc(privacyConsentEvents.createdAt));
+    const [ownedVisitors, ownedEvents] = await Promise.all([
+      tx.select({ clientId: analyticsVisitors.clientId }).from(analyticsVisitors).where(eq(analyticsVisitors.accountId, account.id)),
+      tx.selectDistinct({ clientId: analyticsEvents.clientId }).from(analyticsEvents).where(eq(analyticsEvents.accountId, account.id)),
+    ]);
+    const candidateClientIds = [...new Set([
+      ...collectAccountAnalyticsClientIds(ownedVisitors, consentHistory, accountOrders),
+      ...ownedEvents.map((event) => event.clientId),
+    ])];
+    const [foreignVisitors, foreignEvents, foreignConsents, foreignOrders] = candidateClientIds.length
+      ? await Promise.all([
+        tx.select({ clientId: analyticsVisitors.clientId, accountId: analyticsVisitors.accountId }).from(analyticsVisitors)
+          .where(inArray(analyticsVisitors.clientId, candidateClientIds)),
+        tx.selectDistinct({ clientId: analyticsEvents.clientId, accountId: analyticsEvents.accountId }).from(analyticsEvents)
+          .where(inArray(analyticsEvents.clientId, candidateClientIds)),
+        tx.selectDistinct({ clientId: privacyConsentEvents.consentId, accountId: privacyConsentEvents.accountId }).from(privacyConsentEvents)
+          .where(inArray(privacyConsentEvents.consentId, candidateClientIds)),
+        tx.selectDistinct({ clientId: orders.firstPartyClientId, accountId: orders.customerAccountId }).from(orders)
+          .where(inArray(orders.firstPartyClientId, candidateClientIds)),
+      ])
+      : [[], [], [], []];
+    const analyticsClientIds = exclusivelyOwnedAnalyticsClientIds(account.id, candidateClientIds, [
+      ...foreignVisitors, ...foreignEvents, ...foreignConsents,
+      ...foreignOrders.filter((order): order is { clientId: string; accountId: string | null } => order.clientId !== null),
+    ]);
+    const analyticsVisitorRows = analyticsClientIds.length
+      ? await tx.select().from(analyticsVisitors).where(inArray(analyticsVisitors.clientId, analyticsClientIds)).orderBy(asc(analyticsVisitors.firstSeenAt))
+      : [];
+    const analyticsSessionRows = analyticsClientIds.length
+      ? await tx.select().from(analyticsSessions).where(inArray(analyticsSessions.clientId, analyticsClientIds)).orderBy(asc(analyticsSessions.startedAt))
+      : [];
+    const analyticsEventRows = await tx.select({
+      id: analyticsEvents.id, sessionId: analyticsEvents.sessionId, clientId: analyticsEvents.clientId,
+      name: analyticsEvents.name, path: analyticsEvents.path, params: analyticsEvents.params,
+      occurredAt: analyticsEvents.occurredAt,
+    }).from(analyticsEvents).where(analyticsClientIds.length
+      ? or(eq(analyticsEvents.accountId, account.id), and(isNull(analyticsEvents.accountId), inArray(analyticsEvents.clientId, analyticsClientIds)))
+      : eq(analyticsEvents.accountId, account.id)).orderBy(asc(analyticsEvents.occurredAt));
+    return { consentHistory, analyticsVisitorRows, analyticsSessionRows, analyticsEventRows };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 
   const payload = {
     exportedAt: new Date().toISOString(),

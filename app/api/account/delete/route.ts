@@ -2,7 +2,7 @@ import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getDb } from "@/db";
 import { analyticsEvents, analyticsVisitors, customerAccounts, orderItems, orders } from "@/db/schema";
-import { clearSessionCookie, getCurrentAccount, sameOrigin, verifyPassword } from "@/lib/customer-auth";
+import { clearSessionCookie, getCurrentAccount, sameOrigin, setAnalyticsIdentityCookie, verifyPassword } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 import { recordOperationalEvent } from "@/lib/operational-events";
@@ -73,5 +73,6 @@ export async function POST(request: Request) {
 
   const response = redirect("/account/login?deleted=1");
   clearSessionCookie(response);
+  setAnalyticsIdentityCookie(response, "guest");
   return response;
 }

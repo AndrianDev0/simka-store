@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { CUSTOMER_SESSION_COOKIE, clearSessionCookie, destroySession, sameOrigin } from "@/lib/customer-auth";
+import { CUSTOMER_SESSION_COOKIE, clearSessionCookie, destroySession, sameOrigin, setAnalyticsIdentityCookie } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 
@@ -12,5 +12,6 @@ export async function POST(request: Request) {
   await destroySession(cookieStore.get(CUSTOMER_SESSION_COOKIE)?.value);
   const response = NextResponse.redirect(absoluteUrl("/"), 303);
   clearSessionCookie(response);
+  setAnalyticsIdentityCookie(response, "guest");
   return response;
 }

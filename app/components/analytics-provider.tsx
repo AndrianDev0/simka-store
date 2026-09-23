@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { useReportWebVitals } from "next/web-vitals";
-import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, trackEvent, trackPageExit, trackPageView } from "@/lib/analytics";
+import { ANALYTICS_CONSENT_ID_KEY, ANALYTICS_CONSENT_KEY, ANALYTICS_CONSENT_VERSION_KEY, ANALYTICS_POLICY_VERSION, ANALYTICS_READY_EVENT, analyticsConfig, syncAnalyticsIdentity, trackEvent, trackPageExit, trackPageView } from "@/lib/analytics";
 import { reportTechnicalEvent } from "@/lib/client-telemetry";
 import { preserveWebVitalValue } from "@/lib/first-party-analytics";
 
@@ -101,11 +101,23 @@ export function AnalyticsProvider() {
   const pathname = usePathname();
   const consent = useSyncExternalStore(subscribeToConsent, consentSnapshot, () => "declined");
   const choosingConsent = useRef(false);
+  const identityCheckStarted = useRef(false);
+  const [identityReady, setIdentityReady] = useState(false);
   const activePage = useRef({ path: "/", startedAt: 0, eventId: "", exitSent: false });
 
+  useEffect(() => {
+    if (identityCheckStarted.current) return;
+    identityCheckStarted.current = true;
+    const rotated = syncAnalyticsIdentity();
+    void (rotated && consentSnapshot() === "accepted"
+      ? recordConsent("accepted", "settings")
+      : Promise.resolve()).finally(() => setIdentityReady(true));
+  }, []);
+
   useReportWebVitals(useCallback((metric) => {
+    if (!identityReady) return;
     trackEvent("web_vital", { metric_name: metric.name, metric_id: metric.id, metric_rating: metric.rating, value: preserveWebVitalValue(metric.value) });
-  }, []));
+  }, [identityReady]));
 
   useEffect(() => {
     const onError = () => reportTechnicalEvent({ kind: "window_error", area: "window" });
@@ -119,26 +131,26 @@ export function AnalyticsProvider() {
   }, []);
 
   useEffect(() => {
-    if (consent !== "accepted" || window.__simkaAnalyticsInitialised) return;
+    if (!identityReady || consent !== "accepted" || window.__simkaAnalyticsInitialised) return;
     const { gaMeasurementId, yandexMetrikaId, plausibleDomain } = analyticsConfig();
     if (gaMeasurementId) initialiseGoogleAnalytics(gaMeasurementId);
     if (yandexMetrikaId) initialiseYandexMetrika(yandexMetrikaId);
     if (plausibleDomain) initialisePlausible(plausibleDomain);
     window.__simkaAnalyticsInitialised = Boolean(gaMeasurementId || yandexMetrikaId || plausibleDomain);
     if (window.__simkaAnalyticsInitialised) window.dispatchEvent(new Event(ANALYTICS_READY_EVENT));
-  }, [consent]);
+  }, [consent, identityReady]);
 
   useEffect(() => {
-    if (consent === "accepted" && pathname) trackPageView(pathname);
-  }, [consent, pathname]);
+    if (identityReady && consent === "accepted" && pathname) trackPageView(pathname);
+  }, [consent, identityReady, pathname]);
 
   useEffect(() => {
-    if (consent !== "accepted" || !pathname) return;
+    if (!identityReady || consent !== "accepted" || !pathname) return;
     activePage.current = { path: pathname, startedAt: Date.now(), eventId: crypto.randomUUID(), exitSent: false };
-  }, [consent, pathname]);
+  }, [consent, identityReady, pathname]);
 
   useEffect(() => {
-    if (consent !== "accepted") return;
+    if (!identityReady || consent !== "accepted") return;
     const sendExit = () => {
       const page = activePage.current;
       if (!page.eventId || page.exitSent) return;
@@ -157,10 +169,10 @@ export function AnalyticsProvider() {
       window.removeEventListener("pagehide", sendExit);
       window.removeEventListener("pageshow", restorePage);
     };
-  }, [consent]);
+  }, [consent, identityReady]);
 
   useEffect(() => {
-    if (consent !== "accepted") return;
+    if (!identityReady || consent !== "accepted") return;
     const url = new URL(window.location.href);
     const partnerId = url.searchParams.get("partner") || url.searchParams.get("ref") || url.searchParams.get("partner_id");
     if (!partnerId) return;
@@ -180,20 +192,20 @@ export function AnalyticsProvider() {
       window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
       trackEvent("partner_referral", { partner_id: partnerId.toUpperCase() });
     }).catch(() => undefined);
-  }, [consent, pathname]);
+  }, [consent, identityReady, pathname]);
 
   useEffect(() => {
-    if (consent !== "accepted") return;
+    if (!identityReady || consent !== "accepted") return;
     const url = new URL(window.location.href);
     const event = url.searchParams.get("analytics");
     if (!event || !["login", "sign_up", "password_reset"].includes(event)) return;
     trackEvent(event, { method: "email" });
     url.searchParams.delete("analytics");
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-  }, [consent]);
+  }, [consent, identityReady]);
 
   useEffect(() => {
-    if (consent !== "accepted") return;
+    if (!identityReady || consent !== "accepted") return;
     const onClick = (event: MouseEvent) => {
       const anchor = (event.target as Element | null)?.closest("a");
       if (!anchor) return;
@@ -206,10 +218,10 @@ export function AnalyticsProvider() {
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
-  }, [consent]);
+  }, [consent, identityReady]);
 
   useEffect(() => {
-    if (consent !== "accepted") return;
+    if (!identityReady || consent !== "accepted") return;
     const onError = () => trackEvent("exception", { fatal: false, error_area: "window" });
     const onUnhandledRejection = () => trackEvent("exception", { fatal: false, error_area: "unhandled_promise" });
     window.addEventListener("error", onError);
@@ -218,7 +230,7 @@ export function AnalyticsProvider() {
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
     };
-  }, [consent]);
+  }, [consent, identityReady]);
 
   const choose = async (next: Exclude<Consent, null>) => {
     if (choosingConsent.current) return;

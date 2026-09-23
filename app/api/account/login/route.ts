@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { customerAccounts } from "@/db/schema";
 import { getDb } from "@/db";
-import { createSession, hashPassword, passwordHashNeedsUpgrade, sameOrigin, setSessionCookie, verifyPasswordWithFallback } from "@/lib/customer-auth";
+import { createSession, getCurrentAccount, hashPassword, passwordHashNeedsUpgrade, sameOrigin, setAnalyticsIdentityCookie, setSessionCookie, verifyPasswordWithFallback } from "@/lib/customer-auth";
 import { absoluteUrl } from "@/lib/seo";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 import { safeAccountReturnPath } from "@/lib/account-return";
@@ -34,8 +34,10 @@ export async function POST(request: Request) {
     if (passwordHashNeedsUpgrade(account.passwordHash)) {
       await getDb().update(customerAccounts).set({ passwordHash: await hashPassword(password) }).where(eq(customerAccounts.id, account.id));
     }
+    const previousAccount = await getCurrentAccount();
     const response = redirect(withAnalytics(safeReturn, "login"));
     setSessionCookie(response, await createSession(account.id));
+    setAnalyticsIdentityCookie(response, previousAccount && previousAccount.id !== account.id ? "account-switch" : "account");
     return response;
   } catch (error) {
     console.error("customer_login_failed", { name: error instanceof Error ? error.name : "UnknownError" });
