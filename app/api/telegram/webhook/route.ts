@@ -715,7 +715,14 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const [summaryRows, sourceRows, deviceRows, exitRows, orderedFunnelResult, realtimeRows, recentEvents, trafficClassRows] = await Promise.all([
     db.select({
       users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int`,
-      newUsers: newUserExpression, pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
+      newUsers: newUserExpression,
+      returningUsers: sql<number>`COUNT(DISTINCT CASE WHEN EXISTS (
+        SELECT 1 FROM analytics_sessions previous
+        WHERE previous.client_id = ${analyticsSessions.clientId}
+          AND previous.id <> ${analyticsSessions.id}
+          AND previous.started_at::timestamptz <= ${analyticsSessions.startedAt}::timestamptz
+      ) THEN ${analyticsSessions.clientId} END)::int`,
+      pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
       averageDepth: sql<number>`COALESCE(AVG(${analyticsSessions.pageViews}), 0)::float`,
       averageSeconds: sql<number>`COALESCE(AVG(GREATEST(0, LEAST(86400, EXTRACT(EPOCH FROM (${analyticsSessions.lastSeenAt}::timestamptz - ${analyticsSessions.startedAt}::timestamptz)))), 0)::float`,
       bounces: sql<number>`COUNT(*) FILTER (WHERE ${analyticsSessions.pageViews} <= 1)::int`,
@@ -775,8 +782,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
     db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.trafficClass),
   ]);
-  const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
-  const returningUsers = Math.max(0, Number(summary.users) - Number(summary.newUsers));
+  const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, returningUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
   const bounceRate = Number(summary.sessions) ? Number(summary.bounces) / Number(summary.sessions) * 100 : 0;
   const rawFunnel = orderedFunnelResult.rows[0];
   const funnel = monotonicFunnelCounts({
@@ -810,7 +816,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const period = customRange ? `за ${formatAnalyticsDateRange(customRange)}` : analyticsPeriod(bounds.days);
   await sendMessage(token, chatId, [
     `👥 Трафик и воронка ${period}`, "",
-    `Пользователи: ${summary.users} · новые: ${summary.newUsers} · возвращающиеся: ${returningUsers}`,
+    `Пользователи: ${summary.users} · новые: ${summary.newUsers} · возвращающиеся: ${summary.returningUsers}`,
     `Сессии: ${summary.sessions} · просмотры: ${summary.pageViews}`,
     `Глубина: ${Number(summary.averageDepth).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} стр./сессию`,
     `Средняя сессия: ${Math.round(Number(summary.averageSeconds))} сек. · отказы: ${bounceRate.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`,
