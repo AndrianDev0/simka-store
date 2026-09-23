@@ -700,14 +700,22 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   const bounds = buildAnalyticsPeriodBounds(days, new Date(), customRange);
   const sessionTime = sql`${analyticsSessions.startedAt}::timestamptz`;
   const exitTime = sql`${analyticsSessions.endedAt}::timestamptz`;
-  const sessionConditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
-  const exitConditions = [sql`${analyticsSessions.endedAt} IS NOT NULL`, sql`${exitTime} <= ${bounds.end}::timestamptz`];
+  const periodSessionConditions = [sql`${sessionTime} <= ${bounds.end}::timestamptz`];
+  const sessionConditions = [eq(analyticsSessions.trafficClass, "HUMAN"), ...periodSessionConditions];
+  const exitConditions = [eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.endedAt} IS NOT NULL`, sql`${exitTime} <= ${bounds.end}::timestamptz`];
   if (bounds.start) {
-    sessionConditions.push(sql`${sessionTime} >= ${bounds.start}::timestamptz`);
+    const startCondition = sql`${sessionTime} >= ${bounds.start}::timestamptz`;
+    periodSessionConditions.push(startCondition);
+    sessionConditions.push(startCondition);
     exitConditions.push(sql`${exitTime} >= ${bounds.start}::timestamptz`);
   }
   const newUserExpression = bounds.start
-    ? sql<number>`COUNT(DISTINCT CASE WHEN ${analyticsVisitors.firstSeenAt}::timestamptz >= ${bounds.start}::timestamptz THEN ${analyticsSessions.clientId} END)::int`
+    ? sql<number>`COUNT(DISTINCT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM analytics_sessions previous
+        WHERE previous.client_id = ${analyticsSessions.clientId}
+          AND previous.traffic_class = 'HUMAN'
+          AND (previous.started_at::timestamptz, previous.id) < (${analyticsSessions.startedAt}::timestamptz, ${analyticsSessions.id})
+      ) THEN ${analyticsSessions.clientId} END)::int`
     : sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`;
   const realtimeBoundary = new Date(Date.now() - 5 * 60_000).toISOString();
   const funnelStart = bounds.start ? sql`AND s.started_at::timestamptz >= ${bounds.start}::timestamptz` : sql``;
@@ -719,8 +727,8 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
       returningUsers: sql<number>`COUNT(DISTINCT CASE WHEN EXISTS (
         SELECT 1 FROM analytics_sessions previous
         WHERE previous.client_id = ${analyticsSessions.clientId}
-          AND previous.id <> ${analyticsSessions.id}
-          AND previous.started_at::timestamptz <= ${analyticsSessions.startedAt}::timestamptz
+          AND previous.traffic_class = 'HUMAN'
+          AND (previous.started_at::timestamptz, previous.id) < (${analyticsSessions.startedAt}::timestamptz, ${analyticsSessions.id})
       ) THEN ${analyticsSessions.clientId} END)::int`,
       pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
       averageDepth: sql<number>`COALESCE(AVG(${analyticsSessions.pageViews}), 0)::float`,
@@ -736,24 +744,27 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
       WITH visits AS (
         SELECT s.client_id, MIN(s.started_at::timestamptz) AS visit_at
         FROM analytics_sessions s
-        WHERE s.started_at::timestamptz <= ${bounds.end}::timestamptz ${funnelStart}
+        WHERE s.traffic_class = 'HUMAN' AND s.started_at::timestamptz <= ${bounds.end}::timestamptz ${funnelStart}
         GROUP BY s.client_id
       ), viewed AS (
         SELECT v.*, (
           SELECT MIN(e.occurred_at::timestamptz) FROM analytics_events e
           WHERE e.client_id = v.client_id AND e.name = 'view_item'
+            AND EXISTS (SELECT 1 FROM analytics_sessions es WHERE es.id = e.session_id AND es.traffic_class = 'HUMAN')
             AND e.occurred_at::timestamptz >= v.visit_at AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
         ) AS product_view_at FROM visits v
       ), carted AS (
         SELECT v.*, (
           SELECT MIN(e.occurred_at::timestamptz) FROM analytics_events e
           WHERE v.product_view_at IS NOT NULL AND e.client_id = v.client_id AND e.name = 'add_to_cart'
+            AND EXISTS (SELECT 1 FROM analytics_sessions es WHERE es.id = e.session_id AND es.traffic_class = 'HUMAN')
             AND e.occurred_at::timestamptz >= v.product_view_at AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
         ) AS cart_at FROM viewed v
       ), checked AS (
         SELECT c.*, (
           SELECT MIN(e.occurred_at::timestamptz) FROM analytics_events e
           WHERE c.cart_at IS NOT NULL AND e.client_id = c.client_id AND e.name = 'begin_checkout'
+            AND EXISTS (SELECT 1 FROM analytics_sessions es WHERE es.id = e.session_id AND es.traffic_class = 'HUMAN')
             AND e.occurred_at::timestamptz >= c.cart_at AND e.occurred_at::timestamptz <= ${bounds.end}::timestamptz
         ) AS checkout_at FROM carted c
       ), completed AS (
@@ -778,9 +789,9 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
         COUNT(*) FILTER (WHERE paid)::int AS payments
       FROM completed
     `),
-    db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`),
-    db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
-    db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.trafficClass),
+    db.select({ users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.lastSeenAt}::timestamptz >= ${realtimeBoundary}::timestamptz`)),
+    db.select({ name: analyticsEvents.name, path: analyticsEvents.path, occurredAt: analyticsEvents.occurredAt }).from(analyticsEvents).innerJoin(analyticsSessions, eq(analyticsEvents.sessionId, analyticsSessions.id)).where(eq(analyticsSessions.trafficClass, "HUMAN")).orderBy(desc(analyticsEvents.occurredAt)).limit(8),
+    db.select({ trafficClass: analyticsSessions.trafficClass, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...periodSessionConditions)).groupBy(analyticsSessions.trafficClass),
   ]);
   const summary = summaryRows[0] || { users: 0, sessions: 0, newUsers: 0, returningUsers: 0, pageViews: 0, averageDepth: 0, averageSeconds: 0, bounces: 0 };
   const bounceRate = Number(summary.sessions) ? Number(summary.bounces) / Number(summary.sessions) * 100 : 0;
@@ -827,7 +838,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     "", "Bot / Fraud:", trafficClassLines,
     "", "Основные страницы выхода:", exitLines,
     "", "Последние события:", recentLines,
-    "", "Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
+    "", "Основные показатели — только Human; Bot и Suspicious показаны отдельно. Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
   ].join("\n"), trafficKeyboard(bounds.days, customRange));
 }
 
@@ -929,7 +940,7 @@ async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: str
   const sessions = clientIds.length ? await db.select({
     clientId: analyticsSessions.clientId, source: analyticsSessions.source, medium: analyticsSessions.medium, campaign: analyticsSessions.campaign,
     occurredAt: analyticsSessions.startedAt,
-  }).from(analyticsSessions).where(and(inArray(analyticsSessions.clientId, clientIds), sql`${analyticsSessions.startedAt}::timestamptz <= ${bounds.end}::timestamptz`)).orderBy(asc(analyticsSessions.startedAt)) : [];
+  }).from(analyticsSessions).where(and(inArray(analyticsSessions.clientId, clientIds), eq(analyticsSessions.trafficClass, "HUMAN"), sql`${analyticsSessions.startedAt}::timestamptz <= ${bounds.end}::timestamptz`)).orderBy(asc(analyticsSessions.startedAt)) : [];
   const sessionsByClient = new Map<string, typeof sessions>();
   for (const session of sessions) {
     const current = sessionsByClient.get(session.clientId) || [];
