@@ -3,3 +3,5 @@
 @media(max-width:900px){.desktop-nav,.account-link{display:none}.menu-button{display:block}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.filter-panel{grid-template-columns:repeat(2,minmax(0,1fr))}.hero{grid-template-columns:1fr}.hero-art{display:none}.footer-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:560px){.shell{width:min(100% - 28px,1240px)}.header-inner{min-height:64px;gap:8px}.brand{font-size:19px}.brand-mark{width:36px;height:36px}.header-actions{gap:6px}.cart-button{padding:10px}.hero{padding:45px 0}.hero p{font-size:16px}.grid,.detail-layout,.info-grid{grid-template-columns:1fr}.filter-panel{grid-template-columns:1fr}.footer-grid{grid-template-columns:1fr 1fr;gap:28px}.section{padding:40px 0}.detail-visual{min-height:260px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.hero-art{min-width:0}
+.sim-card:nth-child(2){transform:translate(60px,36px) rotate(9deg)}
