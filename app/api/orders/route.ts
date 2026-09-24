@@ -13,6 +13,7 @@ import { evaluatePromoCode, isValidPromoCodeFormat, normalizePromoCode } from "@
 import { consumeRateLimit, tooManyRequests } from "@/lib/rate-limit";
 import { resolveTelegramRole, telegramRoleCan } from "@/lib/telegram-rbac";
 import { partnerCodeFromRequest } from "@/lib/partner-attribution";
+import { PAGES_ORIGIN, pagesCors, pagesPreflight } from "@/lib/pages-cors";
 
 const payloadSchema = z.object({
   requestId: z.string().uuid(),
@@ -54,6 +55,7 @@ function isAllowedOrigin(request: Request, origin: string) {
     const originUrl = new URL(origin);
     const requestUrl = new URL(request.url);
     if (originUrl.origin === requestUrl.origin) return true;
+    if (originUrl.origin === PAGES_ORIGIN) return true;
 
     const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
     const host = (forwardedHost || request.headers.get("host") || "").toLowerCase();
@@ -170,7 +172,7 @@ async function notifyCustomer(order: {
   });
 }
 
-export async function POST(request: Request) {
+async function createOrder(request: Request) {
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 20_000) return Response.json({ error: "Слишком большой запрос" }, { status: 413 });
 
@@ -418,4 +420,12 @@ export async function POST(request: Request) {
     await recordOperationalEvent({ kind: "api_error", severity: "critical", area: "checkout", path: "/api/orders", code: "order_creation_failed" });
     return Response.json({ error: "Не удалось создать заказ. Попробуйте ещё раз." }, { status: 500 });
   }
+}
+
+export async function POST(request: Request) {
+  return pagesCors(await createOrder(request), request);
+}
+
+export async function OPTIONS(request: Request) {
+  return pagesPreflight(request);
 }
