@@ -14,7 +14,8 @@ export function absoluteUrl(value = "/") {
 }
 
 function brandedTitle(title: string) {
-  return title.toLocaleUpperCase("ru-RU").includes(SITE_NAME) ? title : `${title} — ${SITE_NAME}`;
+  const normalized = title.replace(/[\u2013\u2014]/g, "-");
+  return normalized.toLocaleUpperCase("ru-RU").includes(SITE_NAME) ? normalized : `${normalized} - ${SITE_NAME}`;
 }
 
 export function pageMetadata({
@@ -43,13 +44,14 @@ export function pageMetadata({
   const resolvedTitle = brandedTitle(title);
   const resolvedCanonical = absoluteUrl(canonical || path);
   const resolvedImage = absoluteUrl(image || "/opengraph-image");
-  const openGraphImage = { url: resolvedImage, alt: imageAlt || resolvedTitle, ...(!image ? { width: 1200, height: 630 } : {}) };
-  const resolvedSocialTitle = socialTitle || resolvedTitle;
-  const resolvedSocialDescription = socialDescription || description;
+  const openGraphImage = { url: resolvedImage, alt: (imageAlt || resolvedTitle).replace(/[\u2013\u2014]/g, "-"), ...(!image ? { width: 1200, height: 630 } : {}) };
+  const resolvedSocialTitle = (socialTitle || resolvedTitle).replace(/[\u2013\u2014]/g, "-");
+  const resolvedDescription = description.replace(/[\u2013\u2014]/g, "-");
+  const resolvedSocialDescription = (socialDescription || resolvedDescription).replace(/[\u2013\u2014]/g, "-");
 
   return {
     title: resolvedTitle,
-    description,
+    description: resolvedDescription,
     alternates: { canonical: resolvedCanonical },
     robots: {
       index: !noindex,

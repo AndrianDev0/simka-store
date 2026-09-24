@@ -589,8 +589,8 @@ async function sendProductAnalytics(db: ReturnType<typeof getDb>, token: string,
   for (const row of eventResult.rows) if (!orderSkus.has(row.sku)) merged.push({ sku: row.sku, name: row.sku, currency: "", orders: 0, paid: 0, refunds: 0, revenue: 0, viewers: row.viewers, carts: row.carts, converted: 0 });
   const lines = merged.filter((row) => row.viewers || row.carts || row.orders || row.paid || row.refunds)
     .sort((a, b) => b.paid - a.paid || b.viewers - a.viewers).slice(0, 15)
-    .map((row) => `• ${compactAnalyticsLabel(row.name, 45)} (${row.sku})\n  Просмотрели: ${row.viewers} · корзина: ${row.carts} · заказали: ${row.orders} · оплатили: ${row.paid} · возвраты: ${row.refunds}\n  Конверсия просмотр→оплата: ${row.viewers ? formatPercentage(percentage(row.converted, row.viewers)) : "—"} · оборот: ${Number(row.revenue).toLocaleString("ru-RU")} ${row.currency || ""}`).join("\n") || "Данных по товарам пока нет.";
-  await sendMessage(token, chatId, `📦 Воронка товаров ${customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days)}\n\n${lines}\n\nКонверсия — доля посетителей, просмотревших этот товар и затем оплативших его в выбранном периоде. Корзина — уникальные посетители; заказы, оплаты и возвраты — заказы.`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
+    .map((row) => `• ${compactAnalyticsLabel(row.name, 45)} (${row.sku})\n  Просмотрели: ${row.viewers} · корзина: ${row.carts} · заказали: ${row.orders} · оплатили: ${row.paid} · возвраты: ${row.refunds}\n  Конверсия просмотр→оплата: ${row.viewers ? formatPercentage(percentage(row.converted, row.viewers)) : "-"} · оборот: ${Number(row.revenue).toLocaleString("ru-RU")} ${row.currency || ""}`).join("\n") || "Данных по товарам пока нет.";
+  await sendMessage(token, chatId, `📦 Воронка товаров ${customRange ? formatAnalyticsDateRange(customRange) : analyticsPeriod(bounds.days)}\n\n${lines}\n\nКонверсия - доля посетителей, просмотревших этот товар и затем оплативших его в выбранном периоде. Корзина - уникальные посетители; заказы, оплаты и возвраты - заказы.`, { inline_keyboard: [[{ text: "📈 Общая аналитика", callback_data: customRange ? `analytics:range_show:${customRange.start.slice(0, 10)}:${customRange.end.slice(0, 10)}` : `analytics:period:${bounds.days}` }], [{ text: "◀️ В меню", callback_data: "menu" }]] });
 }
 
 async function sendWebVitalsAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number, days: number, customRange?: AnalyticsDateRange) {
@@ -717,8 +717,8 @@ async function sendUnitEconomics(db: ReturnType<typeof getDb>, token: string, ch
   }
   actions.push([{ text: "📈 Общая аналитика", callback_data: "analytics:period:7" }, { text: "◀️ В меню", callback_data: "menu" }]);
   await sendMessage(token, chatId, [
-    "💸 LTV и CAC", "", "LTV — оплаченный оборот за всё время на одного уникального покупателя:", ltvLines,
-    "", "CAC — рекламные расходы на новых покупателей, чья первая оплата пришлась на период кампании:", cacLines,
+    "💸 LTV и CAC", "", "LTV - оплаченный оборот за всё время на одного уникального покупателя:", ltvLines,
+    "", "CAC - рекламные расходы на новых покупателей, чья первая оплата пришлась на период кампании:", cacLines,
     "", "Валюты не смешиваются. Возвраты исключены из оплаченной выборки.",
   ].join("\n"), { inline_keyboard: actions });
 }
@@ -771,9 +771,9 @@ async function sendRevenueAnalytics(db: ReturnType<typeof getDb>, token: string,
       `Комиссии оплаты: −${money(row.paymentFees)}`,
       `Прочие расходы: −${money(row.otherExpenses)}`,
       `${approximate ? "Оценочная" : "Чистая"} прибыль: ${money(row.profit)}`,
-      `Маржинальность: ${row.marginPercent === null ? "—" : `${row.marginPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
-      `ROAS: ${row.roas === null ? "—" : `${row.roas.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}×`}`,
-      `ROI: ${row.roiPercent === null ? "—" : `${row.roiPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
+      `Маржинальность: ${row.marginPercent === null ? "-" : `${row.marginPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
+      `ROAS: ${row.roas === null ? "-" : `${row.roas.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}×`}`,
+      `ROI: ${row.roiPercent === null ? "-" : `${row.roiPercent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}`,
       `Себестоимость заполнена: ${row.knownCostItems}/${row.totalCostItems} ед. (${coverage.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%)`,
       `Полнота расходов: ${row.missingDeliveryExpenseOrders || row.missingPaymentFeeOrders || row.missingOtherExpenseOrders || row.estimatedPartnerCommissionOrders ? "неполная" : "полная"}`,
     ].join("\n");
@@ -988,11 +988,11 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
   }).join("\n");
   const sourceLines = sourceRows.map((row) => {
     const buyers = sourceBuyerResult.rows.find((item) => item.source === (row.source || "direct"));
-    return `• ${compactAnalyticsLabel(row.source || "direct", 48)}: ${row.users} посет. · ${buyers?.buyers ?? 0} покупат. · ${buyers?.payments ?? 0} оплат · ${row.users ? formatPercentage(percentage(Number(buyers?.buyers || 0), Number(row.users))) : "—"}`;
+    return `• ${compactAnalyticsLabel(row.source || "direct", 48)}: ${row.users} посет. · ${buyers?.buyers ?? 0} покупат. · ${buyers?.payments ?? 0} оплат · ${row.users ? formatPercentage(percentage(Number(buyers?.buyers || 0), Number(row.users))) : "-"}`;
   }).join("\n") || "• Данных пока нет";
   const deviceLines = deviceRows.map((row) => {
     const buyers = deviceBuyerResult.rows.find((item) => item.device === row.device);
-    return `• ${row.device}: ${row.users} посет. · ${buyers?.buyers ?? 0} покупат. · ${buyers?.payments ?? 0} оплат · ${row.users ? formatPercentage(percentage(Number(buyers?.buyers || 0), Number(row.users))) : "—"}`;
+    return `• ${row.device}: ${row.users} посет. · ${buyers?.buyers ?? 0} покупат. · ${buyers?.payments ?? 0} оплат · ${row.users ? formatPercentage(percentage(Number(buyers?.buyers || 0), Number(row.users))) : "-"}`;
   }).join("\n") || "• Данных пока нет";
   const exitLines = exitResult.rows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.exits} выходов${Number(row.inferred) ? ` · из них ${row.inferred} по тайм-ауту` : ""}`).join("\n") || "• Данных пока нет";
   const pageTimeLines = pageTimeResult.rows.map((row) => `• ${compactAnalyticsLabel(row.path)}: ${row.views} измеренных просмотров · ср. ${Math.round(Number(row.average_seconds))} сек. в видимой вкладке`).join("\n") || "• Пока нет измеренных просмотров";
@@ -1018,7 +1018,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     "", "Основные страницы выхода:", exitLines,
     "", "Время на страницах:", pageTimeLines,
     "", "Последние события:", recentLines,
-    "", "Время в фоне не учитывается; выход без сигнала браузера предполагается после 30 минут тишины. Основные показатели — только Human; Bot и Suspicious показаны отдельно. Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
+    "", "Время в фоне не учитывается; выход без сигнала браузера предполагается после 30 минут тишины. Основные показатели - только Human; Bot и Suspicious показаны отдельно. Сбор начинается только после согласия пользователя. IP и сырые User-Agent не сохраняются.",
   ].join("\n"), trafficKeyboard(bounds.days, customRange));
 }
 
@@ -1070,7 +1070,7 @@ async function sendBotFraudAnalytics(db: ReturnType<typeof getDb>, token: string
     "Классификация:", classLines,
     "", "Подозрительные источники:", sourceLines,
     "", "Последние сигналы:", recentLines,
-    "", "Bot — явная автоматизация. Suspicious — аномальная скорость событий. Классификация не блокирует клиента автоматически; IP и полный User-Agent не сохраняются.",
+    "", "Bot - явная автоматизация. Suspicious - аномальная скорость событий. Классификация не блокирует клиента автоматически; IP и полный User-Agent не сохраняются.",
   ].join("\n"), botFraudKeyboard(bounds.days, customRange));
 }
 
@@ -1153,13 +1153,13 @@ async function sendAttributionAnalytics(db: ReturnType<typeof getDb>, token: str
     `Касаний в цепочках: ${attributionOrders.reduce((sum, order) => sum + order.touches.length, 0)}`,
     "", ...(sections.length ? sections : ["Данных для атрибуции пока нет."]),
     "Основные пути до оплаты:", pathLines, "",
-    model === "time_decay" ? "Time Decay: период полураспада касания — 7 дней." : "Выручка распределена между источниками по выбранной модели.",
+    model === "time_decay" ? "Time Decay: период полураспада касания - 7 дней." : "Выручка распределена между источниками по выбранной модели.",
   ].join("\n"), attributionKeyboard(model, bounds.days, customRange));
 }
 
 function retentionCell(row: RetentionRow, days: (typeof RETENTION_DAYS)[number]) {
   const eligible = row.eligible[days];
-  return eligible ? `${retentionPercent(row.retained[days], eligible).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% (${row.retained[days]}/${eligible})` : "—";
+  return eligible ? `${retentionPercent(row.retained[days], eligible).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% (${row.retained[days]}/${eligible})` : "-";
 }
 
 async function sendRetentionAnalytics(db: ReturnType<typeof getDb>, token: string, chatId: number) {
@@ -1170,7 +1170,7 @@ async function sendRetentionAnalytics(db: ReturnType<typeof getDb>, token: strin
   const sourceLines = report.sources.slice(0, 8).map((row) => `• ${row.label}: ${row.customers} покупателей · D30 ${retentionCell(row, 30)} · D90 ${retentionCell(row, 90)}`).join("\n") || "• Данных об источниках пока нет";
   await sendMessage(token, chatId, [
     "🔁 Retention повторных покупок", "",
-    `D0 — уникальные покупатели: ${report.overall.customers}`,
+    `D0 - уникальные покупатели: ${report.overall.customers}`,
     "Доля покупателей, совершивших ещё одну оплату не позднее указанного дня:", overallLines,
     "", "Когорты по месяцу первой оплаты:", cohortLines,
     "", "По первому источнику:", sourceLines,
@@ -1480,7 +1480,7 @@ async function sendEsimDeliveryEmail(item: NonNullable<Awaited<ReturnType<typeof
   const instructions = item.fulfillmentInstructions || "Следуйте инструкции из карточки тарифа. Если возникнет вопрос, ответьте на это письмо.";
   return sendTransactionalEmail({
     to: item.customerEmail,
-    subject: `eSIM по заказу ${item.orderNumber} — SIMKA`,
+    subject: `eSIM по заказу ${item.orderNumber} - SIMKA`,
     text: `Здравствуйте, ${item.customerName}!\n\neSIM по заказу ${item.orderNumber} готова.\nТариф: ${item.productName}\n\nКод активации:\n${activationCode}\n\nИнструкция:\n${instructions}\n\nНе передавайте код другим людям. Добавляйте eSIM только через настройки устройства.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Ваша eSIM готова</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Тариф: ${escapeHtml(item.productName)}</p><p>Код активации:</p><pre style="overflow-wrap:anywhere;white-space:pre-wrap;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px;font-size:15px">${escapeHtml(activationCode)}</pre><h2 style="font-size:18px">Инструкция</h2><p style="white-space:pre-line">${escapeHtml(instructions)}</p><p><strong>Не передавайте код другим людям.</strong> Добавляйте eSIM только через настройки устройства.</p></div>`,
     idempotencyKey,
@@ -1494,7 +1494,7 @@ async function sendShippingEmail(item: NonNullable<Awaited<ReturnType<typeof res
     : escapeHtml(item.trackingNumber || "Уточняется");
   return sendTransactionalEmail({
     to: item.customerEmail,
-    subject: `SIM отправлена — заказ ${item.orderNumber}`,
+    subject: `SIM отправлена - заказ ${item.orderNumber}`,
     text: `Здравствуйте, ${item.customerName}!\n\nФизическая SIM по заказу ${item.orderNumber} отправлена.\nТовар: ${item.productName}\nСлужба/способ: ${item.deliveryMethod || "Уточняется"}\nТрек-номер: ${trackingLine}\n\nСохраните это письмо до получения отправления.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">SIM отправлена</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Товар: ${escapeHtml(item.productName)}<br>Служба/способ: ${escapeHtml(item.deliveryMethod || "Уточняется")}<br>Трек-номер: ${trackingHtml}</p><p>Сохраните это письмо до получения отправления.</p></div>`,
     idempotencyKey,
@@ -1506,7 +1506,7 @@ async function sendDeliveryQuoteEmail(item: NonNullable<Awaited<ReturnType<typeo
   const delivery = `${totals.deliveryAmount.toLocaleString("ru-RU")} ${totals.currency}`;
   return sendTransactionalEmail({
     to: item.customerEmail,
-    subject: `Итоговая стоимость заказа ${item.orderNumber} — SIMKA`,
+    subject: `Итоговая стоимость заказа ${item.orderNumber} - SIMKA`,
     text: `Здравствуйте, ${item.customerName}!\n\nСтоимость доставки по заказу ${item.orderNumber} подтверждена.\nДоставка: ${delivery}\nИтоговая сумма заказа: ${total}\n\nМенеджер отправит актуальные реквизиты на этот email.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Стоимость доставки подтверждена</h1><p>Здравствуйте, ${escapeHtml(item.customerName)}!</p><p>Заказ: <strong>${escapeHtml(item.orderNumber)}</strong><br>Доставка: <strong>${escapeHtml(delivery)}</strong><br>Итоговая сумма: <strong>${escapeHtml(total)}</strong></p><p>Менеджер отправит актуальные реквизиты на этот email.</p></div>`,
     idempotencyKey: `delivery-quote/${item.orderId}/${totals.deliveryAmount}/${totals.totalAmount}`,
@@ -1526,7 +1526,7 @@ async function sendOrderStatusEmail(order: { customerEmail: string; customerName
   if (!message) return { delivered: false as const, reason: "not_configured" as const };
   return sendTransactionalEmail({
     to: order.customerEmail,
-    subject: `${message.subject} — ${order.orderNumber}`,
+    subject: `${message.subject} - ${order.orderNumber}`,
     text: `Здравствуйте, ${order.customerName}!\n\n${message.body}\nЗаказ: ${order.orderNumber}`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">${escapeHtml(message.title)}</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>${escapeHtml(message.body)}</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong></p></div>`,
     idempotencyKey: `order-status/${order.orderNumber}/${status}`,
@@ -1537,7 +1537,7 @@ async function sendPaymentRequisitesEmail(order: { customerEmail: string; custom
   const amount = `${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`;
   return sendTransactionalEmail({
     to: order.customerEmail,
-    subject: `Реквизиты для заказа ${order.orderNumber} — SIMKA`,
+    subject: `Реквизиты для заказа ${order.orderNumber} - SIMKA`,
     text: `Здравствуйте, ${order.customerName}!\n\nИтоговая сумма заказа ${order.orderNumber}: ${amount}\n\nАктуальные реквизиты:\n${requisites}\n\nПосле оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Реквизиты для оплаты</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong><br>Итоговая сумма: <strong>${escapeHtml(amount)}</strong></p><div style="white-space:pre-line;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px">${escapeHtml(requisites)}</div><p>После оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.</p></div>`,
     idempotencyKey: `payment-requisites/${order.orderNumber}/${order.totalAmount}`,
@@ -1621,7 +1621,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const range = parseAnalyticsDateRange(text);
     const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
     if (!range || duration > 10 * 366 * 86_400_000) {
-      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:range" }], [{ text: "◀️ К аналитике", callback_data: "analytics:period:7" }]] });
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон - 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:range" }], [{ text: "◀️ К аналитике", callback_data: "analytics:period:7" }]] });
       return true;
     }
     await audit(db, adminId, "analytics.custom_range.view", null, { start: range.start, end: range.end });
@@ -1632,7 +1632,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const range = parseAnalyticsDateRange(text);
     const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
     if (!range || duration > 10 * 366 * 86_400_000) {
-      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:revenue_range" }], [{ text: "◀️ К отчёту", callback_data: "analytics:revenue:30" }]] });
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон - 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:revenue_range" }], [{ text: "◀️ К отчёту", callback_data: "analytics:revenue:30" }]] });
       return true;
     }
     await audit(db, adminId, "analytics.revenue_custom_range.view", null, { start: range.start, end: range.end });
@@ -1643,7 +1643,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const range = parseAnalyticsDateRange(text);
     const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
     if (!range || duration > 10 * 366 * 86_400_000) {
-      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:traffic_range" }], [{ text: "◀️ К отчёту", callback_data: "analytics:traffic:30" }]] });
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон - 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: "analytics:traffic_range" }], [{ text: "◀️ К отчёту", callback_data: "analytics:traffic:30" }]] });
       return true;
     }
     await audit(db, adminId, "analytics.traffic_custom_range.view", null, { start: range.start, end: range.end });
@@ -1656,7 +1656,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const range = parseAnalyticsDateRange(text);
     const duration = range ? new Date(range.end).getTime() - new Date(range.start).getTime() : 0;
     if (!range || duration > 10 * 366 * 86_400_000) {
-      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон — 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: `analytics:attr_range:${model}` }], [{ text: "◀️ К атрибуции", callback_data: `analytics:attr:${model}:30` }]] });
+      await sendMessage(token, chatId, "Проверьте период. Формат: YYYY-MM-DD | YYYY-MM-DD. Начало должно быть не позже конца, максимальный диапазон - 10 лет.", { inline_keyboard: [[{ text: "📅 Ввести заново", callback_data: `analytics:attr_range:${model}` }], [{ text: "◀️ К атрибуции", callback_data: `analytics:attr:${model}:30` }]] });
       return true;
     }
     await audit(db, adminId, "analytics.attribution_custom_range.view", null, { model, start: range.start, end: range.end });
@@ -1691,7 +1691,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const commissionPercent = Number(parts[2].replace(",", "."));
     const commissionBps = Math.round(commissionPercent * 100);
     if (!isValidPartnerCode(code) || name.length < 2 || name.length > 100 || !Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent > 100 || Math.abs(commissionBps / 100 - commissionPercent) > 0.0001) {
-      await sendMessage(token, chatId, "Проверьте данные. Partner ID: 3–32 латинских символа/цифры/_/-. Название: 2–100 символов. Комиссия: от 0 до 100, максимум 2 знака после запятой.", { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
+      await sendMessage(token, chatId, "Проверьте данные. Partner ID: 3-32 латинских символа/цифры/_/-. Название: 2-100 символов. Комиссия: от 0 до 100, максимум 2 знака после запятой.", { inline_keyboard: [[{ text: "◀️ К партнёрам", callback_data: "partners:list" }]] });
       return true;
     }
     try {
@@ -1730,7 +1730,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
       || startsAt === "invalid" || endsAt === "invalid"
       || Boolean(startsAt && endsAt && startsAt > endsAt);
     if (invalid) {
-      await sendMessage(token, chatId, "Проверьте данные. Код: 3–32 латинских символа/цифры. Процент: 1–99. Суммы и лимит — целые положительные числа. Даты: YYYY-MM-DD или -.", { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
+      await sendMessage(token, chatId, "Проверьте данные. Код: 3-32 латинских символа/цифры. Процент: 1-99. Суммы и лимит - целые положительные числа. Даты: YYYY-MM-DD или -.", { inline_keyboard: [[{ text: "◀️ К промокодам", callback_data: "promocodes:list" }]] });
       return true;
     }
     try {
@@ -1827,7 +1827,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     let delivered = false;
     if (!totals.pending) delivered = (await sendDeliveryQuoteEmail(item, totals)).delivered;
     await audit(db, adminId, "order.delivery_cost", item.orderId, { itemId: item.itemId, cost, currency: totals.currency, customerEmailDelivered: delivered });
-    await sendMessage(token, chatId, `Стоимость доставки сохранена: ${cost.toLocaleString("ru-RU")} ${totals.currency}.${totals.pending ? " В заказе ещё есть доставка без цены." : delivered ? " Клиенту отправлена итоговая сумма." : " Автоматическое письмо не доставлено — сообщите итог клиенту вручную."}`);
+    await sendMessage(token, chatId, `Стоимость доставки сохранена: ${cost.toLocaleString("ru-RU")} ${totals.currency}.${totals.pending ? " В заказе ещё есть доставка без цены." : delivered ? " Клиенту отправлена итоговая сумма." : " Автоматическое письмо не доставлено - сообщите итог клиенту вручную."}`);
     await sendOrderDetails(db, token, chatId, item.orderNumber, role);
     return true;
   }
@@ -1840,7 +1840,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const separator = text.indexOf("|");
     const activationCode = (separator >= 0 ? text.slice(0, separator) : text).trim();
     let instructions = (separator >= 0 ? text.slice(separator + 1) : "").trim();
-    if (!activationCode || activationCode.length > 4000 || instructions.length > 4000) { await sendMessage(token, chatId, "Код обязателен; код и инструкция — максимум по 4000 символов.", orderBackKeyboard(item.orderNumber)); return true; }
+    if (!activationCode || activationCode.length > 4000 || instructions.length > 4000) { await sendMessage(token, chatId, "Код обязателен; код и инструкция - максимум по 4000 символов.", orderBackKeyboard(item.orderNumber)); return true; }
     if (!instructions) {
       const [product] = await db.select({ instructions: catalogProducts.instructions }).from(catalogProducts).where(eq(catalogProducts.id, item.productId)).limit(1);
       instructions = product?.instructions || "Следуйте инструкции из карточки тарифа.";
@@ -1880,7 +1880,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
     const delivered = (await sendShippingEmail(shipped)).delivered;
     await syncOrderFulfillmentStatus(db, item.orderId);
     await audit(db, adminId, "order.shipment", item.orderId, { itemId: item.itemId, trackingNumber, customerEmailDelivered: delivered });
-    await sendMessage(token, chatId, delivered ? "Отправка и трек-номер сохранены. Клиенту отправлено письмо." : "Отправка и трек-номер сохранены, но письмо клиенту не доставлено — сообщите трек вручную.");
+    await sendMessage(token, chatId, delivered ? "Отправка и трек-номер сохранены. Клиенту отправлено письмо." : "Отправка и трек-номер сохранены, но письмо клиенту не доставлено - сообщите трек вручную.");
     await sendOrderDetails(db, token, chatId, item.orderNumber, role);
     return true;
   }
@@ -2299,7 +2299,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       db.select({ orderNumber: orders.orderNumber, status: orders.status, totalAmount: orders.totalAmount, currency: orders.currency, createdAt: orders.createdAt }).from(orders).where(eq(orders.customerAccountId, first)).orderBy(desc(orders.createdAt)).limit(20),
     ]);
     if (!customer[0]) { await sendMessage(token, chatId, "Клиент не найден.", backKeyboard()); return; }
-    const exportText = ["ЭКСПОРТ ДАННЫХ КЛИЕНТА", `Имя: ${customer[0].name}`, `Email: ${customer[0].email}`, `Контакт: ${customer[0].contact || "—"}`, `Заблокирован: ${customer[0].isBlocked ? "да" : "нет"}`, `Создан: ${customer[0].createdAt}`, `Обновлён: ${customer[0].updatedAt}`, "", "Последние 20 заказов:", ...(customerOrders.length ? customerOrders.map((order) => `${order.createdAt} · ${order.orderNumber} · ${order.status} · ${order.totalAmount} ${order.currency}`) : ["Заказов нет"])].join("\n");
+    const exportText = ["ЭКСПОРТ ДАННЫХ КЛИЕНТА", `Имя: ${customer[0].name}`, `Email: ${customer[0].email}`, `Контакт: ${customer[0].contact || "-"}`, `Заблокирован: ${customer[0].isBlocked ? "да" : "нет"}`, `Создан: ${customer[0].createdAt}`, `Обновлён: ${customer[0].updatedAt}`, "", "Последние 20 заказов:", ...(customerOrders.length ? customerOrders.map((order) => `${order.createdAt} · ${order.orderNumber} · ${order.status} · ${order.totalAmount} ${order.currency}`) : ["Заказов нет"])].join("\n");
     await audit(db, adminId, "customer.export", first, { ordersIncluded: customerOrders.length });
     await sendMessage(token, chatId, exportText, { inline_keyboard: [[{ text: "◀️ К клиенту", callback_data: `customer:view:${first}` }]] });
     return;
@@ -2382,7 +2382,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     }
     if (action === "esim") {
       if (item.simType !== "eSIM" || item.orderStatus !== "PROCESSING") { await sendMessage(token, chatId, "Сначала подтвердите оплату и нажмите «Начать выполнение».", orderBackKeyboard(item.orderNumber)); return; }
-      await sendMessage(token, chatId, `[FULFILL_ESIM:${item.itemId}]\nВведите код активации | инструкцию. Инструкцию можно не указывать — будет использована инструкция товара. Код шифруется перед сохранением и не показывается в карточке заказа.`, { force_reply: true, selective: true, input_field_placeholder: "Код активации | Инструкция" });
+      await sendMessage(token, chatId, `[FULFILL_ESIM:${item.itemId}]\nВведите код активации | инструкцию. Инструкцию можно не указывать - будет использована инструкция товара. Код шифруется перед сохранением и не показывается в карточке заказа.`, { force_reply: true, selective: true, input_field_placeholder: "Код активации | Инструкция" });
       return;
     }
     if (action === "resend") {
@@ -2421,7 +2421,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (scope === "order" && action === "cancel_prompt" && first) {
     const [order] = await db.select({ status: orders.status }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
     if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
-    const paidWarning = ["PAID", "PROCESSING"].includes(order.status) ? "\n\nВнимание: заказ уже оплачен. Отмена не возвращает деньги автоматически — возврат нужно провести отдельно." : "";
+    const paidWarning = ["PAID", "PROCESSING"].includes(order.status) ? "\n\nВнимание: заказ уже оплачен. Отмена не возвращает деньги автоматически - возврат нужно провести отдельно." : "";
     await sendMessage(token, chatId, `Точно отменить заказ ${first}?${paidWarning}`, { inline_keyboard: [[{ text: "❌ Да, отменить заказ", callback_data: `order:cancel_confirm:${first}` }], [{ text: "Не отменять", callback_data: `order:view:${first}` }]] });
     return;
   }
@@ -2435,7 +2435,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
     }
     const cancelledItems = await db.select({ productId: orderItems.productId, variantId: orderItems.variantId, quantity: orderItems.quantity, fulfillmentStatus: orderItems.fulfillmentStatus }).from(orderItems).where(eq(orderItems.orderId, order.id));
     if (cancelledItems.some((item) => ["SENT", "SHIPPED", "DELIVERED", "COMPLETED"].includes(item.fulfillmentStatus))) {
-      await sendMessage(token, chatId, "Заказ уже частично выдан или отправлен. Простая отмена запрещена — оформите возврат отдельно.", orderBackKeyboard(order.orderNumber));
+      await sendMessage(token, chatId, "Заказ уже частично выдан или отправлен. Простая отмена запрещена - оформите возврат отдельно.", orderBackKeyboard(order.orderNumber));
       return;
     }
     await db.transaction(async (tx) => {
@@ -2473,9 +2473,9 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       const safeNumber = escapeHtml(order.orderNumber);
       const delivery = await sendTransactionalEmail({
         to: order.customerEmail,
-        subject: `Заказ ${order.orderNumber} отменён — SIMKA`,
-        text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} отменён. Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа — возврат обрабатывается отдельно.`,
-        html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ отменён</h1><p>Здравствуйте, ${safeName}!</p><p>Заказ <strong>${safeNumber}</strong> отменён.</p><p>Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа — возврат обрабатывается отдельно.</p></div>`,
+        subject: `Заказ ${order.orderNumber} отменён - SIMKA`,
+        text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} отменён. Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа - возврат обрабатывается отдельно.`,
+        html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ отменён</h1><p>Здравствуйте, ${safeName}!</p><p>Заказ <strong>${safeNumber}</strong> отменён.</p><p>Если вы уже оплатили заказ, свяжитесь с поддержкой и укажите номер заказа - возврат обрабатывается отдельно.</p></div>`,
         idempotencyKey: `order-cancelled/${order.id}`,
       });
       cancellationEmailDelivered = delivery.delivered;
@@ -2483,7 +2483,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
       console.error("order_cancellation_email_failed", { name: error instanceof Error ? error.name : "UnknownError" });
     }
     await audit(db, adminId, "order.cancellation_email", order.id, { delivered: cancellationEmailDelivered });
-    await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.\n${cancellationEmailDelivered ? "Клиенту отправлено письмо об отмене." : "Автоматическое письмо клиенту не доставлено — сообщите об отмене вручную."}`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
+    await sendMessage(token, chatId, `Заказ ${order.orderNumber} отменён. Статус → CANCELLED.\n${cancellationEmailDelivered ? "Клиенту отправлено письмо об отмене." : "Автоматическое письмо клиенту не доставлено - сообщите об отмене вручную."}`, { inline_keyboard: [[{ text: "🛒 К списку заказов", callback_data: "orders:list" }], [{ text: "📄 Открыть заказ", callback_data: `order:view:${order.orderNumber}` }]] });
     return;
   }
   if (scope === "order" && action === "fail_prompt" && first) {
@@ -2516,7 +2516,7 @@ async function handleCallback(token: string, chatId: number, adminId: number, da
   if (scope === "order" && action === "expenses_prompt" && first) {
     const [order] = await db.select({ id: orders.id, currency: orders.currency }).from(orders).where(eq(orders.orderNumber, first)).limit(1);
     if (!order) { await sendMessage(token, chatId, "Заказ не найден.", backKeyboard()); return; }
-    await sendMessage(token, chatId, `[ORDER_EXPENSES:${order.id}]\nВведите фактические расходы через |:\nдоставка | комиссия оплаты | прочие расходы\n\nПример: 300 | 210 | 90\nВсе суммы — целые числа в ${order.currency}.`, { force_reply: true, selective: true, input_field_placeholder: "300 | 210 | 90" });
+    await sendMessage(token, chatId, `[ORDER_EXPENSES:${order.id}]\nВведите фактические расходы через |:\nдоставка | комиссия оплаты | прочие расходы\n\nПример: 300 | 210 | 90\nВсе суммы - целые числа в ${order.currency}.`, { force_reply: true, selective: true, input_field_placeholder: "300 | 210 | 90" });
     return;
   }
   if (scope === "order" && action === "refund_confirm" && first) {

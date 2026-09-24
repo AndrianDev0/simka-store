@@ -14,7 +14,7 @@ async function notifyPaymentConfirmed(order: { customerEmail: string; customerNa
   const amount = `${order.totalAmount.toLocaleString("ru-RU")} ${order.currency}`;
   await sendTransactionalEmail({
     to: order.customerEmail,
-    subject: `Оплата заказа ${order.orderNumber} подтверждена — SIMKA`,
+    subject: `Оплата заказа ${order.orderNumber} подтверждена - SIMKA`,
     text: `Здравствуйте, ${order.customerName}!\n\nПлатёж по заказу ${order.orderNumber} на сумму ${amount} подтверждён Plisio. Заказ передан в обработку.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Оплата подтверждена</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Платёж по заказу <strong>${escapeHtml(order.orderNumber)}</strong> на сумму <strong>${escapeHtml(amount)}</strong> подтверждён Plisio.</p><p>Заказ передан в обработку.</p></div>`,
     idempotencyKey: `crypto-payment-confirmed/${order.orderNumber}`,

@@ -30,7 +30,7 @@ export function evaluatePromoCode(
   if (promo.endsAt && Date.parse(promo.endsAt) < nowTime) return { valid: false, error: "Срок действия промокода истёк" };
   if (promo.usageLimit !== null && context.usedCount >= promo.usageLimit) return { valid: false, error: "Лимит использований промокода исчерпан" };
   if (context.subtotalAmount < promo.minOrderAmount) {
-    return { valid: false, error: `Минимальная сумма товаров — ${promo.minOrderAmount.toLocaleString("ru-RU")} ${promo.currency}` };
+    return { valid: false, error: `Минимальная сумма товаров - ${promo.minOrderAmount.toLocaleString("ru-RU")} ${promo.currency}` };
   }
   const rawDiscount = promo.discountType === "percent"
     ? Math.floor(context.subtotalAmount * promo.discountValue / 100)

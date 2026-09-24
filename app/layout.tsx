@@ -7,7 +7,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_ORIGIN),
   applicationName: SITE_NAME,
-  title: "SIMKA — SIM и eSIM для путешествий",
+  title: "SIMKA - SIM и eSIM для путешествий",
   description: DEFAULT_DESCRIPTION,
   category: "travel",
   referrer: "strict-origin-when-cross-origin",
@@ -28,12 +28,12 @@ export const metadata: Metadata = {
     locale: "ru_RU",
     siteName: SITE_NAME,
     url: SITE_ORIGIN,
-    title: "SIMKA — SIM и eSIM для путешествий",
+    title: "SIMKA - SIM и eSIM для путешествий",
     description: DEFAULT_DESCRIPTION,
   },
   twitter: {
     card: "summary",
-    title: "SIMKA — SIM и eSIM для путешествий",
+    title: "SIMKA - SIM и eSIM для путешествий",
     description: DEFAULT_DESCRIPTION,
   },
   icons: {

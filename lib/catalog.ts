@@ -133,9 +133,9 @@ type LegacyProductSeed = Pick<Product,
 > & Pick<Partial<Product>, "oldPrice" | "calls" | "popular">;
 
 function createFallbackProduct(seed: LegacyProductSeed): Product {
-  const name = `${seed.type} ${seed.operator}: ${seed.data} на ${seed.days} дней — ${seed.country}`;
+  const name = `${seed.type} ${seed.operator}: ${seed.data} на ${seed.days} дней - ${seed.country}`;
   const shortDescription = `${seed.type} оператора ${seed.operator} для путешествий по направлению «${seed.country}».`;
-  const seoTitle = `${seed.country} — ${seed.type} ${seed.operator}: ${seed.data} на ${seed.days} дней — SIMKA`;
+  const seoTitle = `${seed.country} - ${seed.type} ${seed.operator}: ${seed.data} на ${seed.days} дней - SIMKA`;
   const seoDescription = `${seed.type} оператора ${seed.operator}, направление «${seed.country}»: ${seed.data} на ${seed.days} дней. Сравните активацию, совместимость, цену и наличие.`;
   const hasCalls = Boolean(seed.calls);
 

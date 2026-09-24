@@ -4,7 +4,7 @@ import { getCurrentAccount } from "@/lib/customer-auth";
 import { pageMetadata } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
-export const metadata = pageMetadata({ title: "Управление персональными данными — SIMKA", description: "Экспорт и удаление персональных данных клиента SIMKA.", path: "/account/privacy", noindex: true });
+export const metadata = pageMetadata({ title: "Управление персональными данными - SIMKA", description: "Экспорт и удаление персональных данных клиента SIMKA.", path: "/account/privacy", noindex: true });
 
 export default async function AccountPrivacyPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const account = await getCurrentAccount();

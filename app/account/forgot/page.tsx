@@ -1,6 +1,6 @@
 import { pageMetadata } from "@/lib/seo";
 
-export const metadata = pageMetadata({ title: "Восстановление доступа — SIMKA", description: "Восстановите доступ к личному кабинету SIMKA.", path: "/account/forgot", noindex: true });
+export const metadata = pageMetadata({ title: "Восстановление доступа - SIMKA", description: "Восстановите доступ к личному кабинету SIMKA.", path: "/account/forgot", noindex: true });
 
 export default async function ForgotPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;

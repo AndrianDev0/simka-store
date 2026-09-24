@@ -71,7 +71,7 @@ export function parseAnalyticsDateRange(input: string): AnalyticsDateRange | nul
 
 export function formatAnalyticsDateRange(range: AnalyticsDateRange) {
   const format = (iso: string) => new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(iso));
-  return `${format(range.start)}–${format(range.end)}`;
+  return `${format(range.start)}-${format(range.end)}`;
 }
 
 export function calendarAnalyticsDateRange(mode: "today" | "yesterday", now = new Date()): AnalyticsDateRange {

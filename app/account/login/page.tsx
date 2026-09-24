@@ -2,7 +2,7 @@
 import { pageMetadata } from "@/lib/seo";
 import { safeAccountReturnPath } from "@/lib/account-return";
 
-export const metadata = pageMetadata({ title: "Вход в личный кабинет — SIMKA", description: "Войдите, чтобы посмотреть историю заказов SIMKA.", path: "/account/login", noindex: true });
+export const metadata = pageMetadata({ title: "Вход в личный кабинет - SIMKA", description: "Войдите, чтобы посмотреть историю заказов SIMKA.", path: "/account/login", noindex: true });
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;

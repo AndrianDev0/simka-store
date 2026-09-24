@@ -8,7 +8,7 @@ import { pageMetadata } from "@/lib/seo";
 import { SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
 
 export const dynamic = "force-dynamic";
-export const metadata = pageMetadata({ title: "Личный кабинет — SIMKA", description: "Профиль и история заказов SIMKA.", path: "/account", noindex: true });
+export const metadata = pageMetadata({ title: "Личный кабинет - SIMKA", description: "Профиль и история заказов SIMKA.", path: "/account", noindex: true });
 
 const statusLabels: Record<string, string> = {
   NEW: "Новый", WAITING_FOR_MANAGER: "Ожидает менеджера", WAITING_PAYMENT: "Ожидает оплаты", PAYMENT_PENDING: "Проверяем оплату",
@@ -32,7 +32,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
           <form action="/api/account/profile" method="post" className="mt-5 space-y-4">
             <label className="block text-sm font-semibold text-[#283b54]">Имя<input name="name" required minLength={2} maxLength={100} defaultValue={account.name} className="mt-2 h-11 w-full rounded-xl border border-[#cddbea] px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]"/></label>
             <label className="block text-sm font-semibold text-[#283b54]">Email<input value={account.email} readOnly className="mt-2 h-11 w-full rounded-xl border border-[#e1e8f0] bg-[#f7f9fb] px-3 font-normal text-[#637389]"/></label>
-            <label className="block text-sm font-semibold text-[#283b54]">Telegram или телефон<span className="font-normal text-[#7a899a]"> — необязательно</span><input name="contact" maxLength={100} defaultValue={account.contact} className="mt-2 h-11 w-full rounded-xl border border-[#cddbea] px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]" placeholder="@username или +7…"/></label>
+            <label className="block text-sm font-semibold text-[#283b54]">Telegram или телефон<span className="font-normal text-[#7a899a]"> - необязательно</span><input name="contact" maxLength={100} defaultValue={account.contact} className="mt-2 h-11 w-full rounded-xl border border-[#cddbea] px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]" placeholder="@username или +7…"/></label>
             <button className="min-h-11 w-full rounded-xl bg-[#1168e8] px-4 font-bold text-white hover:bg-[#0d56c3]">Сохранить профиль</button>
           </form>
           <div className="mt-5 flex flex-wrap gap-x-5 gap-y-3 border-t border-[#e5edf5] pt-5"><a href="/account/forgot" className="inline-flex min-h-11 items-center text-sm font-bold text-[#1168e8] hover:underline">Изменить пароль</a><a href="/account/privacy" className="inline-flex min-h-11 items-center text-sm font-bold text-[#1168e8] hover:underline">Управление данными</a></div>

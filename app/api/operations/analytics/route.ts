@@ -102,11 +102,11 @@ async function scheduledReport(kind: "daily" | "weekly") {
   ]);
   const visits = traffic.rows[0];
   const transactions = sales.rows[0];
-  const rate = Number(visits?.visitors) ? `${(Number(transactions?.converted || 0) / Number(visits.visitors) * 100).toFixed(1).replace(".", ",")}%` : "—";
+  const rate = Number(visits?.visitors) ? `${(Number(transactions?.converted || 0) / Number(visits.visitors) * 100).toFixed(1).replace(".", ",")}%` : "-";
   const amount = revenue.rows.length ? revenue.rows.map((row) => `${Number(row.amount).toLocaleString("ru-RU")} ${row.currency}`).join(" · ") : "0";
   const message = [
     kind === "daily" ? "📊 Ежедневная сводка SIMKA" : "📊 Недельная сводка SIMKA",
-    `${range.start.slice(0, 10)} — ${new Date(new Date(range.end).getTime() - 1).toISOString().slice(0, 10)} (UTC)`,
+    `${range.start.slice(0, 10)} - ${new Date(new Date(range.end).getTime() - 1).toISOString().slice(0, 10)} (UTC)`,
     "",
     `Посетители: ${visits?.visitors ?? 0} · сессии: ${visits?.sessions ?? 0} · страницы: ${visits?.page_views ?? 0}`,
     `События: ${visits?.events ?? 0}`,

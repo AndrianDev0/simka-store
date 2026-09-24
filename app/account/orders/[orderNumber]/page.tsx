@@ -9,7 +9,7 @@ import { pageMetadata } from "@/lib/seo";
 import { SUPPORT_TELEGRAM_URL } from "@/lib/support";
 
 export const dynamic = "force-dynamic";
-export const metadata = pageMetadata({ title: "Заказ — SIMKA", description: "Детали заказа SIMKA.", path: "/account/orders", noindex: true });
+export const metadata = pageMetadata({ title: "Заказ - SIMKA", description: "Детали заказа SIMKA.", path: "/account/orders", noindex: true });
 
 const statusLabels: Record<string, string> = { NEW: "Новый", WAITING_FOR_MANAGER: "Ожидает менеджера", WAITING_PAYMENT: "Ожидает оплаты", PAYMENT_PENDING: "Проверяем оплату", PAID: "Оплачен", PROCESSING: "Выполняется", SHIPPED: "Отправлен", DELIVERED: "Доставлен", COMPLETED: "Завершён", CANCELLED: "Отменён", REFUNDED: "Возврат", FAILED: "Ошибка" };
 

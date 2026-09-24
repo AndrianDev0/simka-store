@@ -173,7 +173,7 @@ async function showCountry(db: Db, token: string, chatId: number, countryId: num
   const text = [
     `${country.flag || "🌍"} ${country.name}`,
     `ID: ${country.id} · Slug: ${country.slug}`,
-    `ISO: ${country.isoCode || "—"} · Регион: ${country.region || "—"}`,
+    `ISO: ${country.isoCode || "-"} · Регион: ${country.region || "-"}`,
     `Статус: ${country.publicationStatus} · Индексация: ${country.noindex ? "NOINDEX" : "INDEX"}`,
     `Порядок: ${country.sortOrder}`,
     `Операторы: ${operatorCount.length} · Товары: ${productCount.length}`,
@@ -295,7 +295,7 @@ async function showDeliveryOption(db: Db, token: string, chatId: number, product
   if (!option) { await sendMessage(token, chatId, "Вариант доставки больше не существует.", back(`delivery:list:${productId}`)); return; }
   await sendMessage(token, chatId, [
     `🚚 ${option.label}`, `ID: ${option.id}`, `Стоимость: ${option.cost === null ? "уточняет менеджер" : `${option.cost.toLocaleString("ru-RU")} ${option.currency}`}`,
-    `Регионы: ${option.regions.join(", ") || "не ограничены"}`, `Отправка: ${option.dispatchDaysMin ?? "—"}–${option.dispatchDaysMax ?? "—"} дн.`,
+    `Регионы: ${option.regions.join(", ") || "не ограничены"}`, `Отправка: ${option.dispatchDaysMin ?? "-"}-${option.dispatchDaysMax ?? "-"} дн.`,
   ].join("\n"), { inline_keyboard: [
     [{ text: "✏️ Изменить", callback_data: `delivery:edit:${productId}:${option.id}` }],
     [{ text: "🗑 Удалить", callback_data: `delivery:delete_prompt:${productId}:${option.id}` }],
@@ -362,7 +362,7 @@ async function listVariants(db: Db, token: string, chatId: number, productId: nu
 async function showVariant(db: Db, token: string, chatId: number, variantId: number) {
   const [variant] = await db.select().from(productVariants).where(eq(productVariants.id, variantId)).limit(1);
   if (!variant) { await sendMessage(token, chatId, "Вариант не найден.", back("products:list")); return; }
-  await sendMessage(token, chatId, [`🧩 ${variant.name}`, `ID: ${variant.id} · SKU: ${variant.sku}`, `Slug: ${variant.slug}`, `Цена: ${variant.price.toLocaleString("ru-RU")} ${variant.currency}`, `Себестоимость: ${variant.unitCost === null ? "не задана" : `${variant.unitCost.toLocaleString("ru-RU")} ${variant.currency}`}`, `Интернет: ${variant.dataVolume || "—"} · Срок: ${variant.validityDays ?? "—"}`, `Наличие: ${variant.available ? variant.availabilityStatus : "НЕДОСТУПЕН"} · Остаток: ${variant.stockQuantity ?? "без ограничения"}`].join("\n"), { inline_keyboard: [
+  await sendMessage(token, chatId, [`🧩 ${variant.name}`, `ID: ${variant.id} · SKU: ${variant.sku}`, `Slug: ${variant.slug}`, `Цена: ${variant.price.toLocaleString("ru-RU")} ${variant.currency}`, `Себестоимость: ${variant.unitCost === null ? "не задана" : `${variant.unitCost.toLocaleString("ru-RU")} ${variant.currency}`}`, `Интернет: ${variant.dataVolume || "-"} · Срок: ${variant.validityDays ?? "-"}`, `Наличие: ${variant.available ? variant.availabilityStatus : "НЕДОСТУПЕН"} · Остаток: ${variant.stockQuantity ?? "без ограничения"}`].join("\n"), { inline_keyboard: [
     [{ text: variant.available ? "⛔ Снять с наличия" : "✅ Отметить в наличии", callback_data: `variant:availability:${variant.id}` }],
     [{ text: "✏️ Изменить", callback_data: `variant:edit:${variant.id}` }],
     [{ text: "🗑 Удалить", callback_data: `variant:delete_prompt:${variant.id}` }],
@@ -390,7 +390,7 @@ async function listImages(db: Db, token: string, chatId: number, productId: numb
 async function showImage(db: Db, token: string, chatId: number, imageId: number) {
   const [image] = await db.select().from(productImages).where(eq(productImages.id, imageId)).limit(1);
   if (!image) { await sendMessage(token, chatId, "Изображение не найдено.", back("products:list")); return; }
-  await sendMessage(token, chatId, [`🖼 Изображение ${image.id}`, `URL: ${clip(image.url, 1000)}`, `Alt: ${image.alt || "—"}`, `Порядок: ${image.sortOrder}`, `Основное: ${image.isPrimary ? "да" : "нет"}`].join("\n"), { inline_keyboard: [
+  await sendMessage(token, chatId, [`🖼 Изображение ${image.id}`, `URL: ${clip(image.url, 1000)}`, `Alt: ${image.alt || "-"}`, `Порядок: ${image.sortOrder}`, `Основное: ${image.isPrimary ? "да" : "нет"}`].join("\n"), { inline_keyboard: [
     [{ text: "✏️ Изменить URL", callback_data: `image:edit:${image.id}:url` }, { text: "✏️ Изменить alt", callback_data: `image:edit:${image.id}:alt` }],
     [{ text: "↕️ Изменить порядок", callback_data: `image:edit:${image.id}:sort` }],
     [{ text: "⭐ Сделать основным", callback_data: `image:primary:${image.id}` }],
@@ -591,7 +591,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     return true;
   }
   if (scope === "product" && action === "delete_prompt" && first) {
-    await sendMessage(token, chatId, "Удалить товар безвозвратно? Если он уже встречается в заказах, удаление будет запрещено — используйте архив.", { inline_keyboard: [[{ text: "Да, удалить", callback_data: `product:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `product:view:${first}` }]] });
+    await sendMessage(token, chatId, "Удалить товар безвозвратно? Если он уже встречается в заказах, удаление будет запрещено - используйте архив.", { inline_keyboard: [[{ text: "Да, удалить", callback_data: `product:delete_confirm:${first}` }], [{ text: "Отмена", callback_data: `product:view:${first}` }]] });
     return true;
   }
   if (scope === "product" && ["publish", "availability", "archive", "restore", "delete_confirm"].includes(action) && first) {

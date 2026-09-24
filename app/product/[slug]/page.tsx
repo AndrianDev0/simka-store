@@ -51,7 +51,7 @@ function formatPrice(price: number, currency: string) {
 
 function dispatchWindow(min: number | null, max: number | null) {
   if (min === null && max === null) return "Срок подтвердит менеджер";
-  if (min !== null && max !== null && min !== max) return `Отправка через ${min}–${max} дн.`;
+  if (min !== null && max !== null && min !== max) return `Отправка через ${min}-${max} дн.`;
   if (min !== null && max === null) return `Отправка от ${min} дн.`;
   if (min === null && max !== null) return `Отправка до ${max} дн.`;
   return `Отправка через ${min} дн.`;
@@ -83,7 +83,7 @@ function orderedImages(product: CatalogProduct) {
 
 function instructionItems(instructions: CatalogProduct["instructions"] | string[]) {
   if (Array.isArray(instructions)) return instructions.map(String).map((item) => item.trim()).filter(Boolean);
-  return instructions.split(/\r?\n+/).map((item) => item.replace(/^\s*(?:\d+[.)]|[-–—])\s*/, "").trim()).filter(Boolean);
+  return instructions.split(/\r?\n+/).map((item) => item.replace(/^\s*(?:\d+[.)]|[-\u2013\u2014])\s*/, "").trim()).filter(Boolean);
 }
 
 function characteristicLabel(value: string) {
@@ -110,7 +110,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const product = await getProduct(slug);
   if (!product || !product.published) return { robots: { index: false, follow: false } };
 
-  const title = product.seoTitle || `${product.name} — SIMKA`;
+  const title = product.seoTitle || `${product.name} - SIMKA`;
   const description = product.seoDescription || product.shortDescription || product.fullDescription;
   const canonical = productCanonical(product);
   const image = product.ogImage || primaryImage(product)?.url || `${productPath(product)}/opengraph-image`;
@@ -217,7 +217,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
             ) : (
               <div className={`flex aspect-[4/3] flex-col justify-between rounded-[28px] bg-gradient-to-br ${product.tone} p-7 text-white shadow-xl`}>
                 <div className="flex items-start justify-between"><span className="rounded-full bg-white/15 px-3 py-1 text-xs font-black uppercase tracking-wider">{product.type}</span><CountryFlag flag={product.flag} country={product.country} className="h-10 w-14 border-white/25" /></div>
-                <div><p className="text-sm text-white/75">{product.country} · {product.operator}</p><p className="mt-2 text-4xl font-black">{product.data}</p><p className="mt-2 text-white/85">Срок действия — {product.days} дней</p></div>
+                <div><p className="text-sm text-white/75">{product.country} · {product.operator}</p><p className="mt-2 text-4xl font-black">{product.data}</p><p className="mt-2 text-white/85">Срок действия - {product.days} дней</p></div>
               </div>
             )}
           </div>

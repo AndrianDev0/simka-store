@@ -3,7 +3,7 @@ import { pageMetadata } from "@/lib/seo";
 import { SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
 
 export const metadata = pageMetadata({
-  title: "Поддержка SIM и eSIM — контакты SIMKA",
+  title: "Поддержка SIM и eSIM - контакты SIMKA",
   description: "Свяжитесь с поддержкой SIMKA в Telegram по вопросам тарифа, совместимости eSIM, оплаты, доставки, активации или статуса заказа.",
   path: "/contacts",
 });
@@ -19,7 +19,7 @@ export default function ContactsPage() {
       {
         title: "Связаться с поддержкой",
         body: <div>
-          <p>Единственный указанный на сайте контакт поддержки — <strong className="text-[#10213a]">@{SUPPORT_TELEGRAM_USERNAME}</strong>. Сообщения обрабатываются по мере поступления.</p>
+          <p>Единственный указанный на сайте контакт поддержки - <strong className="text-[#10213a]">@{SUPPORT_TELEGRAM_USERNAME}</strong>. Сообщения обрабатываются по мере поступления.</p>
           <a href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer" className={supportLinkClassName} aria-label={`Открыть поддержку @${SUPPORT_TELEGRAM_USERNAME} в Telegram`}>
             Написать @{SUPPORT_TELEGRAM_USERNAME}
           </a>

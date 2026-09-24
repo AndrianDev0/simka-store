@@ -158,12 +158,12 @@ async function notifyCustomer(order: {
   const safeLines = order.items.map((item) => `<li>${escapeHtml(item.productName)} × ${item.quantity}</li>`).join("");
   const paymentText = order.paymentMethod === "manager"
     ? "Менеджер отправит актуальные реквизиты отдельным письмом на этот email. Не оплачивайте по реквизитам из посторонних сообщений."
-    : "Перейдите на защищённую страницу платёжного провайдера по ссылке ниже. Возврат на сайт сам по себе не подтверждает оплату — подтверждение поступит серверу от провайдера.";
+    : "Перейдите на защищённую страницу платёжного провайдера по ссылке ниже. Возврат на сайт сам по себе не подтверждает оплату - подтверждение поступит серверу от провайдера.";
   const paymentLinkText = order.paymentMethod === "crypto" && order.checkoutUrl ? `\nСтраница оплаты: ${order.checkoutUrl}` : "";
   const paymentLinkHtml = order.paymentMethod === "crypto" && order.checkoutUrl ? `<p><a href="${escapeHtml(order.checkoutUrl)}">Перейти к оплате</a></p>` : "";
   return sendTransactionalEmail({
     to: order.customerEmail,
-    subject: `Заказ ${order.orderNumber} создан — SIMKA`,
+    subject: `Заказ ${order.orderNumber} создан - SIMKA`,
     text: `Здравствуйте, ${order.customerName}!\n\nЗаказ ${order.orderNumber} создан.\n${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: ${amount}${order.promoCode ? `\nПромокод: ${order.promoCode}\nСкидка: ${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.deliveryAmount ? `\nВ том числе доставка: ${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}` : ""}${order.hasPendingDeliveryCost ? "\nМенеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты." : ""}\n\n${lines}\n\n${paymentText}${paymentLinkText}\n\nСохраните номер заказа для обращения в поддержку.`,
     html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Заказ создан</h1><p>Здравствуйте, ${safeName}!</p><p>Номер заказа: <strong>${safeNumber}</strong><br>${order.hasPendingDeliveryCost ? "Промежуточная сумма" : "Сумма"}: <strong>${safeAmount}</strong>${order.promoCode ? `<br>Промокод: <strong>${escapeHtml(order.promoCode)}</strong><br>Скидка: <strong>${escapeHtml(`${order.discountAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}${order.deliveryAmount ? `<br>В том числе доставка: <strong>${escapeHtml(`${order.deliveryAmount.toLocaleString("ru-RU")} ${order.currency}`)}</strong>` : ""}</p>${order.hasPendingDeliveryCost ? "<p>Менеджер сначала подтвердит стоимость доставки, затем отправит итоговую сумму и реквизиты.</p>" : ""}<ul>${safeLines}</ul><p>${escapeHtml(paymentText)}</p>${paymentLinkHtml}<p>Сохраните номер заказа для обращения в поддержку.</p></div>`,
     idempotencyKey: `order-created/${order.orderNumber}`,
