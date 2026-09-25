@@ -7,22 +7,24 @@
   <meta name="theme-color" content="#ffffff">
   <link rel="canonical" href="https://andriandev0.github.io/simka-store/">
   <link rel="icon" href="https://simka-store.onrender.com/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./site.css?v=3">
+  <script>try{const saved=localStorage.getItem('simka-theme');if(saved==='dark'||(!saved&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('dark')}catch{}</script>
+  <link rel="stylesheet" href="./render-design.css?v=1">
   <title>SIMKA - SIM и eSIM для путешествий</title>
 </head>
 <body>
   <a class="skip-link" href="#content">К содержимому</a>
+  <div class="top-strip">✦ &nbsp; eSIM на email после оплаты · Помощь с выбором тарифа</div>
   <header class="header">
     <div class="header-inner shell">
-      <a class="brand" href="#/" aria-label="SIMKA - на главную"><span class="brand-mark">◉</span><span>SIMKA</span></a>
+      <a class="brand" href="#/" aria-label="SIMKA - на главную"><span class="brand-mark"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M8 16a18 18 0 0 1 24 0M13 22a11 11 0 0 1 14 0M18 28a4 4 0 0 1 4 0" stroke="white" stroke-width="3.5" stroke-linecap="round"/><circle cx="20" cy="33" r="2.2" fill="white"/></svg></span><span>SIMKA</span></a>
       <nav class="desktop-nav" aria-label="Основное меню"><a href="#/catalog">Каталог</a><a href="#/categories">Категории</a><a href="#/countries">Страны</a><a href="#/faq">FAQ</a></nav>
-      <div class="header-actions"><a class="account-link" href="https://simka-store.onrender.com/account">Личный кабинет</a><button id="cart-button" class="cart-button" type="button" aria-haspopup="dialog" aria-controls="cart-dialog">Корзина <span id="cart-count">0</span></button><button id="menu-button" class="menu-button" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Открыть меню">☰</button></div>
+      <div class="header-actions"><a class="account-link" href="https://simka-store.onrender.com/account">Кабинет</a><a class="help-link" href="#/contacts">Помощь</a><button id="theme-button" class="header-icon" type="button" aria-label="Переключить тему" title="Переключить тему"><span class="theme-icon">☾</span></button><button id="cart-button" class="cart-button" type="button" aria-haspopup="dialog" aria-controls="cart-dialog" aria-label="Открыть корзину"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 4h2l2.2 11h11.6L21 7H6"/><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg><span class="cart-label">Корзина</span><span id="cart-count">0</span></button><button id="menu-button" class="menu-button header-icon" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Открыть меню">☰</button></div>
     </div>
     <nav id="mobile-nav" class="mobile-nav" aria-label="Мобильное меню" hidden><a href="#/catalog">Каталог</a><a href="#/categories">Категории</a><a href="#/countries">Страны</a><a href="#/faq">FAQ</a><a href="https://simka-store.onrender.com/account">Личный кабинет</a></nav>
   </header>
-  <main id="content" tabindex="-1"><div id="app" class="shell"><div class="loading">Загружаем актуальные тарифы...</div></div></main>
+  <main id="content" tabindex="-1"><div id="app"><div class="loading shell">Загружаем актуальные тарифы...</div></div></main>
   <footer class="footer"><div class="shell footer-grid"><div><a class="brand footer-brand" href="#/">SIMKA</a><p>SIM и eSIM для путешествий. Оставайтесь на связи в поездке.</p></div><div><strong>Покупателям</strong><a href="#/catalog">Каталог</a><a href="#/payment">Оплата</a><a href="#/delivery">Доставка</a><a href="#/returns">Возврат</a></div><div><strong>Компания</strong><a href="#/about">О нас</a><a href="#/contacts">Контакты</a><a href="#/faq">FAQ</a></div><div><strong>Документы</strong><a href="#/privacy">Конфиденциальность</a><a href="#/terms">Условия</a><a href="#/cookies">Cookie Policy</a></div></div><div class="shell footer-bottom">© 2026 SIMKA. Цены указаны в карточках товаров.</div></footer>
   <div id="cart-overlay" class="overlay" hidden><section id="cart-dialog" class="cart-dialog" role="dialog" aria-modal="true" aria-labelledby="cart-title"><div class="cart-head"><div><h2 id="cart-title">Корзина</h2><p id="cart-subtitle"></p></div><button id="cart-close" type="button" class="icon-button" aria-label="Закрыть корзину">×</button></div><div id="cart-body" class="cart-body"></div></section></div>
-  <script src="./site.js?v=3" defer></script>
+  <script src="./site.js?v=4" defer></script>
 </body>
 </html>
