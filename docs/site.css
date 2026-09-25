@@ -5,3 +5,14 @@
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 .hero-art{min-width:0}
 .sim-card:nth-child(2){transform:translate(60px,36px) rotate(9deg)}
+.tone-blue{--tone-start:#1768cf;--tone-end:#0d46ad}
+.tone-violet{--tone-start:#6542cc;--tone-end:#4020a7}
+.tone-orange{--tone-start:#bd4827;--tone-end:#98261d}
+.tone-green{--tone-start:#0e806b;--tone-end:#075a4a}
+.tone-pink{--tone-start:#bd2f78;--tone-end:#8f0b53}
+.tone-ink{--tone-start:#334155;--tone-end:#111827}
+.product-top,.detail-visual{background:linear-gradient(145deg,var(--tone-start,#1768cf),var(--tone-end,#0d46ad))}
+.product-top{position:relative;isolation:isolate}
+.product-top::before{content:"";position:absolute;right:-30px;bottom:-110px;width:230px;height:230px;border-radius:50%;background:#ffffff18;pointer-events:none}
+.product-top>.type,.product-top>.flag{position:relative;z-index:1}
+.top-data{position:absolute;left:20px;bottom:18px;z-index:1;font-size:23px;line-height:1.1;letter-spacing:-.025em}
