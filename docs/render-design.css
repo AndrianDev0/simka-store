@@ -10,12 +10,14 @@
 /* Render storefront's compact, overlapping travel-profile cards. */
 .hero-art{display:block;width:100%;max-width:430px;height:370px;min-height:370px;margin-inline:auto}
 .hero-art::before{inset:12% 9%;background:radial-gradient(circle,#315fa855,transparent 70%)}
-.sim-card{position:absolute;left:4px;top:16px;width:316px;height:166px;min-height:0;border-radius:20px;background:linear-gradient(145deg,#081522,#102a43 52%,#164d72);box-shadow:inset 0 1px #ffffff29,0 26px 70px #020a1c66}
+.sim-card{position:absolute;display:block;left:4px;top:16px;width:316px;height:166px;min-height:0;padding:16px;border-radius:20px;background:linear-gradient(145deg,#081522,#102a43 52%,#164d72);box-shadow:inset 0 1px #ffffff29,0 26px 70px #020a1c66}
 .sim-card:nth-child(2){left:auto;right:0;top:auto;bottom:0;margin:0;width:326px;background:linear-gradient(145deg,#0b1d35,#153e73 46%,#35276f)}
 .sim-card .card-copy small{font-size:12px}.sim-card .card-copy strong{font-size:21px}.sim-card .chip{width:36px;height:27px;border-color:#ffffff45}
+.footer{background:var(--card)}.footer-grid{grid-template-columns:1.5fr repeat(3,1fr);gap:40px;padding-block:48px}.footer-bottom{display:flex;justify-content:space-between;gap:16px}.footer-brand .brand-mark{width:38px;height:38px}.footer-grid strong{font-size:14px}
 .cart-button{display:flex;gap:8px;padding-inline:14px;font-size:14px;font-weight:800}.cart-label{display:inline}.cart-button #cart-count{right:-6px}
 @media(max-width:700px){.cart-button{width:44px;padding:0}.cart-label{display:none}}
 @media(max-width:1000px){.hero-art{display:none}}@media(max-width:700px){.hero-art{display:none}}
+@media(max-width:700px){.footer-grid{grid-template-columns:repeat(2,1fr)}.footer-grid>div:first-child{grid-column:1/-1}.footer-bottom{display:block}.footer-bottom span+span{display:block;margin-top:8px}}
 
 /* Home sections follow the production storefront's composition. */
 .section-kicker{color:var(--primary);font-size:12px;font-weight:900;letter-spacing:.16em;text-transform:uppercase}
@@ -39,4 +41,5 @@
 .detail-panel{box-shadow:0 12px 35px #173a6012;border-radius:16px}.detail-topline{display:flex;align-items:center;justify-content:space-between;gap:10px}.detail-type{padding:6px 10px;border-radius:8px;background:var(--tint);color:var(--primary);font-size:12px;font-weight:900;text-transform:uppercase}.detail-status{padding:6px 11px;border-radius:30px;border:1px solid #9acb98;background:#eafbe8;color:#377d35;font-size:12px;font-weight:800}.dark .detail-status{background:#102218;border-color:#30603a;color:#a4e8a1}.detail-panel .price{margin-top:22px;font-size:32px}.detail-panel .old-price{text-align:left}.detail-panel .muted{font-size:12px;line-height:1.6}.detail-list{margin:23px 0 27px}.detail-list li{display:grid;gap:6px;min-height:66px}.detail-list small{color:var(--muted)}.detail-list strong{font-size:14px}
 .variants{margin-top:48px;border-top:1px solid var(--border);padding-top:35px}.variants>.grid{margin-top:22px}.variants .info-card{box-shadow:none}.variants .info-card h3{margin:0 0 8px}.variants .info-card small{color:var(--muted)}.variants .info-card strong{display:block;margin:12px 0;font-size:22px}.variants .info-card .button{width:100%}
 .product-information{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:48px;border-top:1px solid var(--border);padding-top:35px}.product-information .detail-extra{margin:0}.product-information dl{border:1px solid var(--border);border-radius:15px;background:var(--card);padding:0 20px}.product-information dl div{display:flex;justify-content:space-between;gap:15px;padding:14px 0}.product-information dl div+div{border-top:1px solid var(--border)}.product-information dt{color:var(--muted)}.product-information dd{margin:0;text-align:right;font-weight:700}
-@media(max-width:800px){.detail-layout,.product-information{grid-template-columns:1fr}.detail-visual{max-height:500px}.detail-panel{padding:23px}}@media(max-width:430px){.detail-visual{min-height:280px}.detail-list{grid-template-columns:1fr 1fr}}
+.product-information dd{min-width:0;overflow-wrap:anywhere}
+@media(max-width:800px){.detail-layout,.product-information{grid-template-columns:1fr}.detail-visual{max-height:500px}.detail-panel{padding:23px}}@media(max-width:700px){input,select{font-size:16px}}@media(max-width:430px){.detail-visual{min-height:280px}.detail-list{grid-template-columns:1fr 1fr}}

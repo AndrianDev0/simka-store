@@ -133,7 +133,8 @@
 
   function render() {
     const path = route().split("/").filter(Boolean);
-    document.title = `${path.length ? path[0] === "product" ? state.products.find((p) => p.slug === path[1])?.name || "Тариф" : pages[path[0]]?.title || "SIMKA" : "SIMKA - SIM и eSIM для путешествий"} | SIMKA`;
+    const routeTitles = { catalog: "Каталог SIM и eSIM", search: "Поиск тарифов", categories: "Категории", category: state.categories.find((item) => item.slug === path[1])?.name || "Категория", countries: "Страны", country: state.countries.find((item) => item.slug === path[1])?.name || "Страна" };
+    document.title = path.length ? `${path[0] === "product" ? state.products.find((p) => p.slug === path[1])?.name || "Тариф" : pages[path[0]]?.title || routeTitles[path[0]] || "SIMKA"} | SIMKA` : "SIMKA - SIM и eSIM для путешествий";
     if (!path.length) renderHome();
     else if (path[0] === "catalog" || path[0] === "search") renderCatalog(path[0] === "search");
     else if (path[0] === "categories") app.innerHTML = heading("Категории", "Подборки тарифов", "Выберите категорию и посмотрите доступные тарифы.") + body(state.categories.length ? `<div class="grid">${state.categories.map(categoryTile).join("")}</div>` : `<div class="empty">Категорий пока нет.</div>`);
