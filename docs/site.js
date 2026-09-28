@@ -198,6 +198,7 @@
     const stock = variant?.stockQuantity ?? product.stockQuantity;
     const next = (state.cart[key] || 0) + 1;
     if (stock !== null && next > stock) return;
+    state.receipt = null;
     state.cart[key] = next;
     persistCart();
     openCart();
@@ -241,7 +242,12 @@
     if (!lines.length) return;
     const data = new FormData(form);
     const physical = [...new Map(lines.filter((line) => line.product.type === "SIM").map((line) => [line.product.id, line.product])).values()];
-    state.busy = true; state.error = ""; renderCheckout(lines);
+    state.busy = true;
+    state.error = "";
+    form.previousElementSibling?.matches('.error-text[role="alert"]') && form.previousElementSibling.remove();
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.textContent = "Создаём заказ...";
     try {
       state.requestId ||= crypto.randomUUID();
       const response = await fetch(`${API}/api/orders`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
@@ -255,7 +261,22 @@
       if (!response.ok || !payload.order?.orderNumber) throw new Error(payload.error || "Не удалось создать заказ. Попробуйте ещё раз.");
       state.receipt = payload.order; state.cart = {}; state.checkout = false; state.requestId = null; persistCart();
     } catch (error) { state.error = error instanceof Error ? error.message : "Не удалось создать заказ. Попробуйте ещё раз."; }
-    finally { state.busy = false; renderCart(); }
+    finally {
+      state.busy = false;
+      if (state.receipt) renderCart();
+      else {
+        submitButton.disabled = false;
+        submitButton.textContent = "Создать заказ";
+        if (state.error) {
+          const message = document.createElement("p");
+          message.className = "error-text";
+          message.setAttribute("role", "alert");
+          message.textContent = state.error;
+          form.before(message);
+          message.scrollIntoView({ block: "nearest" });
+        }
+      }
+    }
   }
 
   document.addEventListener("click", (event) => {
