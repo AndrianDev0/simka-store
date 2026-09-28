@@ -18,10 +18,24 @@ const linkCard = (route, title, description) => `<a class="tile" href="${escape(
 const productCard = (product) => linkCard(`product/${encodeURIComponent(product.slug)}`, product.name, `${product.country} · ${product.operator} · ${product.data} · ${product.days} дней · ${money(product.price, product.currency)}`);
 const productCards = (items) => items.length ? `<div class="grid">${items.map(productCard).join("")}</div>` : `<p class="empty">Опубликованных товаров пока нет.</p>`;
 
-const response = await fetch(api, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(45000) });
-if (!response.ok) throw new Error(`Catalog API returned ${response.status}; existing static pages were not changed.`);
-const catalog = await response.json();
-if (!Array.isArray(catalog.products) || !Array.isArray(catalog.categories) || !Array.isArray(catalog.countries)) throw new Error("Invalid catalog response; existing static pages were not changed.");
+let catalog;
+for (let attempt = 1; attempt <= 2; attempt++) {
+  try {
+    const response = await fetch(api, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(75000) });
+    if (!response.ok) throw new Error(`Catalog API returned ${response.status}`);
+    const payload = await response.json();
+    if (!Array.isArray(payload.products) || !Array.isArray(payload.categories) || !Array.isArray(payload.countries)) throw new Error("Invalid catalog response");
+    catalog = payload;
+    break;
+  } catch (error) { console.warn(`Catalog request ${attempt}/2 failed: ${error instanceof Error ? error.message : "unknown error"}`); }
+}
+if (!catalog) {
+  try {
+    await readFile(path.join(docs, "generated-pages.json"), "utf8");
+    console.warn("Using the last checked-in static snapshot; live catalog refresh was unavailable.");
+    process.exit(0);
+  } catch { throw new Error("Catalog API unavailable and no static snapshot exists."); }
+}
 
 const { products, categories, countries } = catalog;
 const pages = [];
