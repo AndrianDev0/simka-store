@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /simka-store/
+Sitemap: https://andriandev0.github.io/simka-store/sitemap.xml

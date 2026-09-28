@@ -2,17 +2,54 @@
   "use strict";
 
   const API = "https://simka-store.onrender.com";
+  const SITE = "https://andriandev0.github.io/simka-store/";
+  const SITE_PATH = "/simka-store/";
   const STORAGE_KEY = "simka-pages-cart-v1";
   const app = document.getElementById("app");
   const overlay = document.getElementById("cart-overlay");
   const cartBody = document.getElementById("cart-body");
-  const state = { products: [], categories: [], countries: [], cart: {}, filters: {}, checkout: false, busy: false, error: "", receipt: null, requestId: null };
+  const state = { products: [], categories: [], countries: [], staticRoutes: new Set(), cart: {}, filters: {}, checkout: false, busy: false, error: "", receipt: null, requestId: null };
   try { state.cart = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { state.cart = {}; }
 
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
   const money = (amount, currency = "RUB") => { try { return new Intl.NumberFormat("ru-RU", { style: "currency", currency, maximumFractionDigits: 0 }).format(amount); } catch { return `${amount} ${currency}`; } };
-  const route = () => { try { return decodeURIComponent(location.hash.slice(1) || "/"); } catch { return "/"; } };
-  const productLink = (product) => `#/product/${encodeURIComponent(product.slug)}`;
+  const route = () => {
+    try {
+      if (location.hash.startsWith("#/")) return decodeURIComponent(location.hash.slice(1));
+      if (!location.pathname.startsWith(SITE_PATH)) return "/";
+      return `/${decodeURIComponent(location.pathname.slice(SITE_PATH.length)).replace(/\/$/, "")}`;
+    } catch { return "/"; }
+  };
+  const setMeta = (key, value, attribute = "name") => {
+    let element = document.head.querySelector(`meta[${attribute}="${key}"]`);
+    if (!element) { element = document.createElement("meta"); element.setAttribute(attribute, key); document.head.append(element); }
+    element.content = value;
+  };
+  const updateMeta = (path, fallbackTitle) => {
+    const [kind, slug] = path;
+    const item = kind === "product" ? state.products.find((p) => p.slug === slug) : kind === "country" ? state.countries.find((c) => c.slug === slug) : kind === "category" ? state.categories.find((c) => c.slug === slug) : null;
+    const title = item?.seoTitle || (item ? `${item.name} | SIMKA` : fallbackTitle);
+    const description = item?.seoDescription || item?.shortDescription || item?.description || pages[kind]?.description || "SIM и eSIM для путешествий. Сравните тарифы и оформите заказ в SIMKA.";
+    const canonicalPath = path.length ? `${path.map(encodeURIComponent).join("/")}/` : "";
+    const canonical = `${SITE}${canonicalPath}`;
+    document.title = title;
+    document.querySelector('link[rel="canonical"]').href = canonical;
+    setMeta("description", description);
+    setMeta("og:title", item?.ogTitle || title, "property");
+    setMeta("og:description", item?.ogDescription || description, "property");
+    setMeta("og:url", canonical, "property");
+    setMeta("robots", (kind === "search" || (kind === "categories" && !state.categories.length) || (item && item.noindex)) ? "noindex, follow" : "index, follow");
+    if (item?.ogImage) setMeta("og:image", item.ogImage, "property");
+    else document.head.querySelector('meta[property="og:image"]')?.remove();
+  };
+  const routeHref = (routeName) => state.staticRoutes.has(routeName) ? `${SITE_PATH}${routeName}/` : `${SITE_PATH}#/${routeName}`;
+  const productLink = (product) => routeHref(`product/${encodeURIComponent(product.slug)}`);
+  const rewriteLinks = () => {
+    document.querySelectorAll('a[href^="#/"]').forEach((anchor) => {
+      const routeName = anchor.getAttribute("href").slice(2).replace(/\/$/, "");
+      anchor.href = routeName ? routeHref(routeName) : SITE_PATH;
+    });
+  };
   const isAvailable = (product) => product.available && product.availabilityStatus !== "OUT_OF_STOCK" && product.stockQuantity !== 0;
   const availableVariant = (product) => product.variants?.find((variant) => variant.available && variant.availabilityStatus !== "OUT_OF_STOCK" && variant.stockQuantity !== 0) || null;
   const offer = (product) => { const variant = availableVariant(product); return { variant, price: variant?.price ?? product.price, currency: variant?.currency ?? product.currency, data: variant?.data || product.data, days: variant?.days ?? product.days }; };
@@ -26,7 +63,7 @@
   const flag = (countryName, countryId, fallback = "🌍") => {
     const slug = state.countries.find((country) => country.id === countryId || country.name === countryName)?.slug;
     const code = flagCodes[slug];
-    return code ? `<img class="flag-image" src="./flags/${code}.svg" alt="Флаг: ${escape(countryName)}" loading="lazy">` : `<span aria-hidden="true">${escape(fallback)}</span>`;
+    return code ? `<img class="flag-image" src="${SITE_PATH}flags/${code}.svg" alt="Флаг: ${escape(countryName)}" loading="lazy">` : `<span aria-hidden="true">${escape(fallback)}</span>`;
   };
   const persistCart = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.cart)); } catch {} updateCartCount(); };
   const cartLines = () => Object.entries(state.cart).flatMap(([key, quantity]) => {
@@ -90,7 +127,7 @@
 
   function renderHome() {
     const featured = state.products.filter(isAvailable);
-    const heroCard = (country, code, data, days, operator, iccid) => `<div class="sim-card"><div class="hero-card-head"><div class="hero-card-brand"><span class="hero-card-wifi">◉</span><span><strong>SIMKA</strong><small>Travel eSIM profile</small></span></div><img class="flag-image" src="./flags/${code}.svg" alt=""></div><div class="hero-card-facts"><div><small>Пакет данных</small><strong>${data}</strong></div><div><small>Срок</small><strong>${days}</strong></div><div><small>Сеть</small><strong>${operator}</strong></div></div><div class="hero-card-bottom"><span>${country} · ICCID •••• ${iccid}</span><span>● QR ready</span></div></div>`;
+    const heroCard = (country, code, data, days, operator, iccid) => `<div class="sim-card"><div class="hero-card-head"><div class="hero-card-brand"><span class="hero-card-wifi">◉</span><span><strong>SIMKA</strong><small>Travel eSIM profile</small></span></div><img class="flag-image" src="${SITE_PATH}flags/${code}.svg" alt=""></div><div class="hero-card-facts"><div><small>Пакет данных</small><strong>${data}</strong></div><div><small>Срок</small><strong>${days}</strong></div><div><small>Сеть</small><strong>${operator}</strong></div></div><div class="hero-card-bottom"><span>${country} · ICCID •••• ${iccid}</span><span>● QR ready</span></div></div>`;
     const regions = [...new Set(featured.map((product) => product.region).filter(Boolean))];
     app.innerHTML = `<div class="hero-section"><section class="hero shell"><div><div class="eyebrow">◎ SIM и eSIM для путешествий</div><h1>eSIM и SIM<br><span>для путешествий</span></h1><p>Выберите страну, получите eSIM с инструкцией после оплаты или закажите физическую SIM с доставкой.</p><form id="home-search" class="hero-search"><input name="q" type="search" aria-label="Поиск тарифа" placeholder="Куда вы едете?"><button class="button gradient-button" type="submit">Найти тариф →</button></form><div class="hero-checks"><span>Цена и условия до заказа</span><span>Инструкция по активации</span><span>Поддержка на русском</span></div></div><div class="hero-art" aria-hidden="true">${heroCard("Турция", "tr", "20 ГБ", "30 дней", "Turkcell", "4821")}${heroCard("Таиланд", "th", "∞ ГБ", "15 дней", "AIS", "7359")}</div></section></div>
     ${state.categories.length ? `<section class="home-categories"><div class="section shell"><div class="section-head"><div><div class="section-kicker">Категории</div><h2>Подборки тарифов</h2></div><a class="section-link" href="#/categories">Все категории →</a></div><div class="grid">${state.categories.map(categoryTile).join("")}</div></div></section>` : ""}
@@ -100,8 +137,8 @@
     <section class="faq-section"><div class="section shell faq-layout"><div><div class="faq-icon">?</div><h2>Частые вопросы</h2><p>Не нашли ответ? Напишите в поддержку - поможем проверить совместимость и выбрать тариф.</p><a class="section-link" href="#/faq">Все вопросы →</a></div><div class="faq-questions">${pages.faq.cards.slice(0, 3).map(([question, answer], index) => `<details ${index === 0 ? "open" : ""}><summary>${escape(question)}</summary><p>${escape(answer)}</p></details>`).join("")}</div></div></section>`;
   }
 
-  function categoryTile(category) { return `<a class="tile" href="#/category/${encodeURIComponent(category.slug)}"><h3>${escape(category.name)}</h3><p>${escape(category.description || "Подборка тарифов SIMKA")}</p><small>${category.productIds?.length || 0} товаров →</small></a>`; }
-  function countryTile(country) { return `<a class="tile" href="#/country/${encodeURIComponent(country.slug)}"><h3>${flag(country.name, country.id, country.flag)} ${escape(country.name)}</h3><p>${escape(country.description || "Тарифы SIM и eSIM для поездки")}</p><small>Смотреть тарифы →</small></a>`; }
+  function categoryTile(category) { return `<a class="tile" href="${routeHref(`category/${encodeURIComponent(category.slug)}`)}"><h3>${escape(category.name)}</h3><p>${escape(category.description || "Подборка тарифов SIMKA")}</p><small>${category.productIds?.length || 0} товаров →</small></a>`; }
+  function countryTile(country) { return `<a class="tile" href="${routeHref(`country/${encodeURIComponent(country.slug)}`)}"><h3>${flag(country.name, country.id, country.flag)} ${escape(country.name)}</h3><p>${escape(country.description || "Тарифы SIM и eSIM для поездки")}</p><small>Смотреть тарифы →</small></a>`; }
 
   function renderCatalog(searchMode = false) {
     const filters = state.filters;
@@ -109,13 +146,15 @@
     const operators = [...new Set(state.products.map((product) => product.operator))].sort((a, b) => a.localeCompare(b, "ru"));
     const options = (values, selected) => values.map((value) => `<option value="${escape(value)}" ${selected === value ? "selected" : ""}>${escape(value)}</option>`).join("");
     const results = state.products.filter((product) => {
-      const text = `${product.name} ${product.country} ${product.operator} ${product.sku} ${product.categoryIds?.join(" ")}`.toLocaleLowerCase("ru");
+      const categoryNames = state.categories.filter((category) => product.categoryIds?.includes(category.id)).map((category) => category.name).join(" ");
+      const text = `${product.name} ${product.country} ${product.operator} ${product.sku} ${categoryNames}`.toLocaleLowerCase("ru");
       const price = offer(product).price;
-      return (!filters.q || text.includes(filters.q.toLocaleLowerCase("ru"))) && (!filters.country || product.country === filters.country) && (!filters.operator || product.operator === filters.operator) && (!filters.type || product.type === filters.type) && (!filters.availability || (filters.availability === "available" ? isAvailable(product) : !isAvailable(product))) && (!filters.maxPrice || price <= Number(filters.maxPrice));
+      const dataMb = product.isUnlimited ? Infinity : Number(product.dataMb || 0);
+      return (!filters.q || text.includes(filters.q.toLocaleLowerCase("ru"))) && (!filters.country || product.country === filters.country) && (!filters.operator || product.operator === filters.operator) && (!filters.category || product.categoryIds?.includes(filters.category)) && (!filters.type || product.type === filters.type) && (!filters.availability || (filters.availability === "available" ? isAvailable(product) : !isAvailable(product))) && (!filters.maxPrice || price <= Number(filters.maxPrice)) && (!filters.minData || dataMb >= Number(filters.minData) * 1024) && (!filters.minDays || offer(product).days >= Number(filters.minDays));
     });
     if (filters.sort === "price-asc") results.sort((a, b) => offer(a).price - offer(b).price);
     if (filters.sort === "price-desc") results.sort((a, b) => offer(b).price - offer(a).price);
-    app.innerHTML = `${heading(searchMode ? "Поиск" : "Каталог", searchMode ? "Найти тариф" : "Тарифы для поездок", "Сравните страну, оператора, тип SIM и цену.")}${body(`<form id="catalog-filters" class="filter-panel"><label>Поиск<input name="q" type="search" value="${escape(filters.q || "")}" placeholder="Название, страна или оператор"></label><label>Страна<select name="country"><option value="">Все страны</option>${options(countries, filters.country)}</select></label><label>Оператор<select name="operator"><option value="">Все операторы</option>${options(operators, filters.operator)}</select></label><label>Тип SIM<select name="type"><option value="">Все типы</option>${options(["eSIM", "SIM"], filters.type)}</select></label><label>Наличие<select name="availability"><option value="">Все товары</option><option value="available" ${filters.availability === "available" ? "selected" : ""}>В наличии</option><option value="unavailable" ${filters.availability === "unavailable" ? "selected" : ""}>Нет в наличии</option></select></label><label>Цена до<input name="maxPrice" type="number" min="0" value="${escape(filters.maxPrice || "")}" placeholder="Без ограничения"></label><label>Сортировка<select name="sort"><option value="">Популярные</option><option value="price-asc" ${filters.sort === "price-asc" ? "selected" : ""}>Сначала дешевле</option><option value="price-desc" ${filters.sort === "price-desc" ? "selected" : ""}>Сначала дороже</option></select></label><button class="button gradient-button" type="submit">Показать</button></form><p class="result-count">Найдено тарифов: <strong>${results.length}</strong></p>${productGrid(results)}`)}`;
+    app.innerHTML = `${heading(searchMode ? "Поиск" : "Каталог", searchMode ? "Найти тариф" : "Тарифы для поездок", "Сравните страну, оператора, тип SIM и цену.")}${body(`<form id="catalog-filters" class="filter-panel"><label>Поиск<input name="q" type="search" value="${escape(filters.q || "")}" placeholder="Название, страна, оператор, SKU"></label><label>Страна<select name="country"><option value="">Все страны</option>${options(countries, filters.country)}</select></label><label>Оператор<select name="operator"><option value="">Все операторы</option>${options(operators, filters.operator)}</select></label><label>Категория<select name="category"><option value="">Все категории</option>${state.categories.map((category) => `<option value="${escape(category.id)}" ${filters.category === category.id ? "selected" : ""}>${escape(category.name)}</option>`).join("")}</select></label><label>Тип SIM<select name="type"><option value="">Все типы</option>${options(["eSIM", "SIM"], filters.type)}</select></label><label>Наличие<select name="availability"><option value="">Все товары</option><option value="available" ${filters.availability === "available" ? "selected" : ""}>В наличии</option><option value="unavailable" ${filters.availability === "unavailable" ? "selected" : ""}>Нет в наличии</option></select></label><label>Цена до<input name="maxPrice" type="number" min="0" value="${escape(filters.maxPrice || "")}" placeholder="Без ограничения"></label><label>Интернет от, ГБ<input name="minData" type="number" min="0" step="1" value="${escape(filters.minData || "")}" placeholder="Любой объём"></label><label>Срок от, дней<input name="minDays" type="number" min="0" step="1" value="${escape(filters.minDays || "")}" placeholder="Любой срок"></label><label>Сортировка<select name="sort"><option value="">Популярные</option><option value="price-asc" ${filters.sort === "price-asc" ? "selected" : ""}>Сначала дешевле</option><option value="price-desc" ${filters.sort === "price-desc" ? "selected" : ""}>Сначала дороже</option></select></label><button class="button gradient-button" type="submit">Показать</button></form><p class="result-count">Найдено тарифов: <strong>${results.length}</strong></p>${productGrid(results)}`)}`;
   }
 
   function renderProduct(slug) {
@@ -134,7 +173,8 @@
   function render() {
     const path = route().split("/").filter(Boolean);
     const routeTitles = { catalog: "Каталог SIM и eSIM", search: "Поиск тарифов", categories: "Категории", category: state.categories.find((item) => item.slug === path[1])?.name || "Категория", countries: "Страны", country: state.countries.find((item) => item.slug === path[1])?.name || "Страна" };
-    document.title = path.length ? `${path[0] === "product" ? state.products.find((p) => p.slug === path[1])?.name || "Тариф" : pages[path[0]]?.title || routeTitles[path[0]] || "SIMKA"} | SIMKA` : "SIMKA - SIM и eSIM для путешествий";
+    const fallbackTitle = path.length ? `${path[0] === "product" ? state.products.find((p) => p.slug === path[1])?.name || "Тариф" : pages[path[0]]?.title || routeTitles[path[0]] || "SIMKA"} | SIMKA` : "SIMKA - SIM и eSIM для путешествий";
+    updateMeta(path, fallbackTitle);
     if (!path.length) renderHome();
     else if (path[0] === "catalog" || path[0] === "search") renderCatalog(path[0] === "search");
     else if (path[0] === "categories") app.innerHTML = heading("Категории", "Подборки тарифов", "Выберите категорию и посмотрите доступные тарифы.") + body(state.categories.length ? `<div class="grid">${state.categories.map(categoryTile).join("")}</div>` : `<div class="empty">Категорий пока нет.</div>`);
@@ -144,6 +184,7 @@
     else if (path[0] === "product") renderProduct(path[1]);
     else if (pages[path[0]]) { const page = pages[path[0]]; app.innerHTML = heading("Информация", page.title, page.description) + body(`<div class="info-grid">${page.cards.map(([title, text]) => infoCard(title, text)).join("")}</div>${["terms", "privacy", "returns", "cookies"].includes(path[0]) ? `<p class="muted">Полный действующий текст документа: <a href="${API}/${path[0]}" target="_blank" rel="noopener noreferrer">открыть документ</a>.</p>` : ""}`); }
     else app.innerHTML = heading("SIMKA", "Страница не найдена", "Откройте каталог или вернитесь на главную.") + body(`<a class="button" href="#/catalog">Каталог</a>`);
+    rewriteLinks();
     document.getElementById("content").focus({ preventScroll: true });
     scrollTo({ top: 0, behavior: "instant" });
   }
@@ -179,7 +220,7 @@
     const lines = cartLines();
     document.getElementById("cart-subtitle").textContent = lines.length ? `${lines.reduce((sum, line) => sum + line.quantity, 0)} товаров` : "Пока здесь пусто";
     if (state.receipt) { cartBody.innerHTML = `<div class="success"><div class="check">✓</div><strong>Заказ создан</strong><p>Номер заказа: <b>${escape(state.receipt.orderNumber)}</b></p><div class="notice">Реквизиты для оплаты придут на email, указанный при оформлении. Сохраните номер заказа.${state.receipt.customerNotified ? " Письмо-подтверждение отправлено." : " Если письмо-подтверждение не пришло, обратитесь в поддержку."}</div>${state.receipt.checkoutUrl ? `<p><a class="button" href="${escape(state.receipt.checkoutUrl)}">Перейти к оплате</a></p>` : ""}</div>`; return; }
-    if (state.checkout) { renderCheckout(lines); return; }
+    if (state.checkout) { renderCheckout(lines); rewriteLinks(); return; }
     if (!lines.length) { cartBody.innerHTML = `<div class="empty">Добавьте подходящий тариф из каталога.</div><button class="button" data-close-cart>Выбрать тариф</button>`; return; }
     const currencies = new Set(lines.map((line) => line.currency));
     const total = lines.reduce((sum, line) => sum + line.price * line.quantity, 0);
@@ -241,6 +282,7 @@
     const type = controls.querySelector('[name="type"]').value;
     const visible = state.products.filter((product) => isAvailable(product) && (!query || `${product.name} ${product.country} ${product.operator} ${product.sku}`.toLocaleLowerCase("ru").includes(query)) && (!region || product.region === region) && (!type || product.type === type));
     results.innerHTML = productGrid(visible);
+    rewriteLinks();
   };
   document.addEventListener("input", (event) => { if (event.target.closest("#home-filters")) updateHomeResults(); });
   document.addEventListener("change", (event) => { if (event.target.closest("#home-filters")) updateHomeResults(); });
@@ -257,6 +299,11 @@
 
   async function loadCatalog() {
     try {
+      const routesResponse = await fetch(`${SITE_PATH}generated-pages.json`);
+      const routes = routesResponse.ok ? await routesResponse.json() : [];
+      state.staticRoutes = new Set(Array.isArray(routes) ? routes : []);
+    } catch { state.staticRoutes = new Set(); }
+    try {
       const response = await fetch(`${API}/api/pages/catalog`, { headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error("Каталог временно недоступен");
       const payload = await response.json();
@@ -265,7 +312,11 @@
       state.countries = Array.isArray(payload.countries) ? payload.countries : [];
       updateCartCount(); render();
     } catch {
-      app.innerHTML = `<div class="error-panel"><h1>Не удалось загрузить тарифы</h1><p>Попробуйте обновить страницу. Если ошибка повторяется, откройте основной магазин.</p><button class="button" id="retry-catalog">Повторить</button> <a class="button-soft" href="${API}/">Открыть магазин</a></div>`;
+      const warning = `<div id="catalog-error" class="error-panel" role="alert"><strong>Актуальность тарифов временно не подтверждена</strong><p>Сохранённая версия страницы доступна для просмотра, но оформить заказ можно после восстановления связи с магазином.</p><button class="button" id="retry-catalog">Повторить</button> <a class="button-soft" href="${API}/">Открыть магазин</a></div>`;
+      app.querySelector("#catalog-error")?.remove();
+      if (app.querySelector(".loading")) app.innerHTML = warning;
+      else app.insertAdjacentHTML("afterbegin", warning);
+      rewriteLinks();
       document.getElementById("retry-catalog").addEventListener("click", loadCatalog);
     }
   }
