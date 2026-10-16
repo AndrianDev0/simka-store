@@ -116,7 +116,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const image = product.ogImage || primaryImage(product)?.url || `${productPath(product)}/opengraph-image`;
   const openGraphImage = image ? absoluteUrl(image) : undefined;
 
-  return pageMetadata({ title, description, path: productPath(product), canonical, image: openGraphImage, imageAlt: product.name, socialTitle: product.ogTitle, socialDescription: product.ogDescription });
+  return pageMetadata({ title, description, path: productPath(product), canonical, image: openGraphImage, imageAlt: product.name, socialTitle: product.ogTitle, socialDescription: product.ogDescription, noindex: product.sku.startsWith("DEMO-") });
 }
 
 export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {

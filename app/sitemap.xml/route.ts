@@ -24,7 +24,8 @@ function hasSelfCanonical(canonical: string | null | undefined, path: string) {
 }
 
 export async function GET() {
-  const [products, countries, categories] = await Promise.all([getCatalogProducts({ requireDatabase: true }), getCatalogCountries(), getPublicCategories({ strict: true })]);
+  const [allProducts, countries, categories] = await Promise.all([getCatalogProducts({ requireDatabase: true }), getCatalogCountries(), getPublicCategories({ strict: true })]);
+  const products = allProducts.filter(product => !product.sku.startsWith("DEMO-"));
   const staticPaths = ["/", "/catalog", "/categories", "/countries", "/faq", "/payment", "/delivery", "/contacts", "/about", "/privacy", "/terms", "/returns", "/cookies"];
   const builtInCategories = [
     { slug: "esim", hasItems: products.some((product) => product.type === "eSIM") },
