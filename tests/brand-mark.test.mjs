@@ -8,7 +8,10 @@ test('approved brand has scoped depth, one-time motion and reduced-motion fallba
   assert.ok(source.includes('.simka-brand>g{filter:drop-shadow'));
   assert.ok(source.includes('@media(prefers-reduced-motion:reduce){.simka-word{animation:none}}'));
   assert.ok(!source.includes('infinite'));
-  assert.ok(source.includes('dark:text-white'));
+  assert.ok(source.includes('.simka-brand{color:#10213a;'));
+  assert.ok(source.includes('.dark .simka-brand{color:#f8fafc;'));
+  assert.ok(source.includes('--brand-edge:#5078ac'));
+  assert.ok(!source.includes('dark:text-white'));
   assert.ok(!source.includes('svg>g{'));
 });
 

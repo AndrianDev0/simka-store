@@ -1,6 +1,6 @@
 export function BrandMark() {
-  return <svg role="img" aria-label="симка" viewBox="0 0 330 80" width="132" height="32" className="simka-brand h-8 w-[132px] shrink-0 overflow-visible text-[#10213a] dark:text-white">
-    <style>{`.simka-brand>g{filter:drop-shadow(0 1px 0 #0a397f) drop-shadow(0 1px 0 #0a397f) drop-shadow(0 1px 0 #082d65) drop-shadow(0 5px 3px #071b3438)}.simka-word{animation:simka-reveal .95s cubic-bezier(.22,1,.36,1) both;animation-delay:.12s}@keyframes simka-reveal{from{clip-path:inset(0 100% 0 0);opacity:0}to{clip-path:inset(-20px -20px -20px -20px);opacity:1}}@media(prefers-reduced-motion:reduce){.simka-word{animation:none}}`}</style>
+  return <svg role="img" aria-label="симка" viewBox="0 0 330 80" width="132" height="32" className="simka-brand h-8 w-[132px] shrink-0 overflow-visible">
+    <style>{`.simka-brand{color:#10213a;--brand-edge:#6882a5;--brand-shadow:#071b3438}.dark .simka-brand{color:#f8fafc;--brand-edge:#5078ac;--brand-shadow:#00000099}.simka-brand>g{filter:drop-shadow(0 1px 0 var(--brand-edge)) drop-shadow(0 1px 0 var(--brand-edge)) drop-shadow(0 1px 0 var(--brand-edge)) drop-shadow(0 5px 3px var(--brand-shadow))}.dark .simka-brand>g:first-of-type{stroke:#58a6ff}.simka-word{animation:simka-reveal .95s cubic-bezier(.22,1,.36,1) both;animation-delay:.12s}@keyframes simka-reveal{from{clip-path:inset(0 100% 0 0);opacity:0}to{clip-path:inset(-20px -20px -20px -20px);opacity:1}}@media(prefers-reduced-motion:reduce){.simka-word{animation:none}}`}</style>
 <g fill="none" stroke="#1168e8" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round">
 <path d="M30 16H20a12 12 0 0 0-12 12v16a12 12 0 0 0 12 12h10"/>
 <path d="M36 24h10a12 12 0 0 1 12 12v16a12 12 0 0 1-12 12H36"/>
