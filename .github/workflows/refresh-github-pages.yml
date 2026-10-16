@@ -29,14 +29,10 @@ jobs:
         with:
           node-version: "24"
       - uses: actions/configure-pages@v5
-      - name: Build public SEO pages from the catalog API
-        run: node scripts/build-github-pages.mjs
-      - name: Validate generated pages
-        run: |
-          node --check docs/site.js
-          node --test tests/github-pages-static.test.mjs
+      - name: Build redirect to the current store
+        run: node scripts/build-pages-redirect.mjs
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: .pages-redirect
       - id: deploy
         uses: actions/deploy-pages@v4

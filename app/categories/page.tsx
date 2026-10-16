@@ -3,7 +3,7 @@ import { getPublicCategories } from "@/lib/categories";
 import { itemListJsonLd, jsonLd, pageMetadata } from "@/lib/seo";
 
 const builtInCategories = [
-  { slug: "esim", name: "eSIM", text: "Цифровые тарифы с доставкой QR-кода на email.", parentId: null },
+  { slug: "esim", name: "eSIM", text: "Цифровые тарифы с доставкой кода активации на email.", parentId: null },
   { slug: "sim", name: "Физические SIM", text: "Пластиковые SIM-карты с доставкой по согласованному адресу.", parentId: null },
   { slug: "europe", name: "Европа", text: "Связь для путешествий по странам Европы.", parentId: null },
   { slug: "asia", name: "Азия", text: "Тарифы для Таиланда, Японии и других направлений Азии.", parentId: null },

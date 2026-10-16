@@ -1477,7 +1477,7 @@ function validTrackingUrl(value: string) {
 }
 
 async function sendEsimDeliveryEmail(item: NonNullable<Awaited<ReturnType<typeof resolveOrderItem>>>, activationCode: string, idempotencyKey = `esim-delivery/${item.itemId}`) {
-  const instructions = item.fulfillmentInstructions || "Следуйте инструкции из карточки тарифа. Если возникнет вопрос, ответьте на это письмо.";
+  const instructions = item.fulfillmentInstructions || "Следуйте инструкции из карточки тарифа. Если возникнет вопрос, напишите в поддержку через раздел «Контакты» на simki.cc и укажите номер заказа.";
   return sendTransactionalEmail({
     to: item.customerEmail,
     subject: `eSIM по заказу ${item.orderNumber} - SIMKA`,
@@ -1517,7 +1517,7 @@ async function sendOrderStatusEmail(order: { customerEmail: string; customerName
   const descriptions: Record<string, { subject: string; title: string; body: string }> = {
     PAID: { subject: "Оплата подтверждена", title: "Оплата получена", body: "Оплата подтверждена. Заказ передан на выполнение." },
     PROCESSING: { subject: "Заказ выполняется", title: "Начали выполнение", body: "Менеджер начал выдачу eSIM или подготовку физической SIM к отправке." },
-    DELIVERED: { subject: "SIM доставлена", title: "Доставка отмечена завершённой", body: "Физическая SIM отмечена как доставленная. Если вы её не получили, сразу ответьте на это письмо." },
+    DELIVERED: { subject: "SIM доставлена", title: "Доставка отмечена завершённой", body: "Физическая SIM отмечена как доставленная. Если вы её не получили, сразу напишите в поддержку через раздел «Контакты» на simki.cc и укажите номер заказа." },
     COMPLETED: { subject: "Заказ выполнен", title: "Заказ завершён", body: "Все позиции заказа отмечены как выданные или доставленные." },
     REFUNDED: { subject: "Возврат подтверждён", title: "Средства возвращены", body: "Менеджер отметил возврат средств по заказу как выполненный. Срок зачисления зависит от способа оплаты." },
     FAILED: { subject: "Заказ не выполнен", title: "Заказ закрыт с ошибкой", body: "Заказ закрыт из-за ошибки до подтверждения оплаты. Деньги по этому заказу не были отмечены как полученные. Если вы уже оплатили, срочно свяжитесь с поддержкой." },
@@ -1538,8 +1538,8 @@ async function sendPaymentRequisitesEmail(order: { customerEmail: string; custom
   return sendTransactionalEmail({
     to: order.customerEmail,
     subject: `Реквизиты для заказа ${order.orderNumber} - SIMKA`,
-    text: `Здравствуйте, ${order.customerName}!\n\nИтоговая сумма заказа ${order.orderNumber}: ${amount}\n\nАктуальные реквизиты:\n${requisites}\n\nПосле оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.`,
-    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Реквизиты для оплаты</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong><br>Итоговая сумма: <strong>${escapeHtml(amount)}</strong></p><div style="white-space:pre-line;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px">${escapeHtml(requisites)}</div><p>После оплаты ответьте на это письмо или сообщите менеджеру номер заказа. Не используйте реквизиты из других сообщений.</p></div>`,
+    text: `Здравствуйте, ${order.customerName}!\n\nИтоговая сумма заказа ${order.orderNumber}: ${amount}\n\nАктуальные реквизиты:\n${requisites}\n\nПосле оплаты сообщите менеджеру номер заказа через раздел «Контакты» на simki.cc. Не используйте реквизиты из других сообщений.`,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#10213a"><h1 style="font-size:24px">Реквизиты для оплаты</h1><p>Здравствуйте, ${escapeHtml(order.customerName)}!</p><p>Заказ: <strong>${escapeHtml(order.orderNumber)}</strong><br>Итоговая сумма: <strong>${escapeHtml(amount)}</strong></p><div style="white-space:pre-line;border:1px solid #dbe5ef;border-radius:12px;background:#f6f9fc;padding:16px">${escapeHtml(requisites)}</div><p>После оплаты сообщите менеджеру номер заказа через раздел «Контакты» на simki.cc. Не используйте реквизиты из других сообщений.</p></div>`,
     idempotencyKey: `payment-requisites/${order.orderNumber}/${order.totalAmount}`,
   });
 }
@@ -1771,7 +1771,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
       encryptedValue = await encryptFulfillmentSecret(requisites, `store-setting:${PAYMENT_REQUISITES_KEY}`);
     } catch (error) {
       if (isEncryptionConfigError(error)) {
-        await sendMessage(token, chatId, "Сохранение реквизитов временно недоступно: администратору нужно добавить FULFILLMENT_ENCRYPTION_KEY в настройках Render (минимум 32 символа), затем повторить ввод.", backKeyboard());
+        await sendMessage(token, chatId, "Сохранение реквизитов временно недоступно: администратору нужно добавить FULFILLMENT_ENCRYPTION_KEY в настройках сервера (минимум 32 символа), затем повторить ввод.", backKeyboard());
         return true;
       }
       throw error;
@@ -1850,7 +1850,7 @@ async function handleFulfillmentReply(token: string, chatId: number, adminId: nu
       encrypted = await encryptFulfillmentSecret(activationCode, item.itemId);
     } catch (error) {
       if (isEncryptionConfigError(error)) {
-        await sendMessage(token, chatId, "Выдача eSIM временно недоступна: администратору нужно добавить FULFILLMENT_ENCRYPTION_KEY в настройках Render (минимум 32 символа), затем повторить ввод.", orderBackKeyboard(item.orderNumber));
+        await sendMessage(token, chatId, "Выдача eSIM временно недоступна: администратору нужно добавить FULFILLMENT_ENCRYPTION_KEY в настройках сервера (минимум 32 символа), затем повторить ввод.", orderBackKeyboard(item.orderNumber));
         return true;
       }
       throw error;

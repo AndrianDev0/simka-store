@@ -1,6 +1,8 @@
 import { getPublicCategories } from "@/lib/categories";
 import { getCatalogCountries, getCatalogProducts } from "@/lib/catalog-repository";
 import { pagesCors } from "@/lib/pages-cors";
+import { getEmailConfigurationStatus } from "@/lib/email";
+import { getPublicPaymentMethods } from "@/lib/payment-methods";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +17,8 @@ export async function GET(request: Request) {
       products: products.filter((product) => product.publicationStatus === "PUBLISHED"),
       categories,
       countries: countries.filter((country) => country.publicationStatus === "PUBLISHED"),
+      emailConfigured: getEmailConfigurationStatus().configured,
+      paymentMethods: getPublicPaymentMethods(),
     }, { headers: { "Cache-Control": "public, max-age=60" } }), request);
   } catch (error) {
     console.error("pages_catalog_failed", { name: error instanceof Error ? error.name : "UnknownError" });

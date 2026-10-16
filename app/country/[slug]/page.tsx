@@ -6,7 +6,7 @@ import { CatalogGrid } from "@/app/components/catalog-grid";
 import { CatalogPagination } from "@/app/components/catalog-pagination";
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
 import { getPublicCategories } from "@/lib/categories";
-import { getCatalogCountryBySlug, queryCatalogProducts } from "@/lib/catalog-repository";
+import { getCatalogCountryBySlug, getCountryCatalogRelations, queryCatalogProducts } from "@/lib/catalog-repository";
 import { breadcrumbJsonLd, itemListJsonLd, jsonLd, pageMetadata } from "@/lib/seo";
 import { getSlugRedirect } from "@/lib/slug-redirects";
 
@@ -48,8 +48,7 @@ export default async function CountryPage({ params, searchParams }: { params: Pr
   const page = Math.min(requestedPage, pages);
   if (page !== requestedPage) result = await queryCatalogProducts({ country: country.name }, page);
   const items = result.items;
-  const operators = [...new Set(items.map((product) => product.operator))];
-  const categoryIds = new Set(items.flatMap((product) => product.categoryIds));
+  const { operators, categoryIds } = await getCountryCatalogRelations(country.id);
   const relatedCategories = categories.filter((category) => categoryIds.has(category.id));
   const canonicalPath = `/country/${encodeURIComponent(country.slug)}`;
   const breadcrumbs = breadcrumbJsonLd([{ name: "Главная", path: "/" }, { name: "Страны", path: "/countries" }, { name: country.name, path: canonicalPath }]);

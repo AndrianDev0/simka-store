@@ -10,7 +10,7 @@ if (!connectionString) {
 
 const client = new Client({
   connectionString,
-  ssl: /(?:localhost|127\.0\.0\.1)/.test(connectionString) ? false : { rejectUnauthorized: false },
+  ssl: process.env.DATABASE_SSL === "disable" || /(?:localhost|127\.0\.0\.1)/.test(connectionString) ? false : { rejectUnauthorized: false },
 });
 
 await client.connect();

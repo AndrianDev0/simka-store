@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readBoundedRequestText, RequestBodyTooLargeError } from "@/lib/bounded-request-body";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { catalogProducts, cryptoPaymentEvents, cryptoPayments, orderItems, orders, productVariants } from "@/db/schema";
@@ -49,8 +50,13 @@ export async function POST(request: Request, context: { params: Promise<{ provid
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 100_000) return Response.json({ error: "Payload too large" }, { status: 413 });
 
-  const rawBody = await request.text();
-  if (Buffer.byteLength(rawBody, "utf8") > 100_000) return Response.json({ error: "Payload too large" }, { status: 413 });
+  let rawBody: string;
+  try {
+    rawBody = await readBoundedRequestText(request, 100_000);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return Response.json({ error: "Payload too large" }, { status: 413 });
+    return Response.json({ error: "Invalid payload" }, { status: 400 });
+  }
   let json: unknown;
   try { json = JSON.parse(rawBody); } catch { return Response.json({ error: "Invalid payload" }, { status: 400 }); }
   if (!verifyPlisioCallbackSignature(json, config.apiKey)) return Response.json({ error: "Invalid signature" }, { status: 401 });

@@ -1,0 +1,8 @@
+[Unit]
+Description=SIMKA hourly analytics monitoring
+[Timer]
+OnCalendar=*-*-* *:37:00 UTC
+Persistent=true
+Unit=simka-analytics@hourly.service
+[Install]
+WantedBy=timers.target

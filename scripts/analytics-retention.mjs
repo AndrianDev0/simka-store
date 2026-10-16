@@ -7,7 +7,7 @@ export async function purgeExpiredAnalytics() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is not configured");
 
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+  const client = new Client({ connectionString, ssl: process.env.DATABASE_SSL === "disable" ? false : { rejectUnauthorized: false } });
   await client.connect();
   try {
     await client.query("BEGIN");

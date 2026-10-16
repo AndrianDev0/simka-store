@@ -1,0 +1,11 @@
+{
+  "notice": "Вымышленные примеры для согласования. Не предложения оператора, не публиковать и не принимать оплату без подтверждения поставщика.",
+  "publicationStatus": "DRAFT",
+  "purchasable": false,
+  "items": [
+    { "name": "Пример: Турция, 5 ГБ", "type": "eSIM", "country": "Турция", "dataGb": 5, "days": 7, "illustrativePrice": 690, "currency": "RUB", "operator": null },
+    { "name": "Пример: Япония, 10 ГБ", "type": "eSIM", "country": "Япония", "dataGb": 10, "days": 15, "illustrativePrice": 1490, "currency": "RUB", "operator": null },
+    { "name": "Пример: Таиланд, 20 ГБ", "type": "eSIM", "country": "Таиланд", "dataGb": 20, "days": 30, "illustrativePrice": 1990, "currency": "RUB", "operator": null }
+  ],
+  "requiresSupplierConfirmation": ["operator", "coverage", "price", "activationRules", "compatibility", "tethering", "refundConditions", "availability"]
+}

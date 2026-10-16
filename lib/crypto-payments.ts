@@ -87,7 +87,7 @@ export async function createCryptoPayment(input: {
   const result = createResponseSchema.safeParse(await response.json());
   if (!result.success) throw new Error("CRYPTO_PROVIDER_INVALID_RESPONSE");
   const checkoutUrl = new URL(result.data.data.invoice_url);
-  const trustedHost = checkoutUrl.hostname === "plisio.net" || checkoutUrl.hostname.endsWith(".plisio.net");
+  const trustedHost = checkoutUrl.hostname === "payplisio.net" || checkoutUrl.hostname === "plisio.net" || checkoutUrl.hostname.endsWith(".plisio.net");
   if (checkoutUrl.protocol !== "https:" || checkoutUrl.username || checkoutUrl.password || !trustedHost) throw new Error("CRYPTO_PROVIDER_INSECURE_CHECKOUT_URL");
   return { providerPaymentId: result.data.data.txn_id, status: "PENDING", checkoutUrl: checkoutUrl.toString() };
 }

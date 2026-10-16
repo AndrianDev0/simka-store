@@ -1,0 +1,10 @@
+[Unit]
+Description=SIMKA analytics %i
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/srv/simka/bin/run-analytics.sh %i
+TimeoutStartSec=660
+UMask=0077

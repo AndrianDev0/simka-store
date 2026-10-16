@@ -2,6 +2,8 @@ import { getPublicCategories } from "@/lib/categories";
 import { getCatalogCountries, getCatalogProducts } from "@/lib/catalog-repository";
 import { absoluteUrl } from "@/lib/seo";
 
+export const dynamic = "force-dynamic";
+
 function xmlEscape(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
@@ -22,7 +24,7 @@ function hasSelfCanonical(canonical: string | null | undefined, path: string) {
 }
 
 export async function GET() {
-  const [products, countries, categories] = await Promise.all([getCatalogProducts(), getCatalogCountries(), getPublicCategories()]);
+  const [products, countries, categories] = await Promise.all([getCatalogProducts({ requireDatabase: true }), getCatalogCountries(), getPublicCategories({ strict: true })]);
   const staticPaths = ["/", "/catalog", "/categories", "/countries", "/faq", "/payment", "/delivery", "/contacts", "/about", "/privacy", "/terms", "/returns", "/cookies"];
   const builtInCategories = [
     { slug: "esim", hasItems: products.some((product) => product.type === "eSIM") },

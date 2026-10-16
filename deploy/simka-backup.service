@@ -1,0 +1,12 @@
+[Unit]
+Description=SIMKA encrypted PostgreSQL backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/srv/simka/bin/backup-database.sh
+UMask=0077
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=idle

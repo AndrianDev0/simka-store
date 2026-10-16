@@ -1,8 +1,6 @@
 name: Daily encrypted database backup
 
 on:
-  schedule:
-    - cron: "17 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -26,5 +24,5 @@ jobs:
             --retry 2 --retry-delay 10 \
             --request POST \
             --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
-            https://simka-store.onrender.com/api/operations/backup
+            https://simki.cc/api/operations/backup
 

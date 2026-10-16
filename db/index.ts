@@ -8,14 +8,14 @@ export function getDb() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error(
-      "DATABASE_URL is unavailable. Configure the Render Postgres connection string before using the database."
+      "DATABASE_URL is unavailable. Configure the PostgreSQL connection string before using the database."
     );
   }
 
   pool ??= new Pool({
     connectionString: databaseUrl,
     max: 5,
-    ssl: { rejectUnauthorized: false },
+    ssl: process.env.DATABASE_SSL === "disable" ? false : { rejectUnauthorized: false },
   });
 
   return drizzle(pool, { schema });

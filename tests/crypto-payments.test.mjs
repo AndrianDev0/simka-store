@@ -59,6 +59,14 @@ test("payment creation calls Plisio with trusted callback URLs and accepts only 
     assert.equal(result.providerPaymentId, "payment-1");
     assert.equal(result.checkoutUrl, "https://plisio.net/invoice/1");
 
+    globalThis.fetch = async () => Response.json({ status: "success", data: { txn_id: "payment-hosted", invoice_url: "https://payplisio.net/invoice/1" } });
+    const hosted = await createCryptoPayment({ config, orderId: "hosted", orderNumber: "SIM-HOSTED", amount: 1500, currency: "RUB", requestId: "hosted", siteOrigin: "https://shop.example" });
+    assert.equal(new URL(hosted.checkoutUrl).hostname, "payplisio.net");
+    for (const url of ["https://payplisio.net.evil.example/invoice/1", "http://payplisio.net/invoice/1", "https://evil.example@payplisio.net/invoice/1"]) {
+      globalThis.fetch = async () => Response.json({ status: "success", data: { txn_id: "bad", invoice_url: url } });
+      await assert.rejects(() => createCryptoPayment({ config, orderId: "bad", orderNumber: "SIM-BAD", amount: 1500, currency: "RUB", requestId: "bad", siteOrigin: "https://shop.example" }), /INSECURE_CHECKOUT_URL/);
+    }
+
     globalThis.fetch = async () => Response.json({ status: "success", data: { txn_id: "payment-2", invoice_url: "https://evil.example/invoice/2" } });
     await assert.rejects(() => createCryptoPayment({ config, orderId: "order-2", orderNumber: "SIM-2", amount: 1500, currency: "RUB", requestId: "req-2", siteOrigin: "https://shop.example" }), /INSECURE_CHECKOUT_URL/);
   } finally {

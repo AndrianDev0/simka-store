@@ -1,10 +1,6 @@
 name: Analytics summaries and monitoring
 
 on:
-  schedule:
-    - cron: "37 * * * *"
-    - cron: "19 3 * * *"
-    - cron: "31 3 * * 1"
   workflow_dispatch:
     inputs:
       task:
@@ -33,7 +29,7 @@ jobs:
           curl --fail-with-body --silent --show-error --max-time 600 \
             --retry 2 --retry-delay 10 --request POST \
             --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
-            'https://simka-store.onrender.com/api/operations/analytics?task=hourly'
+            'https://simki.cc/api/operations/analytics?task=hourly'
 
   daily:
     if: github.event.schedule == '19 3 * * *' || (github.event_name == 'workflow_dispatch' && inputs.task == 'daily')
@@ -48,7 +44,7 @@ jobs:
           curl --fail-with-body --silent --show-error --max-time 300 \
             --retry 2 --retry-delay 10 --request POST \
             --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
-            'https://simka-store.onrender.com/api/operations/analytics?task=daily'
+            'https://simki.cc/api/operations/analytics?task=daily'
 
   weekly:
     if: github.event.schedule == '31 3 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.task == 'weekly')
@@ -63,4 +59,4 @@ jobs:
           curl --fail-with-body --silent --show-error --max-time 300 \
             --retry 2 --retry-delay 10 --request POST \
             --header "Authorization: Bearer $BACKUP_CRON_SECRET" \
-            'https://simka-store.onrender.com/api/operations/analytics?task=weekly'
+            'https://simki.cc/api/operations/analytics?task=weekly'

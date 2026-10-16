@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const SITE_NAME = "SIMKA";
-export const SITE_ORIGIN = (process.env.NEXT_PUBLIC_SITE_URL || "https://simka-store.onrender.com").replace(/\/$/, "");
+export const SITE_ORIGIN = (process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000").replace(/\/$/, "");
 export const DEFAULT_DESCRIPTION = "SIM и eSIM для путешествий: сравните страну, оператора, объём интернета и срок действия, затем оформите заказ онлайн.";
 
 export function absoluteUrl(value = "/") {

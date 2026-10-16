@@ -57,6 +57,7 @@ type ProductSelector = { id?: number; ids?: number[]; slug?: string };
 let fallbackWarningEmitted = false;
 
 function warnAboutFallback(error: unknown) {
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_CATALOG !== "true") throw error;
   if (fallbackWarningEmitted) return;
   fallbackWarningEmitted = true;
   console.warn("catalog_database_unavailable_using_fallback", {
@@ -469,6 +470,19 @@ export async function queryCatalogProducts(filters: CatalogFilters, page = 1, pa
     const matches = filterFallbackCatalogProducts(filters);
     return { items: matches.slice(offset, offset + limit), total: matches.length, limit, offset };
   }
+}
+
+export async function getCountryCatalogRelations(countryId: number) {
+  const rows = await getDb().selectDistinct({ operator: operators.name, categoryId: productCategories.categoryId })
+    .from(catalogProducts)
+    .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
+    .innerJoin(operators, eq(catalogProducts.operatorId, operators.id))
+    .leftJoin(productCategories, eq(productCategories.productId, catalogProducts.id))
+    .where(and(visibleCatalogPredicate(), eq(catalogProducts.countryId, countryId)));
+  return {
+    operators: [...new Set(rows.map((row) => row.operator))].sort((a, b) => a.localeCompare(b, "ru")),
+    categoryIds: new Set(rows.flatMap((row) => row.categoryId === null ? [] : [row.categoryId])),
+  };
 }
 
 export async function getCatalogFacets(): Promise<CatalogFacets> {

@@ -1,0 +1,8 @@
+[Unit]
+Description=SIMKA weekly analytics report
+[Timer]
+OnCalendar=Mon *-*-* 03:31:00 UTC
+Persistent=true
+Unit=simka-analytics@weekly.service
+[Install]
+WantedBy=timers.target
