@@ -1,6 +1,6 @@
 import { InfoPage } from "@/app/components/info-page";
 import { pageMetadata } from "@/lib/seo";
-import { SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
+import { SUPPORT_EMAIL, SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
 
 export const metadata = pageMetadata({
   title: "Условия использования и оформления заказа",
@@ -71,7 +71,7 @@ export default function TermsPage() {
       {
         title: "Поддержка и изменения",
         body: <div className="space-y-3">
-          <p>По вопросам заказа напишите в Telegram: <a className="font-semibold text-[#1168e8] underline" href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer">@{SUPPORT_TELEGRAM_USERNAME}</a>. Укажите номер заказа и email, использованный при оформлении.</p>
+          <p>По вопросам заказа напишите в Telegram <a className="font-semibold text-primary underline" href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer">@{SUPPORT_TELEGRAM_USERNAME}</a> или на <a className="break-all font-semibold text-primary underline" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>. Укажите номер заказа и email, использованный при оформлении.</p>
           <p>Условия могут обновляться при изменении работы магазина или требований законодательства. Новая редакция применяется к действиям и заказам после её публикации, если обязательные нормы не требуют иного.</p>
         </div>,
       },

@@ -62,18 +62,24 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
   })).toString();
   const analyticsItems = result.items.map((product) => {
     const offer = productDisplayOffer(product);
-    return { item_id: offer.variant?.sku ?? product.sku, item_name: product.name, item_category: product.type, item_variant: offer.variant?.name, price: offer.price, quantity: 1 };
+    return { item_id: offer.variant?.sku ?? product.sku, item_name: product.name, item_category: product.type, item_variant: offer.variant?.name, price: offer.price ?? undefined, quantity: 1 };
   });
+  const advancedCount = [operator, category, type, currency, availability, data, valueOf(raw.days), valueOf(raw.minPrice), valueOf(raw.maxPrice), valueOf(raw.sort)].filter(Boolean).length;
 
-  return <SiteShell eyebrow="Каталог" title="Тарифы для поездок" description="Сравните страну, оператора, объём интернета, срок и тип SIM. Цена и наличие повторно проверяются при оформлении.">
+  return <SiteShell eyebrow="Каталог" title="SIM и eSIM для поездок" description="Сравните комплектацию, условия и цену. У некоторых eSIM тариф оплачивается отдельно. Наличие проверяется при оформлении.">
     <CatalogAnalytics filters={analyticsFilters} hasSearch={Boolean(q)} items={analyticsItems} totalResults={result.total}/>
     <ContentSection>
       <form action="/catalog" className="mb-8 rounded-2xl border border-[#dbe5ef] bg-[#f8fbfe] p-4" aria-label="Фильтры каталога">
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="text-sm font-semibold text-[#283b54] lg:col-span-2">Поиск<input name="q" defaultValue={valueOf(raw.q)} className="mt-2 min-h-11 w-full rounded-xl border border-[#cddbea] bg-white px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]" placeholder="Название, страна, оператор или SKU"/></label>
           <SelectFilter name="country" label="Страна" value={country} options={facets.countries}/>
+          <div className="flex items-end gap-2"><button className="min-h-11 flex-1 rounded-lg bg-primary px-4 font-semibold text-primary-foreground hover:bg-primary/90">Показать</button>{hasFilters&&<a href="/catalog" className="inline-flex min-h-11 items-center px-3 text-sm text-primary underline underline-offset-4">Сбросить</a>}</div>
+        </div>
+        <details className="mt-3 border-t border-border pt-2">
+          <summary className="min-h-11 cursor-pointer py-3 text-sm font-semibold text-foreground">Дополнительные фильтры{advancedCount > 0 ? ` · выбрано ${advancedCount}` : ""}</summary>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SelectFilter name="operator" label="Оператор" value={operator} options={facets.operators}/>
-          <SelectFilter name="category" label="Категория" value={category} options={["esim", "sim", "europe", "asia", "america", ...categories.map((item) => item.slug)]} labels={{ esim: "eSIM", sim: "Физические SIM", europe: "Европа", asia: "Азия", america: "Америка", ...Object.fromEntries(categories.map((item) => [item.slug, item.name])) }}/>
+          <SelectFilter name="category" label="Категория" value={category} options={categories.map((item) => item.slug)} labels={Object.fromEntries(categories.map((item) => [item.slug, item.name]))}/>
           <SelectFilter name="type" label="Тип SIM" value={type} options={["eSIM", "SIM"]}/>
           <SelectFilter name="currency" label="Валюта" value={currency} options={facets.currencies}/>
           <SelectFilter name="availability" label="Наличие" value={availability} options={["available", "unavailable"]} labels={{ available: "В наличии", unavailable: "Нет в наличии" }}/>
@@ -82,8 +88,9 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
           <label className="text-sm font-semibold text-[#283b54]">Цена от<input name="minPrice" type="number" min="0" defaultValue={valueOf(raw.minPrice)} className="mt-2 min-h-11 w-full rounded-xl border border-[#cddbea] bg-white px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]" placeholder="0"/></label>
           <label className="text-sm font-semibold text-[#283b54]">Цена до<input name="maxPrice" type="number" min="0" defaultValue={valueOf(raw.maxPrice)} className="mt-2 min-h-11 w-full rounded-xl border border-[#cddbea] bg-white px-3 font-normal outline-none focus:ring-2 focus:ring-[#1168e8]" placeholder="Без ограничения"/></label>
           <SelectFilter name="sort" label="Сортировка" value={sort === "popular" ? "" : sort} options={["price-asc", "price-desc", "days"]} labels={{ "price-asc": "Сначала дешевле", "price-desc": "Сначала дороже", days: "По сроку действия" }}/>
-          <div className="flex items-end gap-2"><button className="min-h-11 flex-1 rounded-xl bg-[#1168e8] px-4 font-bold text-white hover:bg-[#0d56c3]">Показать</button>{hasFilters&&<a href="/catalog" className="inline-flex min-h-11 items-center rounded-xl border border-[#cddbea] bg-white px-4 font-bold text-[#42526a] hover:bg-[#edf5ff]">Сбросить</a>}</div>
-        </div>
+            <div className="flex items-end"><button className="min-h-11 w-full rounded-lg bg-primary px-4 font-semibold text-primary-foreground hover:bg-primary/90">Применить фильтры</button></div>
+          </div>
+        </details>
       </form>
       <p className="mb-5 text-sm text-[#637389]" aria-live="polite">Найдено тарифов: <strong className="text-[#10213a]">{result.total}</strong>{result.total > 0 && <span> · показаны {result.offset + 1}-{result.offset + result.items.length}</span>}</p>
       {result.items.length ? <CatalogGrid items={result.items}/> : <div className="rounded-2xl border border-dashed border-[#b8c9da] p-10 text-center"><h2 className="text-xl font-black text-[#10213a]">{facets.countries.length ? "Тарифы не найдены" : "Каталог пока пуст"}</h2><p className="mt-2 text-sm text-[#637389]">{facets.countries.length ? "Измените или сбросьте выбранные фильтры." : "Опубликованных тарифов пока нет. Продажи начнутся после их добавления."}</p>{facets.countries.length > 0 && <a href="/catalog" className="mt-5 inline-flex min-h-11 items-center rounded-xl bg-[#1168e8] px-4 font-bold text-white">Сбросить фильтры</a>}</div>}

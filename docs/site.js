@@ -1,14 +1,15 @@
 (() => {
   "use strict";
 
-  const API = "https://simka-store.onrender.com";
+  let API = "";
+  const SUPPORT = "https://t.me/qweJSq";
   const SITE = "https://andriandev0.github.io/simka-store/";
   const SITE_PATH = "/simka-store/";
   const STORAGE_KEY = "simka-pages-cart-v1";
   const app = document.getElementById("app");
   const overlay = document.getElementById("cart-overlay");
   const cartBody = document.getElementById("cart-body");
-  const state = { products: [], categories: [], countries: [], staticRoutes: new Set(), cart: {}, filters: {}, checkout: false, busy: false, error: "", receipt: null, requestId: null };
+  const state = { products: [], categories: [], countries: [], emailConfigured: null, paymentMethods: [{ id: "manager", label: "Через менеджера", description: "После оформления менеджер сообщит реквизиты по указанным контактам." }], staticRoutes: new Set(), cart: {}, filters: {}, checkout: false, busy: false, error: "", receipt: null, requestId: null };
   try { state.cart = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { state.cart = {}; }
 
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -77,7 +78,7 @@
   const updateCartCount = () => { document.getElementById("cart-count").textContent = String(cartLines().reduce((sum, line) => sum + line.quantity, 0)); };
   const card = (product) => {
     const current = offer(product);
-    return `<article class="product-card"><div class="product-top tone-${productTheme(product)}"><span class="type">${escape(product.type)}</span><span class="flag">${flag(product.country, product.countryId, product.flag)}</span>${product.popular ? `<span class="popular">★ Популярный</span>` : ""}<span class="operator">${escape(product.operator)}</span></div><div class="product-body"><div class="product-title-row"><div><small>${escape(product.region || "")} · ${escape(product.country)}</small><h3><a href="${productLink(product)}">${escape(product.name)}</a></h3></div><div class="price">${money(current.price, current.currency)}${product.oldPrice && product.oldPrice > current.price ? `<span class="old-price">${money(product.oldPrice, product.currency)}</span>` : ""}</div></div><div class="specs"><div class="spec"><span>Интернет</span><strong>${escape(current.data)}</strong></div><div class="spec"><span>Срок</span><strong>${escape(current.days)} дней</strong></div>${product.calls ? `<div class="spec"><span>Звонки</span><strong>${escape(product.calls)}</strong></div>` : ""}<div class="spec"><span>Активация</span><strong>По инструкции</strong></div></div><div class="button-row"><a class="button-soft" href="${productLink(product)}">Подробнее</a><button class="button" data-add="${product.id}" ${isAvailable(product) ? "" : "disabled"}>${isAvailable(product) ? "В корзину +" : "Нет в наличии"}</button></div></div></article>`;
+    return `<article class="product-card"><div class="product-top tone-${productTheme(product)}"><span class="type">${escape(product.type)}</span><span class="flag">${flag(product.country, product.countryId, product.flag)}</span><span class="operator">${escape(product.operator)}</span></div><div class="product-body"><div class="product-title-row"><div><small>${escape(product.region || "")} · ${escape(product.country)}</small><h3><a href="${productLink(product)}">${escape(product.name)}</a></h3></div><div class="price">${money(current.price, current.currency)}${product.oldPrice && product.oldPrice > current.price ? `<span class="old-price">${money(product.oldPrice, product.currency)}</span>` : ""}</div></div><div class="specs"><div class="spec"><span>Интернет</span><strong>${escape(current.data)}</strong></div><div class="spec"><span>Срок</span><strong>${escape(current.days)} дней</strong></div>${product.calls ? `<div class="spec"><span>Звонки</span><strong>${escape(product.calls)}</strong></div>` : ""}<div class="spec"><span>Активация</span><strong>По инструкции</strong></div></div><div class="button-row"><a class="button-soft" href="${productLink(product)}">Подробнее</a><button class="button" data-add="${product.id}" ${state.orderingEnabled && isAvailable(product) ? "" : "disabled"}>${!state.orderingEnabled ? "Продажи приостановлены" : isAvailable(product) ? "В корзину" : "Нет в наличии"}</button></div></div></article>`;
   };
   const heading = (eyebrow, title, description) => `<div class="page-hero"><div class="shell page-heading"><div class="eyebrow">${escape(eyebrow)}</div><h1>${escape(title)}</h1><p>${escape(description)}</p></div></div>`;
   const body = (content) => `<div class="shell page-body">${content}</div>`;
@@ -85,7 +86,7 @@
   const infoCard = (title, body) => `<article class="info-card"><h2>${escape(title)}</h2><p>${escape(body)}</p></article>`;
 
   const pages = {
-    faq: { title: "Ответы на частые вопросы", description: "Коротко о выборе и получении SIMKA.", cards: [
+    faq: { title: "Ответы на частые вопросы", description: "Совместимость телефона, активация и получение заказа.", cards: [
       ["Как проверить, поддерживает ли телефон eSIM?", "Проверьте модель устройства у производителя или найдите пункт «Добавить eSIM» в настройках телефона."],
       ["Когда начинает действовать тариф?", "Условия зависят от оператора. Точное правило указано в карточке выбранного тарифа."],
       ["Можно ли раздавать интернет?", "Это зависит от тарифа. Проверьте характеристики или уточните у менеджера до оплаты."],
@@ -104,7 +105,7 @@
       ["После оформления", "Менеджер отправит реквизиты на email, указанный в заказе. Проверьте также папку «Спам»."],
     ] },
     about: { title: "О компании", description: "SIMKA помогает выбрать SIM и eSIM для поездок.", cards: [
-      ["Наш подход", "Показываем характеристики, цену и условия до оформления заказа. Наличие и итоговую стоимость сервер проверяет ещё раз при создании заказа."],
+      ["Выбор тарифа", "В каталоге указаны страна, оператор, объём интернета и срок действия. Перед оплатой проверьте условия активации и совместимость телефона."],
       ["Помощь", "Если сомневаетесь в совместимости устройства или способе активации, напишите менеджеру до оплаты."],
     ] },
     privacy: { title: "Политика конфиденциальности", description: "Как используются данные, необходимые для заказа.", cards: [
@@ -113,13 +114,13 @@
     ] },
     terms: { title: "Условия использования", description: "Основные правила покупки в SIMKA.", cards: [
       ["Каталог", "Цена и доступность повторно проверяются при создании заказа. Условия тарифа зависят от оператора."],
-      ["Заказ", "Заказ считается созданным после ответа сервера с уникальным номером. Реквизиты для оплаты через менеджера приходят отдельным письмом."],
+      ["Заказ", "После оформления на экране появится номер заказа. Реквизиты для оплаты через менеджера приходят отдельным письмом."],
     ] },
     returns: { title: "Возврат и отмена", description: "Порядок зависит от статуса и типа товара.", cards: [
       ["До оплаты", "Свяжитесь с менеджером и сообщите номер заказа, чтобы запросить отмену."],
       ["После оплаты", "Обратитесь в поддержку. Возможность возврата зависит от выдачи eSIM, активации и отправки физической SIM."],
     ] },
-    cookies: { title: "Cookie Policy", description: "О локальном хранении и аналитике.", cards: [
+    cookies: { title: "Файлы cookie", description: "Что сайт сохраняет в вашем браузере.", cards: [
       ["Корзина", "Выбранные товары сохраняются в браузере, чтобы они не пропали после перезагрузки страницы."],
       ["Личный кабинет", "Для авторизации используются необходимые технические cookie. Управлять настройками можно в браузере."],
     ] },
@@ -127,14 +128,16 @@
 
   function renderHome() {
     const featured = state.products.filter(isAvailable);
-    const heroCard = (country, code, data, days, operator, iccid) => `<div class="sim-card"><div class="hero-card-head"><div class="hero-card-brand"><span class="hero-card-wifi">◉</span><span><strong>SIMKA</strong><small>Travel eSIM profile</small></span></div><img class="flag-image" src="${SITE_PATH}flags/${code}.svg" alt=""></div><div class="hero-card-facts"><div><small>Пакет данных</small><strong>${data}</strong></div><div><small>Срок</small><strong>${days}</strong></div><div><small>Сеть</small><strong>${operator}</strong></div></div><div class="hero-card-bottom"><span>${country} · ICCID •••• ${iccid}</span><span>● QR ready</span></div></div>`;
     const regions = [...new Set(featured.map((product) => product.region).filter(Boolean))];
-    app.innerHTML = `<div class="hero-section"><section class="hero shell"><div><div class="eyebrow">◎ SIM и eSIM для путешествий</div><h1>eSIM и SIM<br><span>для путешествий</span></h1><p>Выберите страну, получите eSIM с инструкцией после оплаты или закажите физическую SIM с доставкой.</p><form id="home-search" class="hero-search"><input name="q" type="search" aria-label="Поиск тарифа" placeholder="Куда вы едете?"><button class="button gradient-button" type="submit">Найти тариф →</button></form><div class="hero-checks"><span>Цена и условия до заказа</span><span>Инструкция по активации</span><span>Поддержка на русском</span></div></div><div class="hero-art" aria-hidden="true">${heroCard("Турция", "tr", "20 ГБ", "30 дней", "Turkcell", "4821")}${heroCard("Таиланд", "th", "∞ ГБ", "15 дней", "AIS", "7359")}</div></section></div>
-    ${state.categories.length ? `<section class="home-categories"><div class="section shell"><div class="section-head"><div><div class="section-kicker">Категории</div><h2>Подборки тарифов</h2></div><a class="section-link" href="#/categories">Все категории →</a></div><div class="grid">${state.categories.map(categoryTile).join("")}</div></div></section>` : ""}
-    <section id="catalog" class="section shell"><div class="section-head"><div><div class="section-kicker">Популярные направления</div><h2>Выберите свой тариф</h2></div><p class="section-intro">Сравните опубликованные предложения операторов. Цена и наличие проверяются при создании заказа.</p></div><div id="home-filters" class="home-filters"><input name="q" type="search" aria-label="Поиск тарифов" placeholder="Страна или оператор"><select name="region" aria-label="Регион"><option value="">Все направления</option>${regions.map((region) => `<option value="${escape(region)}">${escape(region)}</option>`).join("")}</select><select name="type" aria-label="Тип SIM"><option value="">Все типы</option><option value="eSIM">eSIM</option><option value="SIM">SIM</option></select></div><div id="home-results">${productGrid(featured)}</div></section>
-    <section class="how-section"><div class="section shell how-layout"><div><div class="section-kicker">Без лишних шагов</div><h2>Связь уже ждёт вас в поездке</h2><p>Для eSIM не нужна доставка: QR-код и инструкция приходят после подтверждения оплаты.</p></div><div class="how-steps"><article><span>◎</span><h3>Выберите страну</h3><p>Найдите тариф по объёму интернета и сроку.</p></article><article><span>▣</span><h3>Оформите заказ</h3><p>Получите актуальные реквизиты от менеджера на email.</p></article><article><span>◉</span><h3>Подключитесь</h3><p>Установите eSIM по инструкции и выходите в сеть.</p></article></div></div></section>
-    <section class="section shell"><div class="feature-grid">${infoCard("Понятные условия", "До заказа видны срок действия, объём трафика, цена и доступность.")}${infoCard("eSIM на email после оплаты", "После подтверждения оплаты вы получите код активации и инструкцию.")}${infoCard("Доставка SIM по согласованию", "Адрес, срок и стоимость доставки физической SIM менеджер подтвердит при оформлении.")}</div></section>
-    <section class="faq-section"><div class="section shell faq-layout"><div><div class="faq-icon">?</div><h2>Частые вопросы</h2><p>Не нашли ответ? Напишите в поддержку - поможем проверить совместимость и выбрать тариф.</p><a class="section-link" href="#/faq">Все вопросы →</a></div><div class="faq-questions">${pages.faq.cards.slice(0, 3).map(([question, answer], index) => `<details ${index === 0 ? "open" : ""}><summary>${escape(question)}</summary><p>${escape(answer)}</p></details>`).join("")}</div></div></section>`;
+    const preview = featured.slice(0, 2).map((product) => {
+      const current = offer(product);
+      return `<a class="travel-preview" href="${productLink(product)}"><div>${flag(product.country, product.countryId, product.flag)}<span>${escape(product.country)}<small>${escape(product.operator)}</small></span></div><strong>${escape(current.data)} <span>на ${escape(current.days)} дней</span></strong><p>${escape(product.type)} · ${money(current.price, current.currency)}</p></a>`;
+    }).join("");
+    app.innerHTML = `<div class="hero-section"><section class="hero shell"><div><h1>Интернет<br><span>в вашей поездке</span></h1><p>SIM и eSIM для путешествий. Выберите страну и сравните объём интернета, срок действия и стоимость.</p><form id="home-search" class="hero-search"><input name="q" type="search" aria-label="Поиск тарифа" placeholder="Куда вы едете?"><button class="button" type="submit">Найти тариф</button></form><p class="hero-note">Перед покупкой eSIM проверьте, поддерживает ли её ваш телефон.</p></div><div class="travel-previews">${preview}</div></section></div>
+    ${state.categories.length ? `<section class="home-categories"><div class="section shell"><div class="section-head"><h2>Подборки тарифов</h2><a class="section-link" href="#/categories">Все категории</a></div><div class="grid">${state.categories.map(categoryTile).join("")}</div></div></section>` : ""}
+    <section id="catalog" class="section shell"><div class="section-head"><h2>Тарифы по странам</h2><p class="section-intro">Для навигации, переписки и звонков через интернет. Условия подключения указаны в карточке тарифа.</p></div><div id="home-filters" class="home-filters"><input name="q" type="search" aria-label="Поиск тарифов" placeholder="Страна или оператор"><select name="region" aria-label="Регион"><option value="">Все направления</option>${regions.map((region) => `<option value="${escape(region)}">${escape(region)}</option>`).join("")}</select><select name="type" aria-label="Тип SIM"><option value="">Все типы</option><option value="eSIM">eSIM</option><option value="SIM">SIM</option></select></div><div id="home-results">${productGrid(featured)}</div></section>
+    <section class="how-section"><div class="section shell how-layout"><div><h2>Как получить SIM или eSIM</h2><p>Добавьте тариф в корзину и оставьте контакты для связи по заказу.</p><a class="button-soft" href="#/payment">Условия оплаты</a></div><div class="delivery-options"><article><h3>eSIM</h3><p>После подтверждения оплаты менеджер отправит код активации и инструкцию на email. Сохраните письмо, оно понадобится для установки.</p></article><article><h3>SIM-карта с доставкой</h3><p>Укажите адрес при оформлении. Если стоимость и срок доставки ещё не указаны, менеджер согласует их с вами до оплаты.</p></article></div></div></section>
+    <section class="faq-section"><div class="section shell faq-layout"><div><h2>Перед поездкой</h2><p>Проверьте совместимость телефона и условия активации выбранного тарифа.</p><a class="section-link" href="#/faq">Вопросы о SIM и eSIM</a></div><div class="faq-questions">${pages.faq.cards.slice(0, 3).map(([question, answer]) => `<details><summary>${escape(question)}</summary><p>${escape(answer)}</p></details>`).join("")}</div></div></section>`;
   }
 
   function categoryTile(category) { return `<a class="tile" href="${routeHref(`category/${encodeURIComponent(category.slug)}`)}"><h3>${escape(category.name)}</h3><p>${escape(category.description || "Подборка тарифов SIMKA")}</p><small>${category.productIds?.length || 0} товаров →</small></a>`; }
@@ -154,7 +157,7 @@
     });
     if (filters.sort === "price-asc") results.sort((a, b) => offer(a).price - offer(b).price);
     if (filters.sort === "price-desc") results.sort((a, b) => offer(b).price - offer(a).price);
-    app.innerHTML = `${heading(searchMode ? "Поиск" : "Каталог", searchMode ? "Найти тариф" : "Тарифы для поездок", "Сравните страну, оператора, тип SIM и цену.")}${body(`<form id="catalog-filters" class="filter-panel"><label>Поиск<input name="q" type="search" value="${escape(filters.q || "")}" placeholder="Название, страна, оператор, SKU"></label><label>Страна<select name="country"><option value="">Все страны</option>${options(countries, filters.country)}</select></label><label>Оператор<select name="operator"><option value="">Все операторы</option>${options(operators, filters.operator)}</select></label><label>Категория<select name="category"><option value="">Все категории</option>${state.categories.map((category) => `<option value="${escape(category.id)}" ${filters.category === category.id ? "selected" : ""}>${escape(category.name)}</option>`).join("")}</select></label><label>Тип SIM<select name="type"><option value="">Все типы</option>${options(["eSIM", "SIM"], filters.type)}</select></label><label>Наличие<select name="availability"><option value="">Все товары</option><option value="available" ${filters.availability === "available" ? "selected" : ""}>В наличии</option><option value="unavailable" ${filters.availability === "unavailable" ? "selected" : ""}>Нет в наличии</option></select></label><label>Цена до<input name="maxPrice" type="number" min="0" value="${escape(filters.maxPrice || "")}" placeholder="Без ограничения"></label><label>Интернет от, ГБ<input name="minData" type="number" min="0" step="1" value="${escape(filters.minData || "")}" placeholder="Любой объём"></label><label>Срок от, дней<input name="minDays" type="number" min="0" step="1" value="${escape(filters.minDays || "")}" placeholder="Любой срок"></label><label>Сортировка<select name="sort"><option value="">Популярные</option><option value="price-asc" ${filters.sort === "price-asc" ? "selected" : ""}>Сначала дешевле</option><option value="price-desc" ${filters.sort === "price-desc" ? "selected" : ""}>Сначала дороже</option></select></label><button class="button gradient-button" type="submit">Показать</button></form><p class="result-count">Найдено тарифов: <strong>${results.length}</strong></p>${productGrid(results)}`)}`;
+    app.innerHTML = `${heading(searchMode ? "Поиск" : "Каталог", searchMode ? "Найти тариф" : "Тарифы для поездок", "Сравните страну, оператора, тип SIM и цену.")}${body(`<form id="catalog-filters" class="filter-panel"><label>Поиск<input name="q" type="search" value="${escape(filters.q || "")}" placeholder="Название, страна или оператор"></label><label>Страна<select name="country"><option value="">Все страны</option>${options(countries, filters.country)}</select></label><label>Оператор<select name="operator"><option value="">Все операторы</option>${options(operators, filters.operator)}</select></label><label>Категория<select name="category"><option value="">Все категории</option>${state.categories.map((category) => `<option value="${escape(category.id)}" ${filters.category === category.id ? "selected" : ""}>${escape(category.name)}</option>`).join("")}</select></label><label>Тип SIM<select name="type"><option value="">Все типы</option>${options(["eSIM", "SIM"], filters.type)}</select></label><label>Наличие<select name="availability"><option value="">Все товары</option><option value="available" ${filters.availability === "available" ? "selected" : ""}>В наличии</option><option value="unavailable" ${filters.availability === "unavailable" ? "selected" : ""}>Нет в наличии</option></select></label><label>Цена до<input name="maxPrice" type="number" min="0" value="${escape(filters.maxPrice || "")}" placeholder="Без ограничения"></label><label>Интернет от, ГБ<input name="minData" type="number" min="0" step="1" value="${escape(filters.minData || "")}" placeholder="Любой объём"></label><label>Срок от, дней<input name="minDays" type="number" min="0" step="1" value="${escape(filters.minDays || "")}" placeholder="Любой срок"></label><label>Сортировка<select name="sort"><option value="">Порядок каталога</option><option value="price-asc" ${filters.sort === "price-asc" ? "selected" : ""}>Сначала дешевле</option><option value="price-desc" ${filters.sort === "price-desc" ? "selected" : ""}>Сначала дороже</option></select></label><button class="button gradient-button" type="submit">Показать</button></form><p class="result-count">Найдено тарифов: <strong>${results.length}</strong></p>${productGrid(results)}`)}`;
   }
 
   function renderProduct(slug) {
@@ -166,8 +169,8 @@
     try { if (primaryImage?.url) imageUrl = new URL(primaryImage.url, API).href; } catch {}
     const visual = imageUrl && imageUrl.startsWith("https://") ? `<div class="detail-image"><img src="${escape(imageUrl)}" alt="${escape(primaryImage.alt || product.name)}"></div>` : `<div class="detail-visual tone-${productTheme(product)}"><span class="type">${escape(product.type)}</span>${flag(product.country, product.countryId, product.flag)}<div><small>${escape(product.country)} · ${escape(product.operator)}</small><h2>${escape(product.data)}</h2><p>Срок действия - ${escape(product.days)} дней</p></div></div>`;
     const facts = [["Интернет", product.data], ["Срок", `${product.days} дней`], ["Звонки", product.hasCalls ? product.calls || "Включены" : "Нет"], ["SMS", product.hasSms ? product.sms || "Включены" : "Нет"]];
-    const variants = product.variants?.length ? `<section class="detail-extra variants"><h2>Варианты тарифа</h2><p>Сравните объём, срок и стоимость доступных вариантов.</p><div class="grid">${product.variants.map((variant) => `<article class="info-card"><h3>${escape(variant.name)}</h3><small>Артикул: ${escape(variant.sku)}</small><p>${escape(variant.data || product.data)}${variant.days ? ` · ${escape(variant.days)} дней` : ""}</p><strong>${money(variant.price, variant.currency)}</strong><button class="button" data-add="${product.id}" data-variant="${variant.id}" ${variant.available && variant.stockQuantity !== 0 ? "" : "disabled"}>Выбрать вариант</button></article>`).join("")}</div></section>` : "";
-    app.innerHTML = `${heading(`${product.flag || "🌍"} ${product.country} · ${product.operator}`, product.h1 || product.name, product.shortDescription || "Тариф для поездки")}${body(`<div class="breadcrumb"><a href="#/">Главная</a> / <a href="#/catalog">Каталог</a> / ${escape(product.name)}</div><div class="detail-layout">${visual}<div class="detail-panel"><div class="detail-topline"><span class="detail-type">${escape(product.type)}</span><span class="detail-status">● ${isAvailable(product) ? "В наличии" : "Нет в наличии"}</span></div><div class="price">${money(current.price, current.currency)}</div>${product.oldPrice && product.oldPrice > current.price ? `<div class="old-price">${money(product.oldPrice, product.currency)}</div>` : ""}<p class="muted">Артикул: <strong>${escape(product.sku)}</strong> &nbsp; ID: <strong>${escape(product.id)}</strong></p><ul class="detail-list">${facts.map(([label, value]) => `<li><small>${escape(label)}</small><strong>${escape(value)}</strong></li>`).join("")}</ul><button class="button" data-add="${product.id}" ${isAvailable(product) ? "" : "disabled"}>${isAvailable(product) ? "Добавить в заказ →" : "Сейчас недоступно"}</button><p class="muted">✓ Цена и наличие повторно проверяются при создании заказа.</p><p class="muted">✓ ${product.type === "eSIM" ? "После оплаты eSIM и инструкция придут на указанный email." : "Адрес, стоимость и срок доставки подтвердит менеджер."}</p></div></div>${variants}<div class="product-information"><section class="detail-extra"><h2>Описание тарифа</h2><p>${escape(product.fullDescription || product.shortDescription || "Уточните подробные условия у менеджера до оплаты.")}</p></section><section class="detail-extra"><h2>Условия использования</h2><dl><div><dt>Роуминг</dt><dd>${escape(product.roamingTerms || "Уточните у менеджера")}</dd></div><div><dt>Активация</dt><dd>${escape(product.activationTerms || "По инструкции")}</dd></div><div><dt>Совместимость</dt><dd>${escape(product.compatibility || "Проверьте до оплаты")}</dd></div></dl></section></div><section class="detail-extra"><h2>Получение товара</h2><p>${product.type === "eSIM" ? "После подтверждения оплаты код активации и инструкция отправляются на email." : "Способ, стоимость и срок доставки физической SIM согласуются с менеджером."}</p></section>`)}`;
+    const variants = product.variants?.length ? `<section class="detail-extra variants"><h2>Варианты тарифа</h2><p>Сравните объём, срок и стоимость доступных вариантов.</p><div class="grid">${product.variants.map((variant) => `<article class="info-card"><h3>${escape(variant.name)}</h3><small>Артикул: ${escape(variant.sku)}</small><p>${escape(variant.data || product.data)}${variant.days ? ` · ${escape(variant.days)} дней` : ""}</p><strong>${money(variant.price, variant.currency)}</strong><button class="button" data-add="${product.id}" data-variant="${variant.id}" ${state.orderingEnabled && variant.available && variant.stockQuantity !== 0 ? "" : "disabled"}>Выбрать вариант</button></article>`).join("")}</div></section>` : "";
+    app.innerHTML = `${heading(`${product.flag || "🌍"} ${product.country} · ${product.operator}`, product.h1 || product.name, product.shortDescription || "Тариф для поездки")}${body(`<div class="breadcrumb"><a href="#/">Главная</a> / <a href="#/catalog">Каталог</a> / ${escape(product.name)}</div><div class="detail-layout">${visual}<div class="detail-panel"><div class="detail-topline"><span class="detail-type">${escape(product.type)}</span><span class="detail-status">${!state.orderingEnabled ? "Сохранённый тариф" : isAvailable(product) ? "В наличии" : "Нет в наличии"}</span></div><div class="price">${money(current.price, current.currency)}</div>${product.oldPrice && product.oldPrice > current.price ? `<div class="old-price">${money(product.oldPrice, product.currency)}</div>` : ""}<p class="muted">Артикул: <strong>${escape(product.sku)}</strong></p><ul class="detail-list">${facts.map(([label, value]) => `<li><small>${escape(label)}</small><strong>${escape(value)}</strong></li>`).join("")}</ul><button class="button" data-add="${product.id}" ${state.orderingEnabled && isAvailable(product) ? "" : "disabled"}>${!state.orderingEnabled ? "Продажи приостановлены" : isAvailable(product) ? "Добавить в корзину" : "Сейчас недоступно"}</button><p class="muted">Итоговая сумма будет указана при оформлении.</p><p class="muted">${product.type === "eSIM" ? "После оплаты eSIM и инструкция придут на указанный email." : "Адрес, стоимость и срок доставки подтвердит менеджер."}</p></div></div>${variants}<div class="product-information"><section class="detail-extra"><h2>Описание тарифа</h2><p>${escape(product.fullDescription || product.shortDescription || "Уточните подробные условия у менеджера до оплаты.")}</p></section><section class="detail-extra"><h2>Условия использования</h2><dl><div><dt>Роуминг</dt><dd>${escape(product.roamingTerms || "Уточните у менеджера")}</dd></div><div><dt>Активация</dt><dd>${escape(product.activationTerms || "По инструкции")}</dd></div><div><dt>Совместимость</dt><dd>${escape(product.compatibility || "Проверьте до оплаты")}</dd></div></dl></section></div><section class="detail-extra"><h2>Получение товара</h2><p>${product.type === "eSIM" ? "После подтверждения оплаты код активации и инструкция отправляются на email." : "Способ, стоимость и срок доставки физической SIM согласуются с менеджером."}</p></section>`)}`;
   }
 
   function render() {
@@ -182,7 +185,8 @@
     else if (path[0] === "countries") app.innerHTML = heading("Страны", "Направления для поездки", "Выберите страну и сравните доступные SIM и eSIM.") + body(`<div class="grid">${state.countries.map(countryTile).join("")}</div>`);
     else if (path[0] === "country") { const country = state.countries.find((item) => item.slug === path[1]); app.innerHTML = country ? heading("Страна", country.name, country.description || "Тарифы SIM и eSIM") + body(productGrid(state.products.filter((product) => product.countryId === country.id))) : heading("Страна", "Страна не найдена", "Откройте список стран."); }
     else if (path[0] === "product") renderProduct(path[1]);
-    else if (pages[path[0]]) { const page = pages[path[0]]; app.innerHTML = heading("Информация", page.title, page.description) + body(`<div class="info-grid">${page.cards.map(([title, text]) => infoCard(title, text)).join("")}</div>${["terms", "privacy", "returns", "cookies"].includes(path[0]) ? `<p class="muted">Полный действующий текст документа: <a href="${API}/${path[0]}" target="_blank" rel="noopener noreferrer">открыть документ</a>.</p>` : ""}`); }
+    else if (path[0] === "account") app.innerHTML = heading("Личный кабинет", "Кабинет временно недоступен", "Приём заказов приостановлен. По вопросам прошлых заказов напишите в поддержку.") + body(`<a class="button" href="${SUPPORT}">Написать в поддержку</a>`);
+    else if (pages[path[0]]) { const page = pages[path[0]]; app.innerHTML = heading("Информация", page.title, page.description) + body(`<div class="info-grid">${page.cards.map(([title, text]) => infoCard(title, text)).join("")}</div>${API && ["terms", "privacy", "returns", "cookies"].includes(path[0]) ? `<p class="muted">Полный действующий текст документа: <a href="${API}/${path[0]}" target="_blank" rel="noopener noreferrer">открыть документ</a>.</p>` : ""}`); }
     else app.innerHTML = heading("SIMKA", "Страница не найдена", "Откройте каталог или вернитесь на главную.") + body(`<a class="button" href="#/catalog">Каталог</a>`);
     rewriteLinks();
     document.getElementById("content").focus({ preventScroll: true });
@@ -190,6 +194,7 @@
   }
 
   function addToCart(productId, variantId = null) {
+    if (!state.orderingEnabled) return;
     const product = state.products.find((item) => item.id === productId);
     if (!product || !isAvailable(product)) return;
     const variant = variantId ? product.variants?.find((item) => item.id === variantId && item.available && item.availabilityStatus !== "OUT_OF_STOCK" && item.stockQuantity !== 0) : availableVariant(product);
@@ -220,7 +225,7 @@
   function renderCart() {
     const lines = cartLines();
     document.getElementById("cart-subtitle").textContent = lines.length ? `${lines.reduce((sum, line) => sum + line.quantity, 0)} товаров` : "Пока здесь пусто";
-    if (state.receipt) { cartBody.innerHTML = `<div class="success"><div class="check">✓</div><strong>Заказ создан</strong><p>Номер заказа: <b>${escape(state.receipt.orderNumber)}</b></p><div class="notice">Менеджер сообщит реквизиты по указанным контактам после обработки заказа. Сохраните номер заказа.${state.receipt.customerNotified ? " Письмо-подтверждение отправлено." : " Автоматическое письмо-подтверждение не отправлено. Если с вами не связались, обратитесь в поддержку."}</div>${state.receipt.checkoutUrl ? `<p><a class="button" href="${escape(state.receipt.checkoutUrl)}">Перейти к оплате</a></p>` : ""}</div>`; return; }
+if (state.receipt) { cartBody.innerHTML = `<div class="success"><div class="check">✓</div><strong>Заказ создан</strong><p>Номер заказа: <b>${escape(state.receipt.orderNumber)}</b></p><div class="notice">${state.receipt.paymentMethod === "crypto" ? "Откройте страницу оплаты и выберите валюту и сеть. Возврат на сайт сам по себе не подтверждает оплату." : "Менеджер сообщит реквизиты по указанным контактам после обработки заказа."} Сохраните номер заказа.${state.receipt.customerNotified ? " Подтверждение отправлено на email. Проверьте входящие и папку «Спам»." : " Автоматическое письмо-подтверждение не отправлено. Если с вами не связались, обратитесь в поддержку."}</div>${state.receipt.checkoutUrl ? `<p><a class="button" href="${escape(state.receipt.checkoutUrl)}">Перейти к оплате</a></p>` : ""}<p><a class="button-soft" href="${SUPPORT}?text=${encodeURIComponent(`Здравствуйте! Вопрос по заказу ${state.receipt.orderNumber}`)}" target="_blank" rel="noopener noreferrer">Написать в поддержку</a></p></div>`; return; }
     if (state.checkout) { renderCheckout(lines); rewriteLinks(); return; }
     if (!lines.length) { cartBody.innerHTML = `<div class="empty">Добавьте подходящий тариф из каталога.</div><button class="button" data-close-cart>Выбрать тариф</button>`; return; }
     const currencies = new Set(lines.map((line) => line.currency));
@@ -229,22 +234,32 @@
   }
 
   function renderCheckout(lines) {
+    if (!state.orderingEnabled) {
+      cartBody.innerHTML = `<h3>Приём заказов приостановлен</h3><p>Сохранённый каталог доступен для просмотра. О возобновлении продаж можно узнать в поддержке.</p><a class="button" href="${SUPPORT}" target="_blank" rel="noopener noreferrer">Написать в поддержку</a>`;
+      return;
+    }
     if (!lines.length) { state.checkout = false; renderCart(); return; }
     const physical = [...new Map(lines.filter((line) => line.product.type === "SIM").map((line) => [line.product.id, line.product])).values()];
     const subtotal = lines.reduce((sum, line) => sum + line.price * line.quantity, 0);
     const delivery = physical.reduce((sum, product) => sum + (product.deliveryOptions?.[0]?.cost ?? 0), 0);
-    cartBody.innerHTML = `<button class="button-soft" data-back-cart>← Вернуться в корзину</button><h3>Оформление заказа</h3>${state.error ? `<p class="error-text" role="alert">${escape(state.error)}</p>` : ""}<form id="checkout-form" class="checkout"><label>Имя<input name="customerName" required minlength="2" maxlength="100" autocomplete="name"></label><label>Email для связи и получения реквизитов<input name="customerEmail" type="email" required maxlength="254" autocomplete="email"><span class="hint">Менеджер использует этот адрес для связи по заказу.</span></label><label>Telegram или телефон<input name="customerContact" maxlength="100" placeholder="@username"></label>${physical.length ? `<label>Адрес доставки физической SIM<input name="deliveryAddress" required maxlength="500" autocomplete="street-address" placeholder="Город, улица, дом, квартира"></label>${physical.map((product) => `<label>Доставка: ${escape(product.name)}<select name="delivery-${product.id}" required>${(product.deliveryOptions || []).map((option) => `<option value="${escape(option.id)}">${escape(option.label)}${option.cost === null ? " - стоимость уточнит менеджер" : ` - ${money(option.cost, option.currency)}`}</option>`).join("")}</select></label>`).join("")}` : ""}<label>Комментарий<input name="customerComment" maxlength="1000" placeholder="Необязательно"></label><div class="notice">Оплата по реквизитам через менеджера. После создания заказа дождитесь связи с менеджером; не оплачивайте без подтверждённых реквизитов.</div><div class="summary"><span>Итого${physical.some((product) => product.deliveryOptions?.[0]?.cost === null) ? " без уточняемой доставки" : ""}</span><span>${money(subtotal + delivery, lines[0].currency)}</span></div><button class="button" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Создаём заказ..." : "Создать заказ"}</button><small class="muted">Оформляя заказ, вы соглашаетесь с <a href="#/terms">условиями</a> и <a href="#/privacy">политикой конфиденциальности</a>.</small></form>`;
+    const paymentChoices = state.paymentMethods.map((method, index) => `<label class="payment-choice"><input type="radio" name="paymentMethod" value="${escape(method.id)}" ${index === 0 ? "checked" : ""} required><span><strong>${escape(method.label)}</strong><small>${escape(method.description)}</small></span></label>`).join("");
+    const mailNotice = state.emailConfigured === false
+      ? '<p class="notice" role="status">Отправка писем сейчас недоступна. Укажите Telegram или телефон для связи и сохраните номер заказа. Выдачу eSIM согласуйте с поддержкой.</p>'
+      : '';
+cartBody.innerHTML = `<button class="button-soft" data-back-cart>← Вернуться в корзину</button><h3>Оформление заказа</h3>${mailNotice}${state.error ? `<p class="error-text" role="alert">${escape(state.error)}</p>` : ""}<form id="checkout-form" class="checkout"><label>Имя<input name="customerName" required minlength="2" maxlength="100" autocomplete="name"></label><label>Email для связи и получения реквизитов<input name="customerEmail" type="email" required maxlength="254" autocomplete="email"><span class="hint">Менеджер использует этот адрес для связи по заказу.</span></label><label>Telegram или телефон<input name="customerContact" maxlength="100" placeholder="@username"></label>${physical.length ? `<label>Адрес доставки физической SIM<input name="deliveryAddress" required maxlength="500" autocomplete="street-address" placeholder="Город, улица, дом, квартира"></label>${physical.map((product) => `<label>Доставка: ${escape(product.name)}<select name="delivery-${product.id}" required>${(product.deliveryOptions || []).map((option) => `<option value="${escape(option.id)}">${escape(option.label)}${option.cost === null ? " - стоимость уточнит менеджер" : ` - ${money(option.cost, option.currency)}`}</option>`).join("")}</select></label>`).join("")}` : ""}<label>Комментарий<input name="customerComment" maxlength="1000" placeholder="Необязательно"></label><fieldset class="payment-methods"><legend>Способ оплаты</legend>${paymentChoices}</fieldset><div class="summary"><span>Итого${physical.some((product) => product.deliveryOptions?.[0]?.cost === null) ? " без уточняемой доставки" : ""}</span><span>${money(subtotal + delivery, lines[0].currency)}</span></div><button class="button" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Создаём заказ..." : "Создать заказ"}</button><small class="muted">Оформляя заказ, вы соглашаетесь с <a href="#/terms">условиями</a> и <a href="#/privacy">политикой конфиденциальности</a>.</small></form>`;
   }
 
   async function submitOrder(form) {
+    if (!API || !state.orderingEnabled) return;
     if (state.busy) return;
+    if (!form.reportValidity()) return;
     const lines = cartLines();
     if (!lines.length) return;
     const data = new FormData(form);
     const physical = [...new Map(lines.filter((line) => line.product.type === "SIM").map((line) => [line.product.id, line.product])).values()];
     state.busy = true;
     state.error = "";
-    form.previousElementSibling?.matches('.error-text[role="alert"]') && form.previousElementSibling.remove();
+    if (form.previousElementSibling?.matches('.error-text[role="alert"]')) form.previousElementSibling.remove();
     const submitButton = form.querySelector('button[type="submit"]');
     submitButton.disabled = true;
     submitButton.textContent = "Создаём заказ...";
@@ -253,7 +268,7 @@
       const response = await fetch(`${API}/api/orders`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         requestId: state.requestId,
         customerName: data.get("customerName"), customerEmail: data.get("customerEmail"), customerContact: data.get("customerContact") || "",
-        deliveryAddress: data.get("deliveryAddress") || undefined, customerComment: data.get("customerComment") || "", paymentMethod: "manager",
+        deliveryAddress: data.get("deliveryAddress") || undefined, customerComment: data.get("customerComment") || "", paymentMethod: data.get("paymentMethod") || "manager",
         items: lines.map((line) => ({ productId: line.product.id, ...(line.variant ? { variantId: line.variant.id } : {}), quantity: line.quantity })),
         deliverySelections: physical.map((product) => ({ productId: product.id, optionId: data.get(`delivery-${product.id}`) })),
       }) });
@@ -319,24 +334,49 @@
   window.addEventListener("hashchange", render);
 
   async function loadCatalog() {
+    state.orderingEnabled = false;
     try {
+      const configResponse = await fetch(`${SITE_PATH}site-config.json`, { cache: "no-store" });
+      if (!configResponse.ok) throw new Error("Configuration unavailable");
+      const config = await configResponse.json();
+      API = "";
+      if (config.apiBaseUrl) {
+        const url = new URL(config.apiBaseUrl);
+        if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("Invalid API origin");
+        API = url.origin;
+      }
       const routesResponse = await fetch(`${SITE_PATH}generated-pages.json`);
       const routes = routesResponse.ok ? await routesResponse.json() : [];
       state.staticRoutes = new Set(Array.isArray(routes) ? routes : []);
-    } catch { state.staticRoutes = new Set(); }
-    try {
-      const response = await fetch(`${API}/api/pages/catalog`, { headers: { Accept: "application/json" } });
-      if (!response.ok) throw new Error("Каталог временно недоступен");
-      const payload = await response.json();
+      let payload;
+      if (API) {
+        try {
+          const response = await fetch(`${API}/api/pages/catalog`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+          if (!response.ok) throw new Error("Catalog unavailable");
+          payload = await response.json();
+          if (!Array.isArray(payload.products) || !Array.isArray(payload.countries) || !Array.isArray(payload.categories)) throw new Error("Invalid catalog");
+          state.orderingEnabled = true;
+        } catch { payload = null; }
+      }
+      if (!payload) {
+        const response = await fetch(`${SITE_PATH}catalog-snapshot.json`);
+        if (!response.ok) throw new Error("Snapshot unavailable");
+        payload = await response.json();
+      }
       state.products = Array.isArray(payload.products) ? payload.products : [];
       state.categories = Array.isArray(payload.categories) ? payload.categories : [];
       state.countries = Array.isArray(payload.countries) ? payload.countries : [];
+      state.paymentMethods = Array.isArray(payload.paymentMethods) ? payload.paymentMethods.filter((method) => method && ["manager", "crypto"].includes(method.id) && typeof method.label === "string" && typeof method.description === "string") : [];
+      state.emailConfigured = typeof payload.emailConfigured === "boolean" ? payload.emailConfigured : null;
+      document.querySelectorAll("[data-account-link]").forEach((link) => {
+        link.href = API ? `${API}/account` : `${SITE_PATH}#/account`;
+      });
+      const notice = document.getElementById("store-status");
+      notice.hidden = state.orderingEnabled;
+      notice.textContent = state.orderingEnabled ? "" : "Приём заказов приостановлен. Вы смотрите сохранённый каталог; цены и наличие нужно уточнить после возобновления продаж.";
       updateCartCount(); render();
     } catch {
-      const warning = `<div id="catalog-error" class="error-panel" role="alert"><strong>Актуальность тарифов временно не подтверждена</strong><p>Сохранённая версия страницы доступна для просмотра, но оформить заказ можно после восстановления связи с магазином.</p><button class="button" id="retry-catalog">Повторить</button> <a class="button-soft" href="${API}/">Открыть магазин</a></div>`;
-      app.querySelector("#catalog-error")?.remove();
-      if (app.querySelector(".loading")) app.innerHTML = warning;
-      else app.insertAdjacentHTML("afterbegin", warning);
+      app.innerHTML = `<div class="shell page-body"><div class="error-panel" role="alert"><h1>Не удалось загрузить каталог</h1><p>Попробуйте обновить страницу или напишите в поддержку.</p><button class="button" id="retry-catalog">Повторить</button> <a class="button-soft" href="${SUPPORT}">Поддержка</a></div></div>`;
       rewriteLinks();
       document.getElementById("retry-catalog").addEventListener("click", loadCatalog);
     }

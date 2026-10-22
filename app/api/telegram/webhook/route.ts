@@ -26,6 +26,7 @@ import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { sendOrderAnalytics } from "@/lib/server-analytics";
 import { calculateCampaignCac, calculateLtv } from "@/lib/unit-economics";
 import { handleCatalogAdminCallback, handleCatalogAdminMessage } from "@/lib/telegram-catalog-admin";
+import type { TelegramImageAttachment } from "@/lib/telegram-image-upload";
 import {
   resolveTelegramRole,
   telegramCallbackPermission,
@@ -43,6 +44,21 @@ const updateSchema = z.object({
   message: z.object({
     message_id: z.number().int(),
     text: z.string().max(4096).optional(),
+    caption: z.string().max(1024).optional(),
+    photo: z.array(z.object({
+      file_id: z.string().min(1).max(512),
+      file_unique_id: z.string().min(1).max(512),
+      width: z.number().int().nonnegative(),
+      height: z.number().int().nonnegative(),
+      file_size: z.number().int().nonnegative().optional(),
+    })).max(20).optional(),
+    document: z.object({
+      file_id: z.string().min(1).max(512),
+      file_unique_id: z.string().min(1).max(512),
+      file_name: z.string().max(255).optional(),
+      mime_type: z.string().max(100).optional(),
+      file_size: z.number().int().nonnegative().optional(),
+    }).optional(),
     chat: z.object({ id: z.number().int() }),
     from: z.object({ id: z.number().int() }).optional(),
     reply_to_message: z.object({ text: z.string().max(4096).optional() }).optional(),
@@ -844,7 +860,7 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
       ) THEN ${analyticsSessions.clientId} END)::int`,
       pageViews: sql<number>`COALESCE(SUM(${analyticsSessions.pageViews}), 0)::int`,
       averageDepth: sql<number>`COALESCE(AVG(${analyticsSessions.pageViews}), 0)::float`,
-      averageSeconds: sql<number>`COALESCE(AVG(GREATEST(0, LEAST(86400, EXTRACT(EPOCH FROM (${analyticsSessions.lastSeenAt}::timestamptz - ${analyticsSessions.startedAt}::timestamptz)))), 0)::float`,
+      averageSeconds: sql<number>`COALESCE(AVG(GREATEST(0, LEAST(86400, EXTRACT(EPOCH FROM (${analyticsSessions.lastSeenAt}::timestamptz - ${analyticsSessions.startedAt}::timestamptz))))), 0)::float`,
       bounces: sql<number>`COUNT(*) FILTER (WHERE ${analyticsSessions.pageViews} <= 1)::int`,
     }).from(analyticsSessions).innerJoin(analyticsVisitors, eq(analyticsSessions.clientId, analyticsVisitors.clientId)).where(and(...sessionConditions)),
     db.select({ source: analyticsSessions.source, users: sql<number>`COUNT(DISTINCT ${analyticsSessions.clientId})::int`, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.source).orderBy(desc(sql`COUNT(*)`)).limit(8),
@@ -976,6 +992,8 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     orders: rawFunnel?.orders,
     payments: rawFunnel?.payments,
   });
+  const locationRows = await db.select({ country: analyticsSessions.countryCode, region: analyticsSessions.region, city: analyticsSessions.city, sessions: sql<number>`COUNT(*)::int` }).from(analyticsSessions).where(and(...sessionConditions)).groupBy(analyticsSessions.countryCode, analyticsSessions.region, analyticsSessions.city).orderBy(desc(sql`COUNT(*)`)).limit(8);
+  const locationLines = locationRows.map(row => `• ${escapeHtml([row.country,row.region,row.city].filter(Boolean).join(", ") || "Не определено")}: ${row.sessions} сесс.`).join("\n") || "• Данных пока нет";
   const stages = [
     ["Посещение", funnel.visits], ["Товар", funnel.productViews], ["Корзина", funnel.carts],
     ["Checkout", funnel.checkouts], ["Заказ", funnel.orders], ["Оплата", funnel.payments],
@@ -1014,6 +1032,8 @@ async function sendTrafficAnalytics(db: ReturnType<typeof getDb>, token: string,
     "", "Воронка по уникальным пользователям:", funnelLines,
     "", "Источники (покупатели / посетители):", sourceLines,
     "", "Устройства (покупатели / посетители):", deviceLines,
+    "", "Приблизительная география посещений:", locationLines,
+    'IP Geolocation by <a href="https://db-ip.com">DB-IP</a> (Lite). Не точный адрес; VPN и мобильные сети могут искажать географию.',
     "", "Bot / Fraud:", trafficClassLines,
     "", "Основные страницы выхода:", exitLines,
     "", "Время на страницах:", pageTimeLines,
@@ -2717,13 +2737,19 @@ export async function POST(request: Request) {
 
     let { text = "" } = message!;
     const replyContext = message?.reply_to_message?.text ?? "";
+    const photo = message?.photo?.at(-1);
+    const attachment: TelegramImageAttachment | undefined = photo
+      ? { fileId: photo.file_id, fileSize: photo.file_size, mimeType: "image/jpeg", caption: message?.caption }
+      : message?.document
+        ? { fileId: message.document.file_id, fileSize: message.document.file_size, mimeType: message.document.mime_type, caption: message?.caption }
+        : undefined;
     const replyPermission = telegramReplyPermission(replyContext);
     if (replyPermission && !telegramRoleCan(role, replyPermission)) {
       await denyTelegramAccess(token, chatId, from.id, role, replyPermission, replyContext);
       return Response.json({ ok: true });
     }
     if (await handleFulfillmentReply(token, chatId, from.id, message!.message_id, text, replyContext, role)) return Response.json({ ok: true });
-    if (telegramRoleCan(role, "catalog.write") && await handleCatalogAdminMessage({ token, chatId, adminId: from.id }, text, replyContext)) return Response.json({ ok: true });
+    if (telegramRoleCan(role, "catalog.write") && await handleCatalogAdminMessage({ token, chatId, adminId: from.id }, text, replyContext, attachment)) return Response.json({ ok: true });
     if (replyContext.startsWith("[CREATE_CATEGORY]")) {
       text = `/category_create ${text}`;
     } else {

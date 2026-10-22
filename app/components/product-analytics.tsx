@@ -16,7 +16,7 @@ export function ProductAnalytics({
   itemName: string;
   itemCategory?: string;
   itemVariant?: string;
-  price: number;
+  price: number | null;
   currency: string;
 }) {
   const ready = useAnalyticsReady();
@@ -24,8 +24,8 @@ export function ProductAnalytics({
     if (!ready) return;
     trackEvent("view_item", {
       currency,
-      value: price,
-      items: [{ item_id: itemId, item_name: itemName, item_category: itemCategory, item_variant: itemVariant, price, quantity: 1 }],
+      value: price ?? undefined,
+      items: [{ item_id: itemId, item_name: itemName, item_category: itemCategory, item_variant: itemVariant, price: price ?? undefined, quantity: 1 }],
     });
   }, [currency, itemCategory, itemId, itemName, itemVariant, price, ready]);
 

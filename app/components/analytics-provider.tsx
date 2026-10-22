@@ -285,7 +285,7 @@ export function AnalyticsProvider() {
 
   if (consent !== null) return null;
   return <div role="dialog" aria-label="Настройки аналитики" aria-live="polite" className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-2xl rounded-2xl border border-[#cddbea] bg-white p-4 text-[#10213a] shadow-[0_18px_55px_rgba(16,33,58,.2)] sm:bottom-5 sm:flex sm:items-center sm:gap-5 sm:p-5">
-    <div className="min-w-0 flex-1"><p className="font-black">Помогите нам улучшать SIMKA</p><p className="mt-1 text-sm leading-5 text-[#637389]">С вашего разрешения мы будем собирать обезличенную статистику посещений и заказов. Персональные и платёжные данные не передаются. <a href="/cookies" className="font-bold text-[#1168e8] hover:underline">Подробнее</a></p></div>
+    <div className="min-w-0 flex-1"><p className="font-black">Настройки аналитики</p><p className="mt-1 text-sm leading-5 text-[#637389]">С вашего разрешения мы будем собирать статистику посещений и покупок. Действия на сайте могут быть связаны с вашим аккаунтом и заказами. <a href="/cookies" className="font-bold text-[#1168e8] hover:underline">Подробнее</a></p></div>
     <div className="mt-4 grid grid-cols-2 gap-2 sm:mt-0 sm:shrink-0"><button type="button" onClick={() => choose("declined")} className="min-h-11 rounded-xl border border-[#cddbea] px-4 text-sm font-bold hover:bg-[#f4f7fa]">Только необходимые</button><button type="button" onClick={() => choose("accepted")} className="min-h-11 rounded-xl bg-[#1168e8] px-4 text-sm font-bold text-white hover:bg-[#0d56c3]">Разрешить</button></div>
   </div>;
 }

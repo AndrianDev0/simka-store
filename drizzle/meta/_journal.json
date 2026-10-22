@@ -15,6 +15,13 @@
       "when": 1790084884585,
       "tag": "0001_married_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792278000000,
+      "tag": "0002_optional_product_price",
+      "breakpoints": true
     }
   ]
 }

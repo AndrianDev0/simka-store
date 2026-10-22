@@ -260,6 +260,12 @@ export async function getCatalogProducts(options: CatalogQueryOptions = {}): Pro
   return loadWithFallback(options);
 }
 
+export async function getCatalogProductsByIds(ids: number[], options: CatalogQueryOptions = {}): Promise<CatalogProduct[]> {
+  const unique = [...new Set(ids)];
+  if (unique.length > 100 || unique.some(id => !Number.isSafeInteger(id) || id <= 0)) throw new Error("Invalid product IDs");
+  return loadWithFallback(options, { ids: unique });
+}
+
 export type CatalogSearchResult = { items: CatalogProduct[]; total: number; limit: number; offset: number };
 
 export async function searchCatalogProducts(rawQuery: string, page = 1, pageSize = 24): Promise<CatalogSearchResult> {
@@ -335,6 +341,7 @@ export async function searchCatalogProducts(rawQuery: string, page = 1, pageSize
 
 export type CatalogFilters = {
   q?: string;
+  region?: string;
   country?: string;
   operator?: string;
   category?: string;
@@ -365,7 +372,7 @@ const displayVariantSql = (field: "price" | "currency") => sql`(
   LIMIT 1
 )`;
 
-const displayPriceSql = sql<number>`COALESCE(${displayVariantSql("price")}, ${catalogProducts.price})`;
+const displayPriceSql = sql<number | null>`CASE WHEN ${catalogProducts.price} IS NULL THEN NULL ELSE COALESCE(${displayVariantSql("price")}, ${catalogProducts.price}) END`;
 const displayCurrencySql = sql<string>`COALESCE(${displayVariantSql("currency")}, ${catalogProducts.currency})`;
 
 function visibleCatalogPredicate() {
@@ -393,10 +400,11 @@ function catalogFilterPredicate(filters: CatalogFilters) {
     ));
   }
   if (filters.country) predicates.push(eq(countries.name, filters.country));
+  if (filters.region) predicates.push(eq(countries.region, filters.region));
   if (filters.operator) predicates.push(eq(operators.name, filters.operator));
   if (filters.type) predicates.push(eq(catalogProducts.simType, filters.type));
   if (filters.currency) predicates.push(sql`${displayCurrencySql} = ${filters.currency}`);
-  const availabilitySql = sql`${catalogProducts.available} = TRUE AND ${catalogProducts.availabilityStatus} <> 'OUT_OF_STOCK' AND (${catalogProducts.stockQuantity} IS NULL OR ${catalogProducts.stockQuantity} > 0) AND (NOT EXISTS (SELECT 1 FROM product_variants AS v WHERE v.product_id = ${catalogProducts.id}) OR ${availableVariantSql(catalogProducts.id)})`;
+  const availabilitySql = sql`${catalogProducts.price} IS NOT NULL AND ${catalogProducts.price} > 0 AND ${catalogProducts.available} = TRUE AND ${catalogProducts.availabilityStatus} <> 'OUT_OF_STOCK' AND (${catalogProducts.stockQuantity} IS NULL OR ${catalogProducts.stockQuantity} > 0) AND (NOT EXISTS (SELECT 1 FROM product_variants AS v WHERE v.product_id = ${catalogProducts.id}) OR ${availableVariantSql(catalogProducts.id)})`;
   if (filters.availability === "available") predicates.push(availabilitySql);
   if (filters.availability === "unavailable") predicates.push(sql`NOT (${availabilitySql})`);
   if (filters.data === "unlimited") predicates.push(eq(catalogProducts.isUnlimited, true));
@@ -425,26 +433,33 @@ function filterFallbackCatalogProducts(filters: CatalogFilters) {
     const dataMb = product.dataMb ?? 0;
     return (!query || text.includes(query))
       && (!filters.country || product.country === filters.country)
+      && (!filters.region || product.region === filters.region)
       && (!filters.operator || product.operator === filters.operator)
       && (!filters.type || product.type === filters.type)
       && (!filters.currency || offer.currency === filters.currency)
       && (!filters.availability || (filters.availability === "available") === productIsAvailable(product))
       && (!filters.data || (filters.data === "unlimited" ? product.isUnlimited : !product.isUnlimited && (filters.data === "small" ? dataMb <= 5 * 1024 : filters.data === "medium" ? dataMb > 5 * 1024 && dataMb <= 20 * 1024 : dataMb > 20 * 1024)))
-      && (!filters.days || product.days <= filters.days)
-      && (filters.minPrice === undefined || offer.price >= filters.minPrice)
-      && (filters.maxPrice === undefined || offer.price <= filters.maxPrice)
+      && (!filters.days || (product.days !== null && product.days <= filters.days))
+      && (filters.minPrice === undefined || (offer.price !== null && offer.price >= filters.minPrice))
+      && (filters.maxPrice === undefined || (offer.price !== null && offer.price <= filters.maxPrice))
       && (!category || (category === "esim" ? product.type === "eSIM" : category === "sim" ? product.type === "SIM" : region ? product.region === region : false));
   }).sort((left, right) => {
-    if (filters.sort === "days") return left.days - right.days || left.id - right.id;
+    if (filters.sort === "days") {
+      if (left.days === null) return right.days === null ? left.id - right.id : 1;
+      if (right.days === null) return -1;
+      return left.days - right.days || left.id - right.id;
+    }
     if (filters.sort === "price-asc" || filters.sort === "price-desc") {
       const leftOffer = productDisplayOffer(left); const rightOffer = productDisplayOffer(right);
+      if (leftOffer.price === null) return rightOffer.price === null ? left.id - right.id : 1;
+      if (rightOffer.price === null) return -1;
       return leftOffer.currency.localeCompare(rightOffer.currency) || (filters.sort === "price-asc" ? leftOffer.price - rightOffer.price : rightOffer.price - leftOffer.price) || left.id - right.id;
     }
     return Number(right.popular) - Number(left.popular) || left.id - right.id;
   });
 }
 
-export async function queryCatalogProducts(filters: CatalogFilters, page = 1, pageSize = 24): Promise<CatalogSearchResult> {
+export async function queryCatalogProducts(filters: CatalogFilters, page = 1, pageSize = 24, options: CatalogQueryOptions = {}): Promise<CatalogSearchResult> {
   const limit = Math.min(48, Math.max(1, Math.trunc(pageSize) || 24));
   const safePage = Math.min(10_000, Math.max(1, Math.trunc(page) || 1));
   const offset = (safePage - 1) * limit;
@@ -457,9 +472,9 @@ export async function queryCatalogProducts(filters: CatalogFilters, page = 1, pa
     const [{ total }] = await db.select({ total: sql<number>`COUNT(*)::int` }).from(catalogProducts)
       .innerJoin(countries, eq(catalogProducts.countryId, countries.id))
       .innerJoin(operators, eq(catalogProducts.operatorId, operators.id)).where(where);
-    const order = filters.sort === "days" ? [asc(catalogProducts.validityDays), asc(catalogProducts.sortOrder), asc(catalogProducts.id)]
+    const order = filters.sort === "days" ? [sql`${catalogProducts.validityDays} ASC NULLS LAST`, asc(catalogProducts.sortOrder), asc(catalogProducts.id)]
       : filters.sort === "price-asc" ? [asc(displayCurrencySql), asc(displayPriceSql), asc(catalogProducts.id)]
-      : filters.sort === "price-desc" ? [asc(displayCurrencySql), desc(displayPriceSql), asc(catalogProducts.id)]
+      : filters.sort === "price-desc" ? [asc(displayCurrencySql), sql`${displayPriceSql} DESC NULLS LAST`, asc(catalogProducts.id)]
       : [desc(catalogProducts.popular), asc(catalogProducts.sortOrder), asc(catalogProducts.id)];
     const idRows = await base().where(where).orderBy(...order).limit(limit).offset(offset);
     const loaded = await loadFromDatabase({}, { ids: idRows.map((row) => row.id) });
@@ -467,6 +482,7 @@ export async function queryCatalogProducts(filters: CatalogFilters, page = 1, pa
     return { items: idRows.flatMap((row) => byId.get(row.id) ? [byId.get(row.id)!] : []), total: Number(total || 0), limit, offset };
   } catch (error) {
     warnAboutFallback(error);
+    if (options.requireDatabase) throw error;
     const matches = filterFallbackCatalogProducts(filters);
     return { items: matches.slice(offset, offset + limit), total: matches.length, limit, offset };
   }

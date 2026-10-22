@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { analyticsSessions, catalogProducts, cryptoPayments, orderItems, orders, partners, productVariants, promoCodes } from "@/db/schema";
-import { getCatalogProducts } from "@/lib/catalog-repository";
+import { getCatalogProductsByIds } from "@/lib/catalog-repository";
 import { createCryptoPayment, getCryptoPaymentConfig, getPaymentSiteOrigin } from "@/lib/crypto-payments";
 import { escapeHtml, sendTransactionalEmail } from "@/lib/email";
 import { getEmailValidationError } from "@/lib/email-validation";
@@ -214,9 +214,9 @@ async function createOrder(request: Request) {
       return Response.json({ order: { orderNumber: existing.orderNumber, paymentMethod: existing.paymentMethod, status: existing.status, totalAmount: existing.totalAmount, currency: existing.currency, promoCode: existing.promoCode, discountAmount: existing.discountAmount, checkoutUrl: existingPayment?.checkoutUrl ?? undefined, managerNotified: false, customerNotified: false } }, { status: 200, headers: { "Cache-Control": "no-store" } });
     }
 
-    const catalog = await getCatalogProducts({ requireDatabase: true });
-    const productById = new Map(catalog.map((product) => [product.id, product]));
     const requestedProductIds = [...new Set(parsed.data.items.map((line) => line.productId))];
+    const catalog = await getCatalogProductsByIds(requestedProductIds, { requireDatabase: true });
+    const productById = new Map(catalog.map((product) => [product.id, product]));
     const [productCostRows, variantCostRows] = await Promise.all([
       db.select({ id: catalogProducts.id, unitCost: catalogProducts.unitCost }).from(catalogProducts).where(inArray(catalogProducts.id, requestedProductIds)),
       db.select({ id: productVariants.id, unitCost: productVariants.unitCost }).from(productVariants).where(inArray(productVariants.productId, requestedProductIds)),
@@ -234,6 +234,7 @@ async function createOrder(request: Request) {
       if (product.variants.length && !variant) throw new Error("PRODUCT_VARIANT_UNAVAILABLE");
       if (variant && (!variant.available || variant.availabilityStatus === "OUT_OF_STOCK" || variant.stockQuantity === 0)) throw new Error("PRODUCT_VARIANT_UNAVAILABLE");
       const unitPrice = variant?.price ?? product.price;
+      if (product.price === null || unitPrice === null || !Number.isSafeInteger(unitPrice) || unitPrice <= 0) throw new Error("PRODUCT_UNAVAILABLE");
       const unitCost = variant ? variantCosts.get(variant.id) ?? productCosts.get(product.id) ?? null : productCosts.get(product.id) ?? null;
       return { product, variant, quantity: line.quantity, unitPrice, unitCost, currency: variant?.currency ?? product.currency, lineTotal: unitPrice * line.quantity };
     });

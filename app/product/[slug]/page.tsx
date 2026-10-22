@@ -21,8 +21,10 @@ import {
 import { ContentSection, SiteShell } from "@/app/components/site-shell";
 import { ProductAnalytics } from "@/app/components/product-analytics";
 import { CountryFlag } from "@/app/components/country-flag";
+import { productPhotoPosition } from "@/lib/product-presentation";
 import { getPublicCategories } from "@/lib/categories";
 import { getCatalogCountries, getCatalogProductBySlug, type CatalogProduct } from "@/lib/catalog-repository";
+import { validityLabel } from "@/lib/catalog";
 import { absoluteUrl, breadcrumbJsonLd, jsonLd, pageMetadata } from "@/lib/seo";
 import { getSlugRedirect } from "@/lib/slug-redirects";
 const getProduct = cache((slug: string) => getCatalogProductBySlug(slug));
@@ -37,7 +39,8 @@ function productCanonical(product: CatalogProduct) {
   return absoluteUrl(product.canonicalUrl || productPath(product));
 }
 
-function formatPrice(price: number, currency: string) {
+function formatPrice(price: number | null, currency: string) {
+  if (price === null) return "Нет в наличии";
   try {
     return new Intl.NumberFormat("ru-RU", {
       style: "currency",
@@ -55,11 +58,6 @@ function dispatchWindow(min: number | null, max: number | null) {
   if (min !== null && max === null) return `Отправка от ${min} дн.`;
   if (min === null && max !== null) return `Отправка до ${max} дн.`;
   return `Отправка через ${min} дн.`;
-}
-
-function esimTypeLabel(value: string | null) {
-  const labels: Record<string, string> = { consumer: "Потребительская", travel: "Туристическая", m2m: "M2M / IoT" };
-  return value ? labels[value.toLowerCase()] ?? value : "Уточняется до оплаты";
 }
 
 function esimDeliveryLabel(value: string | null) {
@@ -128,10 +126,12 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
     notFound();
   }
 
-  const purchasableVariants = product.variants.filter((variant) => variant.available && variant.availabilityStatus !== "OUT_OF_STOCK" && variant.stockQuantity !== 0);
+  const purchasableVariants = product.price === null ? [] : product.variants.filter((variant) => variant.available && variant.availabilityStatus !== "OUT_OF_STOCK" && variant.stockQuantity !== 0);
   const primaryVariant = purchasableVariants.find((variant) => variant.sku === product.sku) ?? purchasableVariants[0] ?? null;
-  const availability = availabilityDetails(product.availabilityStatus, product.available && product.stockQuantity !== 0 && (product.variants.length === 0 || purchasableVariants.length > 0));
+  const availability = availabilityDetails(product.availabilityStatus, product.price !== null && product.price > 0 && product.available && product.stockQuantity !== 0 && (product.variants.length === 0 || purchasableVariants.length > 0));
   const canOrder = availability.schema !== "https://schema.org/OutOfStock";
+  const demo = product.sku.startsWith("DEMO-");
+  if (demo) availability.label = "Демо, не продаётся";
   const displayPrice = primaryVariant?.price ?? product.price;
   const displayCurrency = primaryVariant?.currency ?? product.currency;
   const images = orderedImages(product);
@@ -143,7 +143,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
   const country = countries.find((item) => item.id === product.countryId);
   const assignedCategories = categories.filter((category) => product.categoryIds.includes(category.id));
 
-  const schemaOffers = product.variants.length ? product.variants.map((variant) => ({
+  const schemaOffers = product.price === null ? [] : product.variants.length ? product.variants.map((variant) => ({
     "@type": "Offer",
     sku: variant.sku,
     name: variant.name,
@@ -153,7 +153,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
     availability: availabilityDetails(variant.availabilityStatus, variant.available && variant.stockQuantity !== 0).schema,
     itemCondition: "https://schema.org/NewCondition",
     seller: { "@type": "Organization", name: "SIMKA" },
-  })) : [{
+  })) : product.price === null ? [] : [{
     "@type": "Offer",
     url: canonical,
     price: product.price,
@@ -177,18 +177,18 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
     additionalProperty: [
       { "@type": "PropertyValue", name: "Тип SIM", value: product.type },
       { "@type": "PropertyValue", name: "Интернет", value: product.data },
-      { "@type": "PropertyValue", name: "Срок действия", value: `${product.days} дней` },
-      { "@type": "PropertyValue", name: "Звонки", value: product.hasCalls ? product.calls || "Включены" : "Нет" },
-      { "@type": "PropertyValue", name: "SMS", value: product.hasSms ? product.sms || "Включены" : "Нет" },
+      { "@type": "PropertyValue", name: "Срок действия", value: validityLabel(product.days) },
+      { "@type": "PropertyValue", name: "Звонки", value: product.calls || (product.hasCalls ? "Включены" : "Не уточнено") },
+      { "@type": "PropertyValue", name: "SMS", value: product.sms || (product.hasSms ? "Включены" : "Не уточнено") },
       ...characteristics.map(([name, value]) => ({ "@type": "PropertyValue", name: characteristicLabel(name), value: characteristicValue(value) })),
     ],
     category: assignedCategories[0]?.name || product.type,
-    offers: schemaOffers,
+    offers: schemaOffers.length ? schemaOffers : undefined,
   };
   const breadcrumbSchema = breadcrumbJsonLd([{ name: "Главная", path: "/" }, { name: "Каталог", path: "/catalog" }, { name: product.name, path: canonical }]);
 
   return (
-    <SiteShell eyebrow={`${product.flag} ${product.country} · ${product.operator}`} title={product.h1 || product.name} description={product.shortDescription}>
+    <SiteShell eyebrow={<span className="flex items-center gap-2"><CountryFlag flag={product.flag} country={product.country} className="h-4 w-6"/>{product.country} · {product.operator}</span>} title={product.h1 || product.name} description={product.shortDescription}>
       <ProductAnalytics itemId={product.sku} itemName={product.name} itemCategory={assignedCategories[0]?.name} itemVariant={product.type} price={displayPrice} currency={displayCurrency} />
       <ContentSection>
         <nav aria-label="Хлебные крошки" className="scrollbar-none mb-7 overflow-x-auto text-sm text-[#637389]">
@@ -206,7 +206,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
             {primary ? (
               <figure>
                 <div className="aspect-[4/3] overflow-hidden rounded-[28px] border border-[#dbe5ef] bg-[#f4f7fa]">
-                  <img src={primary.url} alt={primary.alt || product.name} width={960} height={720} decoding="async" className="h-full w-full object-cover" />
+                  <img src={primary.url} alt={primary.alt || product.name} width={960} height={720} decoding="async" className="h-full w-full object-cover" style={{ objectPosition: productPhotoPosition(primary.url) }} />
                 </div>
                 {images.length > 1 && (
                   <div className="mt-3 grid grid-cols-3 gap-3 sm:grid-cols-4">
@@ -215,37 +215,38 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
                 )}
               </figure>
             ) : (
-              <div className={`flex aspect-[4/3] flex-col justify-between rounded-[28px] bg-gradient-to-br ${product.tone} p-7 text-white shadow-xl`}>
-                <div className="flex items-start justify-between"><span className="rounded-full bg-white/15 px-3 py-1 text-xs font-black uppercase tracking-wider">{product.type}</span><CountryFlag flag={product.flag} country={product.country} className="h-10 w-14 border-white/25" /></div>
-                <div><p className="text-sm text-white/75">{product.country} · {product.operator}</p><p className="mt-2 text-4xl font-black">{product.data}</p><p className="mt-2 text-white/85">Срок действия - {product.days} дней</p></div>
+              <div className="rounded-xl border border-border bg-muted p-7 text-card-foreground">
+                <div className="flex items-center justify-between"><span className="text-sm font-semibold">{product.type}</span><CountryFlag flag={product.flag} country={product.country} className="h-8 w-11" /></div>
+                <div className="mt-6"><p className="text-sm text-muted-foreground">{product.country} · {product.operator}</p><p className="mt-2 text-4xl font-bold">{product.data}</p><p className="mt-2 text-muted-foreground">Срок действия: {validityLabel(product.days)}</p></div>
               </div>
             )}
           </div>
 
-          <section aria-labelledby="purchase-title" className="rounded-2xl border border-[#dbe5ef] bg-white p-6 shadow-[0_12px_35px_rgba(23,58,96,.07)] sm:p-7">
+          <section aria-labelledby="purchase-title" className="rounded-xl border border-border bg-card p-6 text-card-foreground sm:p-7">
             <h2 id="purchase-title" className="sr-only">Стоимость и оформление</h2>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="rounded-lg bg-[#edf5ff] px-2.5 py-1 text-xs font-black uppercase tracking-wider text-[#1168e8]">{product.type}</span>
+              <span className="text-sm font-semibold text-muted-foreground">{product.type}</span>
               <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold ${availability.className}`}><span aria-hidden="true" className="size-1.5 rounded-full bg-current" />{availability.label}</span>
             </div>
-            <p className="mt-6 text-3xl font-black text-[#10213a]">{formatPrice(displayPrice, displayCurrency)}</p>
-            {product.oldPrice && displayCurrency === product.currency && product.oldPrice > displayPrice && <p className="mt-1 text-sm text-[#718096] line-through">{formatPrice(product.oldPrice, product.currency)}</p>}
-            <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#637389]"><span>Артикул: <strong className="text-[#334a64]">{product.sku}</strong></span><span>ID: <strong className="text-[#334a64]">{product.id}</strong></span></p>
+            {demo && <p className="mt-6 text-sm text-muted-foreground">Пример цены, покупка недоступна</p>}
+            {displayPrice !== null && <p className="mt-3 text-3xl font-bold text-card-foreground">{formatPrice(displayPrice, displayCurrency)}</p>}
+            {product.oldPrice && displayCurrency === product.currency && displayPrice !== null && product.oldPrice > displayPrice && <p className="mt-1 text-sm text-[#718096] line-through">{formatPrice(product.oldPrice, product.currency)}</p>}
+            <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#637389]"><span>Артикул: <strong className="text-[#334a64]">{product.sku}</strong></span></p>
 
             <dl className="mt-6 grid grid-cols-2 gap-3 text-sm">
               <KeyFact icon={Wifi} label="Интернет" value={product.data} />
-              <KeyFact icon={Clock3} label="Срок" value={`${product.days} дней`} />
-              <KeyFact icon={Phone} label="Звонки" value={product.hasCalls ? product.calls || "Включены" : "Нет"} />
-              <KeyFact icon={MessageSquareText} label="SMS" value={product.hasSms ? product.sms || "Включены" : "Нет"} />
+              <KeyFact icon={Clock3} label="Срок" value={validityLabel(product.days)} />
+              <KeyFact icon={Phone} label="Звонки" value={product.calls || (product.hasCalls ? "Включены" : "Не уточнено")} />
+              <KeyFact icon={MessageSquareText} label="SMS" value={product.sms || (product.hasSms ? "Включены" : "Не уточнено")} />
             </dl>
 
             {canOrder ? (
               <a href={`/?product=${product.id}${primaryVariant ? `&variant=${primaryVariant.id}` : ""}#catalog`} className="mt-7 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1168e8] px-5 font-bold text-white hover:bg-[#0d56c3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1168e8] focus-visible:ring-offset-2">Добавить в заказ <ArrowRight aria-hidden="true" className="size-4" /></a>
             ) : (
-              <button type="button" disabled className="mt-7 min-h-12 w-full cursor-not-allowed rounded-xl bg-[#e7ebef] px-5 font-bold text-[#657286]">Сейчас недоступно</button>
+              <button type="button" disabled className="mt-7 min-h-12 w-full cursor-not-allowed rounded-xl bg-[#e7ebef] px-5 font-bold text-[#657286]">Нет в наличии</button>
             )}
-            <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-[#637389]"><ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-[#4b8012]" />Цена и наличие повторно проверяются при создании заказа.</p>
-            <p className="mt-3 flex items-start gap-2 text-xs leading-5 text-[#637389]"><PackageCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-[#1168e8]" />{product.type === "eSIM" ? "После оплаты eSIM и инструкция придут на указанный email." : "Адрес, стоимость и срок доставки физической SIM подтверждаются при оформлении."}</p>
+            <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-[#637389]">Цена и наличие повторно проверяются при создании заказа.</p>
+            <p className="mt-3 flex items-start gap-2 text-xs leading-5 text-[#637389]">{!canOrder ? "Сейчас товар недоступен. Условия поступления уточняйте у поддержки." : product.type === "eSIM" ? "После подтверждения оплаты eSIM и инструкция придут на указанный email." : "Адрес, стоимость и срок доставки физической SIM подтверждаются при оформлении."}</p>
           </section>
         </div>
 
@@ -256,7 +257,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
             <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {product.variants.map((variant) => {
                 const variantAvailability = availabilityDetails(variant.availabilityStatus, variant.available && variant.stockQuantity !== 0);
-                const variantCanOrder = variantAvailability.schema !== "https://schema.org/OutOfStock" && variant.stockQuantity !== 0;
+                const variantCanOrder = canOrder && variantAvailability.schema !== "https://schema.org/OutOfStock" && variant.stockQuantity !== 0;
                 return <article id={`variant-${variant.id}`} key={variant.id} className="rounded-2xl border border-[#dbe5ef] bg-white p-5"><div className="flex items-start justify-between gap-3"><h3 className="font-black text-[#10213a]">{variant.name}</h3><span className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold ${variantAvailability.className}`}>{variantAvailability.label}</span></div><p className="mt-2 text-xs text-[#718096]">Артикул: {variant.sku}</p><p className="mt-4 text-sm text-[#52657a]">{variant.data || product.data}{variant.days ? ` · ${variant.days} дней` : ""}</p><p className="mt-4 text-xl font-black text-[#10213a]">{formatPrice(variant.price, variant.currency)}</p>{variantCanOrder ? <a href={`/?product=${product.id}&variant=${variant.id}#catalog`} className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-[#1168e8] px-4 text-sm font-bold text-white hover:bg-[#0d56c3]">Выбрать вариант</a> : <span className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-[#e7ebef] px-4 text-sm font-bold text-[#657286]">Недоступен</span>}</article>;
               })}
             </div>
@@ -265,7 +266,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
 
         <div className="mt-12 grid gap-8 border-t border-[#dbe5ef] pt-10 lg:grid-cols-2">
           <section aria-labelledby="description-title">
-            <h2 id="description-title" className="text-2xl font-black tracking-tight text-[#10213a]">Описание тарифа</h2>
+            <h2 id="description-title" className="text-2xl font-black tracking-tight text-[#10213a]">Описание товара</h2>
             <p className="mt-4 whitespace-pre-line text-sm leading-7 text-[#52657a]">{product.fullDescription}</p>
           </section>
           <section aria-labelledby="conditions-title">
@@ -282,9 +283,9 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
           <h2 id="delivery-title" className="text-2xl font-black tracking-tight text-[#10213a]">Получение товара</h2>
           {product.type === "eSIM" ? (
             <dl className="mt-5 grid overflow-hidden rounded-2xl border border-border bg-card sm:grid-cols-3 sm:divide-x sm:divide-border">
-              <DeliveryFact icon={Smartphone} label="Тип eSIM" value={esimTypeLabel(product.esimType)} />
+              <DeliveryFact icon={Smartphone} label="Формат" value="Электронная SIM" />
               <DeliveryFact icon={PackageCheck} label="Способ получения" value={esimDeliveryLabel(product.esimDeliveryMethod)} />
-              <DeliveryFact icon={ShieldCheck} label="Статус выдачи" value="Отслеживается менеджером в заказе" />
+              <DeliveryFact icon={ShieldCheck} label="Выдача" value="После подтверждения оплаты" />
             </dl>
           ) : product.deliveryOptions.length ? (
             <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -314,7 +315,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
 
         {instructions.length > 0 && (
           <section aria-labelledby="instructions-title" className="mt-12 rounded-2xl bg-[#10213a] p-6 text-white sm:p-8">
-            <div className="flex items-center gap-3"><span className="grid size-11 place-items-center rounded-xl bg-[#b7f34a] text-[#10213a]"><ListChecks aria-hidden="true" className="size-5" /></span><h2 id="instructions-title" className="text-2xl font-black tracking-tight">Инструкция по активации</h2></div>
+            <div className="flex items-center gap-3"><span className="grid size-11 place-items-center rounded-xl bg-[#b7f34a] text-[#10213a]"><ListChecks aria-hidden="true" className="size-5" /></span><h2 id="instructions-title" className="text-2xl font-black tracking-tight">Установка и получение инструкции</h2></div>
             <ol className="mt-7 grid gap-4 sm:grid-cols-2">
               {instructions.map((instruction, index) => <li key={`${index}-${instruction}`} className="flex gap-3 rounded-xl bg-white/7 p-4 text-sm leading-6 text-[#d8e3ef]"><span aria-hidden="true" className="grid size-7 shrink-0 place-items-center rounded-full bg-[#b7f34a] text-xs font-black text-[#10213a]">{index + 1}</span><span>{instruction}</span></li>)}
             </ol>
@@ -345,8 +346,8 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
   );
 }
 
-function KeyFact({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
-  return <div className="rounded-xl bg-[#f6f9fc] p-3"><dt className="flex items-center gap-1.5 text-xs text-[#6d7d90]"><Icon aria-hidden="true" className="size-3.5 text-[#1168e8]" />{label}</dt><dd className="mt-1 font-bold text-[#213752]">{value}</dd></div>;
+function KeyFact({ label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return <div className="border-b border-border py-3"><dt className="text-sm text-muted-foreground">{label}</dt><dd className="mt-1 font-medium text-card-foreground">{value}</dd></div>;
 }
 
 function Detail({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {

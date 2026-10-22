@@ -64,8 +64,8 @@ export type Product = {
   data: string;
   dataMb: number | null;
   isUnlimited: boolean;
-  days: number;
-  price: number;
+  days: number | null;
+  price: number | null;
   oldPrice?: number;
   currency: string;
   calls?: string;
@@ -108,15 +108,15 @@ export function variantIsAvailable(variant: ProductVariant) {
   return variant.available && variant.availabilityStatus !== "OUT_OF_STOCK" && variant.stockQuantity !== 0;
 }
 
-export function productIsAvailable(product: Product) {
-  return product.available
+export function productIsAvailable(product: Product): product is Product & { price: number } {
+  return product.price !== null && product.price > 0 && product.available
     && product.availabilityStatus !== "OUT_OF_STOCK"
     && product.stockQuantity !== 0
     && (product.variants.length === 0 || product.variants.some(variantIsAvailable));
 }
 
 export function productDisplayOffer(product: Product) {
-  const variant = product.variants.find((item) => item.sku === product.sku && variantIsAvailable(item))
+  const variant = product.price === null ? null : product.variants.find((item) => item.sku === product.sku && variantIsAvailable(item))
     ?? product.variants.find(variantIsAvailable)
     ?? null;
   return {
@@ -124,6 +124,10 @@ export function productDisplayOffer(product: Product) {
     price: variant?.price ?? product.price,
     currency: variant?.currency ?? product.currency,
   };
+}
+
+export function validityLabel(days: number | null) {
+  return days === null ? "Срок не указан" : `${days} дней`;
 }
 
 type LegacyProductSeed = Pick<Product,
@@ -178,7 +182,7 @@ function createFallbackProduct(seed: LegacyProductSeed): Product {
       name: "Основной вариант",
       sku: seed.sku,
       slug: `${seed.slug}-default`,
-      price: seed.price,
+      price: seed.price!,
       currency: "RUB",
       data: seed.data,
       days: seed.days,

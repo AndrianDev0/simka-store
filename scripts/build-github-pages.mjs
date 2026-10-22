@@ -4,7 +4,7 @@ import path from "node:path";
 const root = path.resolve(import.meta.dirname, "..");
 const docs = path.join(root, "docs");
 const origin = "https://andriandev0.github.io/simka-store/";
-const api = "https://simka-store.onrender.com/api/pages/catalog";
+const api = process.env.CATALOG_API_URL || "";
 const template = await readFile(path.join(docs, "index.html"), "utf8");
 const marker = "<!-- SIMKA_GENERATED_PAGE -->";
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
@@ -19,7 +19,7 @@ const productCard = (product) => linkCard(`product/${encodeURIComponent(product.
 const productCards = (items) => items.length ? `<div class="grid">${items.map(productCard).join("")}</div>` : `<p class="empty">Опубликованных товаров пока нет.</p>`;
 
 let catalog;
-for (let attempt = 1; attempt <= 2; attempt++) {
+for (let attempt = 1; api && attempt <= 2; attempt++) {
   try {
     const response = await fetch(api, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(75000) });
     if (!response.ok) throw new Error(`Catalog API returned ${response.status}`);
@@ -30,11 +30,7 @@ for (let attempt = 1; attempt <= 2; attempt++) {
   } catch (error) { console.warn(`Catalog request ${attempt}/2 failed: ${error instanceof Error ? error.message : "unknown error"}`); }
 }
 if (!catalog) {
-  try {
-    await readFile(path.join(docs, "generated-pages.json"), "utf8");
-    console.warn("Using the last checked-in static snapshot; live catalog refresh was unavailable.");
-    process.exit(0);
-  } catch { throw new Error("Catalog API unavailable and no static snapshot exists."); }
+  catalog = JSON.parse(await readFile(path.join(docs, "catalog-snapshot.json"), "utf8"));
 }
 
 const { products, categories, countries } = catalog;
@@ -62,7 +58,7 @@ for (const product of products) {
     description: product.fullDescription || product.shortDescription || product.name,
     sku: product.sku, url: urlFor(`product/${encodeURIComponent(product.slug)}`),
     ...(image ? { image } : {}),
-    offers: { "@type": "Offer", price: offer.price, priceCurrency: offer.currency || product.currency, availability: product.available && product.stockQuantity !== 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock", url: urlFor(`product/${encodeURIComponent(product.slug)}`) },
+    offers: { "@type": "Offer", price: offer.price, priceCurrency: offer.currency || product.currency, availability: !catalog.snapshot && product.available && product.stockQuantity !== 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock", url: urlFor(`product/${encodeURIComponent(product.slug)}`) },
   };
   const facts = `<dl><div><dt>Страна</dt><dd>${escape(product.country)}</dd></div><div><dt>Оператор</dt><dd>${escape(product.operator)}</dd></div><div><dt>Интернет</dt><dd>${escape(product.data)}</dd></div><div><dt>Срок действия</dt><dd>${escape(product.days)} дней</dd></div><div><dt>Артикул</dt><dd>${escape(product.sku)}</dd></div></dl>`;
   add(`product/${encodeURIComponent(product.slug)}`, product.seoTitle || `${product.name} | SIMKA`, product.seoDescription || product.shortDescription || `Купить ${product.name}: условия, цена и оформление заказа.`, pageHero(`${product.country} · ${product.operator}`, product.h1 || product.name, product.shortDescription) + pageBody(`<div class="product-information"><section class="detail-extra"><h2>Описание тарифа</h2><p>${escape(product.fullDescription || product.shortDescription)}</p><p><strong>${escape(money(offer.price, offer.currency || product.currency))}</strong></p></section><section class="detail-extra"><h2>Характеристики</h2>${facts}</section><section class="detail-extra"><h2>Условия использования</h2><p>${escape(product.roamingTerms || "Уточните у менеджера")}</p><p>${escape(product.activationTerms || "Активация по инструкции")}</p></section></div>`), { image, schema, updatedAt: product.updatedAt });
@@ -79,7 +75,7 @@ const information = {
   returns: ["Возврат и отмена | SIMKA", "Порядок отмены и возврата заказа SIMKA.", "Возврат и отмена", "Для отмены или возврата обратитесь в поддержку и сообщите номер заказа."],
   cookies: ["Cookie Policy | SIMKA", "Использование cookie и локального хранения на сайте SIMKA.", "Cookie Policy", "Корзина сохраняется в браузере для удобства покупателя."],
 };
-for (const [route, [title, description, heading, summary]] of Object.entries(information)) add(route, title, description, pageHero("Информация", heading, description) + pageBody(`<section class="detail-extra"><p>${escape(summary)}</p><p>Полный действующий текст документа доступен на <a href="https://simka-store.onrender.com/${route}">основном сайте SIMKA</a>.</p></section>`), { noindex: false });
+for (const [route, [title, description, heading, summary]] of Object.entries(information)) add(route, title, description, pageHero("Информация", heading, description) + pageBody(`<section class="detail-extra"><p>${escape(summary)}</p><p>Приём заказов приостановлен. По вопросам ранее оформленных заказов напишите в <a href="https://t.me/qweJSq">поддержку</a>.</p></section>`), { noindex: false });
 
 const replaceTag = (html, expression, replacement) => {
   if (!expression.test(html)) throw new Error("Static page template is missing a required tag.");

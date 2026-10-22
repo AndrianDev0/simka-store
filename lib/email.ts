@@ -49,7 +49,7 @@ export async function sendTransactionalEmail(message: TransactionalEmail): Promi
         subject: message.subject,
         text: message.text,
         html: message.html,
-        ...(process.env.EMAIL_REPLY_TO?.trim() ? { reply_to: process.env.EMAIL_REPLY_TO.trim() } : {}),
+        reply_to: process.env.EMAIL_REPLY_TO?.trim() || "Kartel_ceo@proton.me",
       }),
       redirect: "error",
       signal: AbortSignal.timeout(10_000),

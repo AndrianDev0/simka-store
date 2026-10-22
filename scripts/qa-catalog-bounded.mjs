@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+assert.equal(process.env.QA_ISOLATED,'true');
+const base='http://127.0.0.1:3000';
+async function get(path){const response=await fetch(base+path);assert.equal(response.status,200,path);return response.json();}
+const started=performance.now();
+const home=await fetch(base+'/');assert.equal(home.status,200);
+const html=await home.text();
+const bytes=Buffer.byteLength(html);
+assert.ok(bytes<500000,`Homepage too large: ${bytes}`);
+const timing=Math.round(performance.now()-started);
+const first=await get('/api/catalog');
+const second=await get('/api/catalog?page=2');
+assert.equal(first.items.length,24);assert.equal(second.items.length,24);assert.equal(first.total,10000);
+assert.equal(first.items.filter(p=>second.items.some(q=>p.id===q.id)).length,0);
+const search=await get('/api/catalog?q=QA-SKU-10000');
+assert.equal(search.items.length,1);assert.equal(search.items[0].sku,'QA-SKU-10000');
+const cart=await get('/api/catalog?ids=10000');
+assert.equal(cart.items[0].id,10000);
+assert.equal((await get('/api/catalog?q=not-existing-qa')).total,0);
+assert.equal((await get('/api/catalog?type=SIM')).total,0);
+assert.equal((await fetch(base+'/api/catalog?ids=0')).status,400);
+assert.equal((await fetch(base+'/api/catalog?ids='+Array(101).fill('1').join(','))).status,400);
+console.log(JSON.stringify({passed:true,homeBytes:bytes,homeMs:timing,checks:['bounded homepage','disjoint pages','search last product','cart lookup outside first page','empty search','type filter','invalid ids','batch limit']},null,2));

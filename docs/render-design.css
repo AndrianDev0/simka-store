@@ -44,3 +44,33 @@
 .product-information dd{min-width:0;overflow-wrap:anywhere}
 body{min-width:0}
 @media(max-width:800px){.detail-layout,.product-information{grid-template-columns:minmax(0,1fr)}.detail-visual,.detail-image,.detail-panel{min-width:0}.detail-visual{max-height:500px}.detail-panel{padding:23px}}@media(max-width:700px){input,select{font-size:16px}}@media(max-width:430px){.detail-visual{aspect-ratio:auto;min-height:260px;width:100%}.detail-list{grid-template-columns:1fr 1fr}}
+/* Blue identifies navigation; country colours distinguish tariff covers. */
+.hero-section,.page-hero{background:var(--soft)}
+.hero{min-height:460px}
+.hero-note{font-size:14px!important;max-width:460px!important}
+.travel-previews{display:grid;gap:16px;padding:24px 0 24px 32px;border-left:1px solid var(--border)}
+.travel-preview{display:block;padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--card)}
+.travel-preview>div{display:flex;align-items:center;gap:14px;font-size:20px;font-weight:700}
+.travel-preview small{display:block;margin-top:4px;font-size:13px;color:var(--muted);font-weight:400}
+.travel-preview>strong{display:block;margin-top:22px;font-size:26px}
+.travel-preview>strong span{font-size:16px;font-weight:400}
+.travel-preview p{margin:10px 0 0;font-size:16px}
+.delivery-options{display:grid;gap:20px}.delivery-options article+article{border-top:1px solid #ffffff40;padding-top:18px}.delivery-options h3{margin:0;font-size:22px}
+.gradient-button,.brand-mark{background:#1168e8;box-shadow:none}
+.button,.dark .button{background:#1168e8;color:#fff}.button:hover,.dark .button:hover{background:#0d56c3}
+.eyebrow{padding:0;border:0;border-radius:0;background:transparent;font-weight:600}
+.section-kicker{text-transform:none;letter-spacing:0}
+.product-card,.tile,.info-card,.detail-panel,.filter-panel,.hero-search{box-shadow:none}
+.product-card:hover{transform:none;box-shadow:none;border-color:var(--primary)}
+.product-top .operator{color:#fff}
+.quantity button{min-width:44px;height:44px}
+.hero-search input:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.product-information dl div{display:block}.product-information dd{text-align:left;font-weight:400;line-height:1.6;margin-top:7px}
+.info-grid{display:block;max-width:800px}.info-grid .info-card{padding:24px 0;border:0;border-bottom:1px solid var(--border);border-radius:0;background:none}
+@media(max-width:1000px){.hero{grid-template-columns:1fr}.travel-previews{grid-template-columns:1fr 1fr;border-left:0;padding:0}}
+@media(max-width:700px){.travel-previews{grid-template-columns:1fr}.travel-preview{padding:18px}.hero{gap:24px}.product-title-row{flex-wrap:wrap}.product-body .price{text-align:left}.footer-grid a:not(.brand){display:flex;align-items:center;min-height:44px}}
+.payment-methods{border:1px solid var(--border);border-radius:12px;padding:16px;margin:0;min-width:0}
+.payment-methods legend{padding:0 6px;font-weight:700}.payment-choice{display:flex;align-items:start;gap:12px;padding:12px 0;cursor:pointer}
+.checkout .payment-choice input{width:20px;height:20px;flex-shrink:0;margin:2px 0;accent-color:#1168e8}
+.payment-choice small{display:block;margin-top:6px;color:var(--muted);font-weight:400;line-height:1.5}
+.store-status{padding:14px max(16px,calc((100% - 1240px)/2));background:var(--tint);border-bottom:1px solid var(--border);color:var(--fg);font-size:14px;line-height:1.5}

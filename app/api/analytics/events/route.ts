@@ -4,9 +4,10 @@ import { getDb } from "@/db";
 import { analyticsEvents, analyticsSessions, analyticsVisitors, privacyConsentEvents } from "@/db/schema";
 import { allowsAnalytics } from "@/lib/analytics-policy";
 import { getCurrentAccount, sameOrigin } from "@/lib/customer-auth";
-import { analyticsSessionExitState, parseAnalyticsUserAgent, safeAnalyticsPath, safeHeaderLocation, sanitizeAnalyticsParams, validAnalyticsEventName } from "@/lib/first-party-analytics";
+import { analyticsSessionExitState, parseAnalyticsUserAgent, safeAnalyticsPath, sanitizeAnalyticsParams, validAnalyticsEventName } from "@/lib/first-party-analytics";
 import { consumeRateLimit, contentLengthWithin, tooManyRequests } from "@/lib/rate-limit";
 import { classifyTraffic } from "@/lib/traffic-classification";
+import { geolocateRequest } from "@/lib/ip-geolocation";
 
 export const runtime = "nodejs";
 
@@ -67,9 +68,7 @@ export async function POST(request: Request) {
   const exitState = analyticsSessionExitState(parsed.data.name, params, occurredAt);
   const attribution = parsed.data.attribution;
   const detected = parseAnalyticsUserAgent(request.headers.get("user-agent") || "");
-  const countryCode = safeHeaderLocation(request.headers.get("cf-ipcountry") || request.headers.get("x-vercel-ip-country") || request.headers.get("x-country"), 8)?.toUpperCase() ?? null;
-  const region = safeHeaderLocation(request.headers.get("cf-region") || request.headers.get("x-vercel-ip-country-region"), 120);
-  const city = safeHeaderLocation(request.headers.get("cf-ipcity") || request.headers.get("x-vercel-ip-city"), 120);
+  const { countryCode, region, city } = await geolocateRequest(request);
   const device = parsed.data.device;
   const traffic = classifyTraffic({
     userAgent: request.headers.get("user-agent") || "",

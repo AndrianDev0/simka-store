@@ -59,23 +59,20 @@ button, a, input, select, textarea { touch-action: manipulation; transition: col
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background: linear-gradient(120deg, var(--gradient-a), var(--gradient-b), var(--gradient-c));
-  background-size: 180% 180%;
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--gradient-a) 28%, transparent);
-  animation: gradient-drift var(--motion-slow) ease-in-out infinite;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: none;
 }
-.theme-gradient-button:hover { transform: translateY(-1px); box-shadow: 0 14px 34px color-mix(in srgb, var(--gradient-a) 38%, transparent); }
+.theme-gradient-button:hover { background: color-mix(in srgb, var(--primary) 90%, var(--foreground)); }
 .theme-hero {
   background-color: var(--surface-soft) !important;
-  background-image:
-    radial-gradient(circle at 10% 15%, color-mix(in srgb, var(--gradient-c) 14%, transparent), transparent 34%),
-    radial-gradient(circle at 88% 20%, color-mix(in srgb, var(--gradient-b) 15%, transparent), transparent 32%),
-    linear-gradient(130deg, var(--surface-soft), color-mix(in srgb, var(--surface-tint) 82%, var(--gradient-a) 18%), var(--surface-soft));
-  background-size: 150% 150%;
-  animation: gradient-drift 12s ease-in-out infinite;
+  background-image: none;
 }
-.theme-card { box-shadow: var(--theme-shadow); transition: transform var(--motion-base) cubic-bezier(.2,.8,.2,1), border-color var(--motion-base) ease, box-shadow var(--motion-base) ease, background-color var(--motion-base) ease; }
-.theme-card:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow: 0 22px 56px color-mix(in srgb, var(--primary) 13%, transparent); }
+.theme-card { transition: border-color var(--motion-fast) ease; }
+.theme-card:hover { border-color: var(--primary); }
+
+/* Small secondary labels must remain readable on both page surfaces. */
+[class~="text-[#7a899a]"] { color: var(--muted-foreground); }
 
 .theme-toggle::before {
   content: ""; position: absolute; inset: -45%; z-index: 0;

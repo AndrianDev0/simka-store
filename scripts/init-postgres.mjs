@@ -528,6 +528,14 @@ try {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+    ALTER TABLE products ALTER COLUMN validity_days DROP NOT NULL;
+    ALTER TABLE products ALTER COLUMN price DROP NOT NULL;
+    DO $price_constraint$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'products_unpriced_unavailable' AND conrelid = 'products'::regclass) THEN
+        ALTER TABLE products ADD CONSTRAINT products_unpriced_unavailable
+          CHECK (price IS NOT NULL OR (available = FALSE AND availability_status = 'OUT_OF_STOCK'));
+      END IF;
+    END $price_constraint$;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_products_slug ON products(slug);
     CREATE INDEX IF NOT EXISTS idx_products_publication_order ON products(publication_status, archived_at, sort_order);
     CREATE INDEX IF NOT EXISTS idx_products_catalog_filters ON products(country_id, operator_id, sim_type, available);

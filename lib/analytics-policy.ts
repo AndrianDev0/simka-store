@@ -1,4 +1,4 @@
-export const ANALYTICS_POLICY_VERSION = "2026-09-17";
+export const ANALYTICS_POLICY_VERSION = "2026-10-17";
 
 export type AnalyticsConsentSnapshot = {
   decision: "accepted" | "declined" | "withdrawn";

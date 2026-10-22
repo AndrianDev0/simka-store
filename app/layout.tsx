@@ -60,7 +60,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ru" suppressHydrationWarning>
-      <body className="antialiased"><ThemeProvider><AnalyticsProvider />{children}</ThemeProvider></body>
+      <body className="antialiased"><ThemeProvider><AnalyticsProvider />{children}<p className="border-t border-border bg-background px-4 py-3 text-center text-xs leading-6 text-muted-foreground">Приблизительная география посещений после согласия на аналитику: <a className="inline-flex min-h-11 items-center underline underline-offset-4" href="https://db-ip.com">IP Geolocation by DB-IP</a>. IP обрабатывается на сервере и не сохраняется в аналитике.</p></ThemeProvider></body>
     </html>
   );
 }

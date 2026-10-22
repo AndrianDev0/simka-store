@@ -1,6 +1,6 @@
 import Storefront from "./storefront";
 import { getPublicCategories } from "@/lib/categories";
-import { getCatalogProducts } from "@/lib/catalog-repository";
+import { queryCatalogProducts } from "@/lib/catalog-repository";
 import { getCurrentAccount } from "@/lib/customer-auth";
 import { absoluteUrl, jsonLd, pageMetadata, SITE_NAME } from "@/lib/seo";
 
@@ -13,7 +13,7 @@ export const metadata = pageMetadata({
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const [categories, products, account] = await Promise.all([getPublicCategories(), getCatalogProducts(), getCurrentAccount()]);
+  const [categories, catalog, account] = await Promise.all([getPublicCategories(), queryCatalogProducts({}, 1, 24), getCurrentAccount()]);
   const organization = {
     "@context": "https://schema.org",
     "@type": "Organization",
@@ -32,5 +32,5 @@ export default async function Home() {
     inLanguage: "ru-RU",
     publisher: { "@id": `${absoluteUrl("/")}#organization` },
   };
-  return <><Storefront categories={categories} products={products} customer={account ? { name: account.name, email: account.email, contact: account.contact } : undefined} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(organization) }} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(website) }} /></>;
+  return <><Storefront categories={categories.slice(0, 6).map(({ id, slug, name, description, productIds }) => ({ id, slug, name, description, productIds: { length: productIds.length } }))} products={catalog.items} totalProducts={catalog.total} customer={account ? { name: account.name, email: account.email, contact: account.contact } : undefined} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(organization) }} /><script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(website) }} /></>;
 }

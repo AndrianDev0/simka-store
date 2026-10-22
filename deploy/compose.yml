@@ -24,6 +24,12 @@ services:
       DATABASE_SSL: disable
       NEXT_PUBLIC_SITE_URL: https://simki.cc
       SEED_DEMO_DATA: "false"
+      GEOIP_TRUST_PROXY: "true"
+      GEOIP_DATABASE_PATH: /var/lib/simka-geoip/dbip-city-lite.mmdb
+      CATALOG_UPLOAD_DIR: /app/public/uploads/catalog
+    volumes:
+      - /srv/simka/geoip:/var/lib/simka-geoip:ro
+      - /srv/simka/uploads:/app/public/uploads
     ports: ["127.0.0.1:3100:3000"]
     networks: [private, outbound]
     depends_on:

@@ -13,6 +13,7 @@ import {
 } from "@/db/schema";
 import { recordSlugRedirect } from "@/lib/slug-redirects";
 import { SITE_ORIGIN } from "@/lib/seo";
+import { removeManagedCatalogImage, storeTelegramCatalogImage, type TelegramImageAttachment } from "@/lib/telegram-image-upload";
 
 type Db = ReturnType<typeof getDb>;
 type InlineButton = { text: string; callback_data?: string; url?: string };
@@ -47,6 +48,11 @@ async function audit(db: Db, adminId: number, action: string, entityId: string |
     entityId,
     metadata: JSON.stringify(metadata),
   });
+}
+
+async function removeImageFileIfUnused(db: Db, url: string) {
+  const [reference] = await db.select({ id: productImages.id }).from(productImages).where(eq(productImages.url, url)).limit(1);
+  if (!reference) await removeManagedCatalogImage(url);
 }
 
 function back(callbackData: string, label = "◀️ Назад"): InlineKeyboard {
@@ -261,7 +267,7 @@ async function showProduct(db: Db, token: string, chatId: number, productId: num
   ]);
   await sendMessage(token, chatId, [
     `📦 ${product.name}`, `ID: ${product.id} · SKU: ${product.sku}`, `Slug: ${product.slug}`, `${product.country} · ${product.operator} · ${product.simType}`,
-    `Цена: ${product.price.toLocaleString("ru-RU")} ${product.currency} · Себестоимость: ${product.unitCost === null ? "не задана" : `${product.unitCost.toLocaleString("ru-RU")} ${product.currency}`}`, `Интернет: ${product.dataVolume} · ${product.validityDays} дней`,
+    `Цена: ${product.price === null ? "не задана" : product.price.toLocaleString("ru-RU")} ${product.currency} · Себестоимость: ${product.unitCost === null ? "не задана" : `${product.unitCost.toLocaleString("ru-RU")} ${product.currency}`}`, `Интернет: ${product.dataVolume} · ${product.validityDays === null ? "срок не указан" : `${product.validityDays} дней`}`,
     `Статус: ${product.publicationStatus} · ${product.available ? product.availabilityStatus : "НЕДОСТУПЕН"}`, `Остаток: ${product.stockQuantity ?? "без ограничения"}`,
     product.simType === "eSIM" ? `eSIM: ${product.esimType || "тип не задан"} · получение: ${product.esimDeliveryMethod || "не задано"}` : `Доставка: ${product.deliveryOptions.length} вариант(а)`,
     `Варианты: ${variantRows.length} · Изображения: ${imageRows.length} · Категории: ${categoryRows.length}`, "", clip(product.shortDescription),
@@ -382,7 +388,8 @@ async function listImages(db: Db, token: string, chatId: number, productId: numb
   if (!product[0]) { await sendMessage(token, chatId, "Товар не найден.", back("products:list")); return; }
   const list = await db.select({ id: productImages.id, alt: productImages.alt, isPrimary: productImages.isPrimary }).from(productImages).where(eq(productImages.productId, productId)).orderBy(asc(productImages.sortOrder), asc(productImages.id));
   const rows = list.map((image) => [{ text: `${image.isPrimary ? "⭐" : "🖼"} ${image.id} · ${clip(image.alt, 32)}`, callback_data: `image:view:${image.id}` }]);
-  rows.push([{ text: "➕ Добавить изображение", callback_data: `image:create:${productId}` }]);
+  rows.push([{ text: "📷 Загрузить фото", callback_data: `image:upload:${productId}` }]);
+  rows.push([{ text: "🔗 Добавить по ссылке", callback_data: `image:create:${productId}` }]);
   rows.push([{ text: "◀️ К товару", callback_data: `product:view:${productId}` }]);
   await sendMessage(token, chatId, `Изображения товара «${product[0].name}»:`, { inline_keyboard: rows });
 }
@@ -519,7 +526,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
       db.select({ id: operators.id, countryId: operators.countryId, name: operators.name }).from(operators).where(isNull(operators.archivedAt)).orderBy(asc(operators.name)).limit(40),
     ]);
     const reference = [`Страны: ${countryRows.map((item) => `${item.id}=${item.name.slice(0, 24)}`).join(", ")}`, `Операторы: ${operatorRows.map((item) => `${item.id}=${item.name.slice(0, 24)}(страна ${item.countryId})`).join(", ")}`].join("\n").slice(0, 2500);
-    await sendMessage(token, chatId, `[CREATE_PRODUCT]\nВведите: SKU | slug | Название | ID страны | ID оператора | eSIM или SIM | Цена | Интернет | Дней\n\n${reference}`, { force_reply: true, selective: true, input_field_placeholder: "TR-20 | turkey-20gb | Турция 20 ГБ | 1 | 1 | eSIM | 2490 | 20 ГБ | 30" });
+    await sendMessage(token, chatId, `[CREATE_PRODUCT]\nВведите: SKU | slug | Название | ID страны | ID оператора | eSIM или SIM | Цена | Интернет | Дней\nЕсли цены нет, укажите -: товар останется недоступным.\n\n${reference}`, { force_reply: true, selective: true, input_field_placeholder: "TR-20 | turkey-20gb | Турция 20 ГБ | 1 | 1 | eSIM | 2490 | 20 ГБ | 30" });
     return true;
   }
   if (scope === "product" && action === "view" && first) { await showProduct(db, token, chatId, Number(first)); return true; }
@@ -558,7 +565,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
   if (scope === "product" && action === "edit" && first) { await sendMessage(token, chatId, "Выберите поле товара:", productEditKeyboard(Number(first))); return true; }
   if (scope === "product" && action === "field" && first && second && second in productFields) {
     const label = productFields[second as keyof typeof productFields][0];
-    const hint = ["un", "hc", "hs", "pop"].includes(second) ? "Введите on или off" : second === "ch" ? "Введите JSON-объект, например {\"скорость\":\"5G\"}" : second === "del" ? "Введите JSON-массив: [{\"id\":\"courier\",\"label\":\"Курьер\",\"cost\":500,\"currency\":\"RUB\",\"regions\":[\"Москва\"],\"dispatchDaysMin\":1,\"dispatchDaysMax\":3}]. Для очистки: -" : "Для очистки необязательного поля отправьте -";
+    const hint = second === "pr" ? "Введите цену. Чтобы убрать цену и отключить покупку, отправьте -" : ["un", "hc", "hs", "pop"].includes(second) ? "Введите on или off" : second === "ch" ? "Введите JSON-объект, например {\"скорость\":\"5G\"}" : second === "del" ? "Введите JSON-массив: [{\"id\":\"courier\",\"label\":\"Курьер\",\"cost\":500,\"currency\":\"RUB\",\"regions\":[\"Москва\"],\"dispatchDaysMin\":1,\"dispatchDaysMax\":3}]. Для очистки: -" : "Для очистки необязательного поля отправьте -";
     await sendMessage(token, chatId, `[EDIT_PRODUCT:${first}:${second}]\n${label}. ${hint}`, { force_reply: true, selective: true, input_field_placeholder: label });
     return true;
   }
@@ -601,10 +608,12 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     if (action === "delete_confirm") {
       const historical = await db.select({ id: orderItems.id }).from(orderItems).where(eq(orderItems.productId, id)).limit(1);
       if (historical[0]) { await sendMessage(token, chatId, "Товар есть в истории заказов, поэтому его можно только архивировать.", back(`product:view:${id}`)); return true; }
+      const imageUrls = await db.select({ url: productImages.url }).from(productImages).where(eq(productImages.productId, id));
       await db.transaction(async (tx) => {
         await tx.delete(productCategories).where(eq(productCategories.productId, id));
         await tx.delete(catalogProducts).where(eq(catalogProducts.id, id));
       });
+      for (const image of imageUrls) await removeImageFileIfUnused(db, image.url);
       await audit(db, adminId, "product.delete", String(id), { sku: product.sku });
       await listProducts(db, token, chatId);
       return true;
@@ -618,6 +627,10 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     }
     if (action === "availability" && !product.available && product.stockQuantity === 0) {
       await sendMessage(token, chatId, "Остаток равен нулю. Сначала измените поле «Остаток», затем включите наличие.", back(`product:view:${id}`));
+      return true;
+    }
+    if (action === "availability" && !product.available && (product.price === null || product.price <= 0)) {
+      await sendMessage(token, chatId, "Сначала укажите цену больше нуля, затем включите наличие.", back(`product:view:${id}`));
       return true;
     }
     if (action === "publish") await db.update(catalogProducts).set({ publicationStatus: product.publicationStatus === "PUBLISHED" ? "DRAFT" : "PUBLISHED", archivedAt: null, updatedAt: new Date().toISOString() }).where(eq(catalogProducts.id, id));
@@ -670,6 +683,10 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     await sendMessage(token, chatId, `[CREATE_IMAGE:${first}]\nВведите: URL | Alt-текст | Порядок`, { force_reply: true, selective: true, input_field_placeholder: "https://… | Описание изображения | 0" });
     return true;
   }
+  if (scope === "image" && action === "upload" && first) {
+    await sendMessage(token, chatId, `[UPLOAD_IMAGE:${first}]\nОтправьте фотографию ответом на это сообщение. Поддерживаются JPG, PNG и WebP до 8 МБ. Бот автоматически уменьшит фото и сохранит в WebP до 200 КБ, без обрезки. Подпись к фото станет alt-текстом.`, { force_reply: true, selective: true, input_field_placeholder: "Прикрепите фотографию" });
+    return true;
+  }
   if (scope === "image" && action === "view" && first) { await showImage(db, token, chatId, Number(first)); return true; }
   if (scope === "image" && action === "edit" && first && ["url", "alt", "sort"].includes(second || "")) {
     const labels: Record<string, string> = { url: "новый HTTPS URL", alt: "новый alt-текст (или - чтобы очистить)", sort: "порядок от 0 до 100000" };
@@ -686,6 +703,7 @@ async function handleCallbackInner(context: HandlerContext, data: string): Promi
     if (!image) { await sendMessage(token, chatId, "Изображение не найдено.", back("products:list")); return true; }
     if (action === "delete_confirm") {
       await db.delete(productImages).where(eq(productImages.id, id));
+      await removeImageFileIfUnused(db, image.url);
       await audit(db, adminId, "image.delete", String(id), { productId: image.productId });
       await listImages(db, token, chatId, image.productId);
       return true;
@@ -772,11 +790,11 @@ async function updateProductFromReply(context: HandlerContext, id: number, code:
   if (key === "currency") { value = raw.trim().toUpperCase(); if (!currencyPattern.test(String(value))) throw new Error("INVALID_CURRENCY"); }
   if (key === "simType" && !["eSIM", "SIM"].includes(String(value))) throw new Error("INVALID_SIM_TYPE");
   if (["price", "oldPrice", "unitCost", "dataMb", "stockQuantity", "sortOrder"].includes(key)) {
-    const nullable = ["oldPrice", "unitCost", "dataMb", "stockQuantity"].includes(key);
+    const nullable = ["price", "oldPrice", "unitCost", "dataMb", "stockQuantity"].includes(key);
     value = raw.trim() === "-" && nullable ? null : parseInteger(raw, 0, 100000000);
     if (value === null && !(nullable && raw.trim() === "-")) throw new Error("INVALID_INTEGER");
   }
-  if (key === "validityDays") { value = parseInteger(raw, 1, 3650); if (value === null) throw new Error("INVALID_DAYS"); }
+  if (key === "validityDays") { value = raw.trim() === "-" ? null : parseInteger(raw, 1, 3650); if (value === null && raw.trim() !== "-") throw new Error("INVALID_DAYS"); }
   if (["countryId", "operatorId"].includes(key)) {
     value = parseInteger(raw, 1, 2147483647);
     if (value === null) throw new Error("INVALID_RELATION");
@@ -792,7 +810,7 @@ async function updateProductFromReply(context: HandlerContext, id: number, code:
   if (["ogImage"].includes(key)) { value = parseNullableUrl(raw); if (value === undefined) throw new Error("INVALID_URL"); }
   if (key === "canonicalUrl") { value = parseNullableUrl(raw, true); if (value === undefined) throw new Error("INVALID_URL"); }
   const update: Record<string, unknown> = { [key]: value, updatedAt: new Date().toISOString() };
-  if (key === "stockQuantity" && value === 0) Object.assign(update, { available: false, availabilityStatus: "OUT_OF_STOCK" });
+  if ((key === "stockQuantity" && value === 0) || (key === "price" && value === null)) Object.assign(update, { available: false, availabilityStatus: "OUT_OF_STOCK" });
   const publicationGaps = product.publicationStatus === "PUBLISHED"
     ? await productPublicationGaps(db, { ...product, [key]: value } as typeof catalogProducts.$inferSelect)
     : [];
@@ -827,8 +845,37 @@ async function updateVariantFromReply(context: HandlerContext, id: number, code:
   await showVariant(db, context.token, context.chatId, id);
 }
 
-async function handleMessageInner(context: HandlerContext, text: string, replyContext: string): Promise<boolean> {
+async function handleMessageInner(context: HandlerContext, text: string, replyContext: string, attachment?: TelegramImageAttachment): Promise<boolean> {
   const db = getDb();
+
+  const imageUpload = replyContext.match(/^\[UPLOAD_IMAGE:(\d+)\]/);
+  if (imageUpload) {
+    const productId = Number(imageUpload[1]);
+    if (!attachment) throw new Error("TELEGRAM_IMAGE_REQUIRED");
+    const [productRows, existing] = await Promise.all([
+      db.select({ id: catalogProducts.id, name: catalogProducts.name }).from(catalogProducts).where(eq(catalogProducts.id, productId)).limit(1),
+      db.select({ id: productImages.id, sortOrder: productImages.sortOrder }).from(productImages).where(eq(productImages.productId, productId)).orderBy(asc(productImages.sortOrder), asc(productImages.id)),
+    ]);
+    const product = productRows[0];
+    if (!product) throw new Error("INVALID_PRODUCT");
+    const stored = await storeTelegramCatalogImage({ token: context.token, attachment });
+    try {
+      const inserted = await db.insert(productImages).values({
+        productId,
+        url: stored.url,
+        alt: attachment.caption?.trim().slice(0, 500) || product.name,
+        sortOrder: existing.length ? Math.min(100000, Math.max(...existing.map((item) => item.sortOrder)) + 10) : 0,
+        isPrimary: existing.length === 0,
+      }).returning({ id: productImages.id });
+      await audit(db, context.adminId, "image.upload", String(inserted[0].id), { productId, mimeType: stored.mimeType, size: stored.size });
+      await sendMessage(context.token, context.chatId, existing.length ? "Фото добавлено в галерею товара." : "Фото загружено и установлено основным.");
+      await showImage(db, context.token, context.chatId, inserted[0].id);
+    } catch (error) {
+      await removeImageFileIfUnused(db, stored.url);
+      throw error;
+    }
+    return true;
+  }
 
   const deliveryCreate = replyContext.match(/^\[CREATE_DELIVERY_OPTION:(\d+)\]/);
   const deliveryEdit = replyContext.match(/^\[EDIT_DELIVERY_OPTION:(\d+):([a-z0-9-]{1,24})\]/);
@@ -878,8 +925,8 @@ async function handleMessageInner(context: HandlerContext, text: string, replyCo
     const parts = text.split("|").map((part) => part.trim());
     if (parts.length < 9) throw new Error("INVALID_PRODUCT_CREATE");
     const [sku, slug, name, countryRaw, operatorRaw, simType, priceRaw, dataVolume, daysRaw] = parts;
-    const countryId = parseInteger(countryRaw, 1, 2147483647); const operatorId = parseInteger(operatorRaw, 1, 2147483647); const price = parseInteger(priceRaw, 0, 100000000); const validityDays = parseInteger(daysRaw, 1, 3650);
-    if (!sku || sku.length > 120 || !slugPattern.test(slug) || slug.length > 160 || !name || name.length > 220 || !countryId || !operatorId || !["eSIM", "SIM"].includes(simType) || price === null || !dataVolume || dataVolume.length > 120 || validityDays === null) throw new Error("INVALID_PRODUCT_CREATE");
+    const countryId = parseInteger(countryRaw, 1, 2147483647); const operatorId = parseInteger(operatorRaw, 1, 2147483647); const price = priceRaw === "-" ? null : parseInteger(priceRaw, 0, 100000000); const validityDays = daysRaw === "-" ? null : parseInteger(daysRaw, 1, 3650);
+    if (!sku || sku.length > 120 || !slugPattern.test(slug) || slug.length > 160 || !name || name.length > 220 || !countryId || !operatorId || !["eSIM", "SIM"].includes(simType) || (price === null && priceRaw !== "-") || !dataVolume || dataVolume.length > 120 || (validityDays === null && daysRaw !== "-")) throw new Error("INVALID_PRODUCT_CREATE");
     await ensureProductRelation(db, { countryId, operatorId }, {});
     const conflicts = await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.slug, slug)).limit(1);
     if (conflicts[0] || (await db.select({ id: catalogProducts.id }).from(catalogProducts).where(eq(catalogProducts.sku, sku)).limit(1))[0]) throw new Error("DUPLICATE_PRODUCT");
@@ -921,13 +968,14 @@ async function handleMessageInner(context: HandlerContext, text: string, replyCo
   const imageEdit = replyContext.match(/^\[EDIT_IMAGE:(\d+):(url|alt|sort)\]/);
   if (imageEdit) {
     const id = Number(imageEdit[1]);
-    const [image] = await db.select({ id: productImages.id, productId: productImages.productId }).from(productImages).where(eq(productImages.id, id)).limit(1);
+    const [image] = await db.select({ id: productImages.id, productId: productImages.productId, url: productImages.url }).from(productImages).where(eq(productImages.id, id)).limit(1);
     if (!image) throw new Error("INVALID_IMAGE");
     const field = imageEdit[2];
     if (field === "url") {
       const url = parseNullableUrl(text.trim());
       if (!url || url.length > 2048) throw new Error("INVALID_IMAGE_URL");
       await db.update(productImages).set({ url }).where(eq(productImages.id, id));
+      if (url !== image.url) await removeImageFileIfUnused(db, image.url);
     } else if (field === "alt") {
       const alt = text.trim() === "-" ? "" : text.trim();
       if (alt.length > 500) throw new Error("INVALID_IMAGE_ALT");
@@ -952,12 +1000,19 @@ async function handleMessageInner(context: HandlerContext, text: string, replyCo
   return false;
 }
 
-export async function handleCatalogAdminMessage(context: HandlerContext, text: string, replyContext: string) {
+export async function handleCatalogAdminMessage(context: HandlerContext, text: string, replyContext: string, attachment?: TelegramImageAttachment) {
   try {
-    return await handleMessageInner(context, text, replyContext);
+    return await handleMessageInner(context, text, replyContext, attachment);
   } catch (error) {
     console.error("telegram_catalog_message_failed", { name: error instanceof Error ? error.message : "UnknownError" });
-    await sendMessage(context.token, context.chatId, "Не удалось сохранить. Проверьте формат, уникальность slug/SKU и соответствие страны оператору.", back("menu"));
+    const code = error instanceof Error ? error.message : "";
+    const message = replyContext.startsWith("[UPLOAD_IMAGE:")
+      ? code === "TELEGRAM_IMAGE_REQUIRED" ? "Прикрепите фото и отправьте его ответом на сообщение бота."
+        : code === "TELEGRAM_IMAGE_TOO_LARGE" ? "Фото слишком большое. Максимальный размер: 8 МБ."
+          : code === "TELEGRAM_IMAGE_UNSUPPORTED" ? "Не удалось распознать изображение. Отправьте JPG, PNG или WebP."
+            : "Не удалось загрузить фото. Попробуйте другое изображение или повторите позже."
+      : "Не удалось сохранить. Проверьте формат, уникальность slug/SKU и соответствие страны оператору.";
+    await sendMessage(context.token, context.chatId, message, back("menu"));
     return true;
   }
 }

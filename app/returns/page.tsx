@@ -1,6 +1,6 @@
 import { InfoPage } from "@/app/components/info-page";
 import { pageMetadata } from "@/lib/seo";
-import { SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
+import { SUPPORT_EMAIL, SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
 
 export const metadata = pageMetadata({
   title: "Возврат и отмена SIM или eSIM",
@@ -17,7 +17,7 @@ export default function ReturnsPage() {
       {
         title: "Как обратиться",
         body: <div className="space-y-3">
-          <p>Напишите в Telegram <a className="font-semibold text-[#1168e8] underline" href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer">@{SUPPORT_TELEGRAM_USERNAME}</a> и укажите номер заказа, email при оформлении и причину обращения.</p>
+          <p>Напишите в Telegram <a className="font-semibold text-primary underline" href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer">@{SUPPORT_TELEGRAM_USERNAME}</a> или на <a className="break-all font-semibold text-primary underline" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>. Укажите номер заказа, email при оформлении и причину обращения.</p>
           <p>Если товар работает некорректно, приложите модель устройства, страну использования, текст ошибки и скриншот без персональных и платёжных данных.</p>
         </div>,
       },

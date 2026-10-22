@@ -12,14 +12,15 @@ export const metadata = pageMetadata({
 export const dynamic = "force-dynamic";
 
 export default async function CountriesPage() {
-  const [countries, products] = await Promise.all([getCatalogCountries(), getCatalogProducts()]);
+  const [allCountries, products] = await Promise.all([getCatalogCountries(), getCatalogProducts()]);
+  const countries = allCountries.filter((country) => !country.slug.startsWith("demo-"));
   const listSchema = itemListJsonLd(countries.map((country) => ({ name: country.name, path: `/country/${encodeURIComponent(country.slug)}` })));
 
   return <SiteShell eyebrow="Страны" title="SIM и eSIM по странам" description="Откройте страницу страны, чтобы сравнить все опубликованные тарифы и операторов."><ContentSection>
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{countries.map((country) => {
       const items = products.filter((product) => product.countryId === country.id);
       const operators = [...new Set(items.map((product) => product.operator))];
-      const offers = items.map(productDisplayOffer);
+      const offers = items.map(productDisplayOffer).filter((offer): offer is typeof offer & { price: number } => offer.price !== null);
       const currencies = new Set(offers.map((offer) => offer.currency));
       const minPrice = offers.length && currencies.size === 1 ? Math.min(...offers.map((offer) => offer.price)) : null;
       const currency = offers[0]?.currency;

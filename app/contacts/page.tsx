@@ -1,6 +1,6 @@
 import { InfoPage } from "@/app/components/info-page";
 import { pageMetadata } from "@/lib/seo";
-import { SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
+import { SUPPORT_EMAIL, SUPPORT_TELEGRAM_URL, SUPPORT_TELEGRAM_USERNAME } from "@/lib/support";
 
 export const metadata = pageMetadata({
   title: "Поддержка SIM и eSIM - контакты SIMKA",
@@ -14,12 +14,13 @@ export default function ContactsPage() {
   return <InfoPage
     eyebrow="Поддержка"
     title="Поможем с SIM, eSIM и заказом"
-    description="Напишите нам в Telegram. Чем точнее вы опишете вопрос, тем быстрее мы сможем разобраться."
+    description="Напишите в Telegram или на email. Укажите номер заказа, если вопрос связан с покупкой."
     cards={[
       {
         title: "Связаться с поддержкой",
         body: <div>
-          <p>Единственный указанный на сайте контакт поддержки - <strong className="text-[#10213a]">@{SUPPORT_TELEGRAM_USERNAME}</strong>. Сообщения обрабатываются по мере поступления.</p>
+          <p>Telegram: <strong className="text-[#10213a]">@{SUPPORT_TELEGRAM_USERNAME}</strong></p>
+          <p className="mt-2">Email: <a className="inline-flex min-h-11 items-center break-all font-semibold text-primary underline" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a></p>
           <a href={SUPPORT_TELEGRAM_URL} target="_blank" rel="noreferrer" className={supportLinkClassName} aria-label={`Открыть поддержку @${SUPPORT_TELEGRAM_USERNAME} в Telegram`}>
             Написать @{SUPPORT_TELEGRAM_USERNAME}
           </a>

@@ -1,11 +1,13 @@
 import { ImageResponse } from "next/og";
 import { getCatalogProductBySlug } from "@/lib/catalog-repository";
+import { validityLabel } from "@/lib/catalog";
 
 export const alt = "Тариф SIMKA для путешествий";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-function formatPrice(price: number, currency: string) {
+function formatPrice(price: number | null, currency: string) {
+  if (price === null) return "Нет в наличии";
   return `${new Intl.NumberFormat("ru-RU").format(price)} ${currency}`;
 }
 
@@ -14,7 +16,7 @@ export default async function ProductOpenGraphImage({ params }: { params: Promis
   const product = await getCatalogProductBySlug(slug);
   const title = product?.name || "SIM и eSIM для путешествий";
   const destination = product ? `${product.country} · ${product.operator}` : "Тарифы по странам";
-  const details = product ? `${product.data} · ${product.days} дней · ${formatPrice(product.price, product.currency)}` : "Выбор тарифа и оформление онлайн";
+  const details = product ? `${product.data} · ${validityLabel(product.days)} · ${formatPrice(product.price, product.currency)}` : "Выбор тарифа и оформление онлайн";
 
   return new ImageResponse(
     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", justifyContent: "space-between", overflow: "hidden", position: "relative", background: "linear-gradient(135deg, #0c1e36 0%, #0f5fd5 58%, #39a2f0 100%)", color: "white", padding: "70px", fontFamily: "Arial, sans-serif" }}>
